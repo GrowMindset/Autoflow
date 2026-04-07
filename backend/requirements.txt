@@ -1,0 +1,8 @@
+alembic
+asyncpg
+fastapi
+psycopg[binary]
+python-dotenv
+sqlalchemy
+uvicorn
+python-dateutil

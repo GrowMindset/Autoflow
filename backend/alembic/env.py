@@ -13,9 +13,14 @@ from app.models import Base
 config = context.config
 load_dotenv()
 
-database_url = os.getenv("DATABASE_URL")
+database_url = os.getenv("ALEMBIC_DATABASE_URL") or os.getenv("DATABASE_URL")
+if database_url and "+asyncpg" in database_url:
+    database_url = database_url.replace("+asyncpg", "+psycopg", 1)
+
 if database_url:
-    config.set_main_option("sqlalchemy.url", database_url)
+    # Alembic stores this through ConfigParser, so percent signs in URL-encoded
+    # passwords (for example %40 for "@") must be escaped first.
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
