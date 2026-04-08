@@ -1,18 +1,21 @@
 from fastapi import FastAPI
 
-from .routers.workflows import router
-
-app=FastAPI()
-app.include_router(router)
+from app.routers.workflows import router as workflows_router
 
 
-@app.get("/health")
-def health_check():
-    return {"status": "healthy"}
+def create_app() -> FastAPI:
+    app = FastAPI()
+    app.include_router(workflows_router)
 
-@app.get("/")
-def root():
-    return {"message": "Welcome to the Autoflow!"}
+    @app.get("/health")
+    async def health_check() -> dict[str, str]:
+        return {"status": "healthy"}
 
-if __name__ == "__main__":
-    app.run(debug=True)
+    @app.get("/")
+    async def root() -> dict[str, str]:
+        return {"message": "Welcome to the Autoflow!"}
+
+    return app
+
+
+app = create_app()
