@@ -264,7 +264,12 @@ class RunnerTests(unittest.TestCase):
     def test_form_trigger_runner_preserves_payload(self):
         runner = FormTriggerRunner()
         result = runner.run(
-            config={},
+            config={
+                "fields": [
+                    {"name": "name", "required": True},
+                    {"name": "email", "required": True},
+                ]
+            },
             input_data={"name": "Asha", "email": "asha@example.com"},
         )
         self.assertEqual(
@@ -276,6 +281,26 @@ class RunnerTests(unittest.TestCase):
                 "email": "asha@example.com",
             },
         )
+
+    def test_form_trigger_runner_requires_field_definitions(self):
+        runner = FormTriggerRunner()
+        with self.assertRaisesRegex(
+            ValueError, "config must have a non-empty 'fields' list"
+        ):
+            runner.run(config={}, input_data={"email": "asha@example.com"})
+
+    def test_form_trigger_runner_requires_required_fields_in_payload(self):
+        runner = FormTriggerRunner()
+        with self.assertRaisesRegex(ValueError, "required field 'email'"):
+            runner.run(
+                config={
+                    "fields": [
+                        {"name": "email", "required": True},
+                        {"name": "notes", "required": False},
+                    ]
+                },
+                input_data={"notes": "hello"},
+            )
 
     def test_webhook_trigger_runner_sets_webhook_metadata(self):
         runner = WebhookTriggerRunner()
@@ -301,7 +326,13 @@ class RunnerTests(unittest.TestCase):
 
         for runner in runners:
             with self.assertRaises(ValueError):
-                runner.run(config={}, input_data="not-a-dict")
+                if isinstance(runner, FormTriggerRunner):
+                    runner.run(
+                        config={"fields": [{"name": "email", "required": True}]},
+                        input_data="not-a-dict",
+                    )
+                else:
+                    runner.run(config={}, input_data="not-a-dict")
 
 
 if __name__ == "__main__":
