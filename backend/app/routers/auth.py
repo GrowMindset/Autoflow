@@ -27,16 +27,24 @@ async def signup(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return UserResponse.model_validate(user)
 
+from fastapi.security import OAuth2PasswordRequestForm
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
-    payload: LoginRequest,
+    form_data: OAuth2PasswordRequestForm = Depends(),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> TokenResponse:
     try:
-        access_token = await auth_service.login(payload)
+        access_token = await auth_service.login(
+            username=form_data.username,
+            password=form_data.password
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc)
+        ) from exc
+
     return TokenResponse(access_token=access_token)
 
 

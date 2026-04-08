@@ -33,8 +33,15 @@ class AuthService:
         await self.db.refresh(user)
         return user
 
-    async def login(self, payload: LoginRequest) -> str:
-        user = await self.db.scalar(select(User).where(User.email == payload.email))
-        if user is None or not verify_password(payload.password, user.hashed_password):
+    async def login(self, username: str, password: str) -> str:
+        # Check user by email OR username (recommended)
+        user = await self.db.scalar(
+            select(User).where(
+                or_(User.email == username, User.username == username)
+            )
+        )
+
+        if user is None or not verify_password(password, user.hashed_password):
             raise ValueError("Invalid email or password")
+
         return create_access_token({"sub": str(user.id)})
