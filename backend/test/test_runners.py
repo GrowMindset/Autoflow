@@ -1,13 +1,16 @@
 import unittest
 
-from app.execution.runners.aggregate import AggregateRunner
-from app.execution.runners.datetime_format import DateTimeFormatRunner
-from app.execution.runners.filter import FilterRunner
-from app.execution.runners.if_else import IfElseRunner
-from app.execution.runners.merge import MergeRunner
-from app.execution.runners.split_in import SplitInRunner
-from app.execution.runners.split_out import SplitOutRunner
-from app.execution.runners.switch import SwitchRunner
+from backend.app.execution.runners.nodes.aggregate import AggregateRunner
+from backend.app.execution.runners.nodes.datetime_format import DateTimeFormatRunner
+from backend.app.execution.runners.nodes.filter import FilterRunner
+from backend.app.execution.runners.nodes.if_else import IfElseRunner
+from backend.app.execution.runners.nodes.merge import MergeRunner
+from backend.app.execution.runners.nodes.split_in import SplitInRunner
+from backend.app.execution.runners.nodes.split_out import SplitOutRunner
+from backend.app.execution.runners.nodes.switch import SwitchRunner
+from backend.app.execution.runners.triggers.form_trigger import FormTriggerRunner
+from backend.app.execution.runners.triggers.manual_trigger import ManualTriggerRunner
+from backend.app.execution.runners.triggers.webhook_trigger import WebhookTriggerRunner
 
 
 class RunnerTests(unittest.TestCase):
@@ -249,6 +252,56 @@ class RunnerTests(unittest.TestCase):
                 config={"input_key": "orders", "field": "amount", "operation": "min"},
                 input_data={"orders": []},
             )
+
+    def test_manual_trigger_runner_returns_metadata_with_no_input(self):
+        runner = ManualTriggerRunner()
+        result = runner.run(config={}, input_data=None)
+        self.assertEqual(
+            result,
+            {"triggered": True, "trigger_type": "manual"},
+        )
+
+    def test_form_trigger_runner_preserves_payload(self):
+        runner = FormTriggerRunner()
+        result = runner.run(
+            config={},
+            input_data={"name": "Asha", "email": "asha@example.com"},
+        )
+        self.assertEqual(
+            result,
+            {
+                "triggered": True,
+                "trigger_type": "form",
+                "name": "Asha",
+                "email": "asha@example.com",
+            },
+        )
+
+    def test_webhook_trigger_runner_sets_webhook_metadata(self):
+        runner = WebhookTriggerRunner()
+        result = runner.run(
+            config={"ignored": True},
+            input_data={"event": "order.created"},
+        )
+        self.assertEqual(
+            result,
+            {
+                "triggered": True,
+                "trigger_type": "webhook",
+                "event": "order.created",
+            },
+        )
+
+    def test_trigger_runners_reject_invalid_input_types(self):
+        runners = [
+            ManualTriggerRunner(),
+            FormTriggerRunner(),
+            WebhookTriggerRunner(),
+        ]
+
+        for runner in runners:
+            with self.assertRaises(ValueError):
+                runner.run(config={}, input_data="not-a-dict")
 
 
 if __name__ == "__main__":
