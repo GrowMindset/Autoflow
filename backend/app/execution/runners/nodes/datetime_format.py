@@ -1,7 +1,7 @@
 from typing import Any, Dict
 from dateutil import parser
 
-from app.execution.runners.if_else import get_nested_value
+from backend.app.execution.runners.nodes.if_else import get_nested_value
 
 
 def set_nested_value(data: Dict[str, Any], field_path: str, value: Any) -> Dict[str, Any]:
