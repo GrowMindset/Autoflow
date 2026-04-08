@@ -1,6 +1,8 @@
 alembic
 asyncpg
+bcrypt
 fastapi
+PyJWT
 psycopg[binary]
 python-dotenv
 sqlalchemy

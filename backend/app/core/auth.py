@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-import json
 import os
-import time
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import bcrypt
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import OAuth2PasswordBearer
+from jwt import DecodeError, ExpiredSignatureError, InvalidTokenError, decode, encode
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -19,97 +17,76 @@ from app.models.user import User
 
 load_dotenv()
 
-_bearer_scheme = HTTPBearer(auto_error=False)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 
-def _settings() -> tuple[str, str]:
+class BcryptContext:
+    def hash(self, password: str) -> str:
+        return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+    def verify(self, plain_password: str, hashed_password: str) -> bool:
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8"),
+            hashed_password.encode("utf-8"),
+        )
+
+
+bcrypt_context = BcryptContext()
+
+
+def _settings() -> tuple[str, str, int]:
     secret_key = os.getenv("SECRET_KEY")
     algorithm = os.getenv("ALGORITHM", "HS256")
+    access_token_expire_minutes = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
     if not secret_key:
         raise RuntimeError("SECRET_KEY is not set. Add it to your .env file.")
-    if algorithm != "HS256":
-        raise RuntimeError("Only HS256 tokens are supported by the current auth helper.")
-    return secret_key, algorithm
+    return secret_key, algorithm, access_token_expire_minutes
 
 
-def _b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+def get_password_hash(password: str) -> str:
+    return bcrypt_context.hash(password)
 
 
-def _b64url_decode(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode(value + padding)
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return bcrypt_context.verify(plain_password, hashed_password)
 
 
-def create_access_token(payload: Mapping[str, object], expires_in_seconds: int = 3600) -> str:
-    secret_key, _ = _settings()
-    now = int(time.time())
+def create_access_token(
+    payload: Mapping[str, object],
+    expires_delta: timedelta | None = None,
+) -> str:
+    secret_key, algorithm, access_token_expire_minutes = _settings()
+    expire_at = datetime.now(timezone.utc) + (
+        expires_delta or timedelta(minutes=access_token_expire_minutes)
+    )
     body = dict(payload)
-    body.setdefault("iat", now)
-    body.setdefault("exp", now + expires_in_seconds)
-
-    header = {"alg": "HS256", "typ": "JWT"}
-    encoded_header = _b64url_encode(
-        json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    )
-    encoded_payload = _b64url_encode(
-        json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    )
-    signing_input = f"{encoded_header}.{encoded_payload}".encode("ascii")
-    signature = hmac.new(secret_key.encode("utf-8"), signing_input, hashlib.sha256).digest()
-    return f"{encoded_header}.{encoded_payload}.{_b64url_encode(signature)}"
+    body.update({"exp": expire_at, "iat": datetime.now(timezone.utc)})
+    return encode(body, secret_key, algorithm=algorithm)
 
 
 def decode_access_token(token: str) -> dict[str, object]:
-    secret_key, _ = _settings()
+    secret_key, algorithm, _ = _settings()
     try:
-        encoded_header, encoded_payload, encoded_signature = token.split(".")
-    except ValueError as exc:
+        payload = decode(token, secret_key, algorithms=[algorithm])
+    except (ExpiredSignatureError, DecodeError, InvalidTokenError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
         ) from exc
-
-    signing_input = f"{encoded_header}.{encoded_payload}".encode("ascii")
-    expected_signature = hmac.new(
-        secret_key.encode("utf-8"), signing_input, hashlib.sha256
-    ).digest()
-    received_signature = _b64url_decode(encoded_signature)
-
-    if not hmac.compare_digest(expected_signature, received_signature):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-        )
-
-    header = json.loads(_b64url_decode(encoded_header))
-    if header.get("alg") != "HS256" or header.get("typ") != "JWT":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-        )
-
-    payload = json.loads(_b64url_decode(encoded_payload))
-    exp = payload.get("exp")
-    if not isinstance(exp, int) or exp < int(time.time()):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-        )
     return payload
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    token: str | None = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    if credentials is None or credentials.scheme.lower() != "bearer":
+    if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
         )
 
-    payload = decode_access_token(credentials.credentials)
+    payload = decode_access_token(token)
     subject = payload.get("sub")
     try:
         user_id = UUID(str(subject))
