@@ -91,4 +91,4 @@ class AggregateRunner:
 #     input_data={"orders": [{"country": "IN", "amount": 300}, {"country": "IN", "amount": 700}, {"country": "US", "amount": 500}]}
 # )
 # print(result)
-# # → {"totals": {"IN": 1000, "US": 500}}
+# → {"totals": 1500}
