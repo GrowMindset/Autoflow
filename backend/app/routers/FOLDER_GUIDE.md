@@ -22,10 +22,10 @@ Do not put here:
 # API Request & Response Payload Contract
 # Workflow Automation Platform
 
-> **Owner:** Ishika
-> **Last updated:** April 2026
-> **Version:** 1.0
-> **Status:** ✅ Locked for Phase 1 & 2 — Phase 3 contracts defined, implementation pending
+> **Owner:** Ishika    
+> **Last updated:** April 2026   
+> **Version:** 1.0    
+> **Status:** ✅ Locked for Phase 1 & 2 — Phase 3 contracts defined, implementation pending    
 
 ---
 
@@ -67,7 +67,7 @@ Do not put here:
 This document is the **single source of truth for all API request and response shapes** across the platform.
 
 - **Person 1 (Anokhi/ Backend)** — implement endpoints to match these exact shapes
-- **Person 2 (Ishika)** — owns this document, implements Workflow CRUD + node runners
+- **Person 2 (Ishika / Backend)** — owns this document, implements Workflow CRUD + node runners
 - **Person 3 (Anil / Frontend)** — consume these exact shapes, do not expect fields not listed here
 
 > **Rule:** If a field is not in this document, it does not exist in the API. If you need a new field, discuss with the team and update this document first — before writing any code.
