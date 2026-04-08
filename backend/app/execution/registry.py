@@ -34,7 +34,7 @@ class RunnerRegistry:
 
     @staticmethod
     def _build_manual_trigger() -> Any:
-        from backend.app.execution.runners.triggers.manual_trigger import (
+        from app.execution.runners.triggers.manual_trigger import (
             ManualTriggerRunner,
         )
 
@@ -42,13 +42,13 @@ class RunnerRegistry:
 
     @staticmethod
     def _build_form_trigger() -> Any:
-        from backend.app.execution.runners.triggers.form_trigger import FormTriggerRunner
+        from app.execution.runners.triggers.form_trigger import FormTriggerRunner
 
         return FormTriggerRunner()
 
     @staticmethod
     def _build_webhook_trigger() -> Any:
-        from backend.app.execution.runners.triggers.webhook_trigger import (
+        from app.execution.runners.triggers.webhook_trigger import (
             WebhookTriggerRunner,
         )
 
@@ -56,37 +56,37 @@ class RunnerRegistry:
 
     @staticmethod
     def _build_if_else() -> Any:
-        from backend.app.execution.runners.nodes.if_else import IfElseRunner
+        from app.execution.runners.nodes.if_else import IfElseRunner
 
         return IfElseRunner()
 
     @staticmethod
     def _build_switch() -> Any:
-        from backend.app.execution.runners.nodes.switch import SwitchRunner
+        from app.execution.runners.nodes.switch import SwitchRunner
 
         return SwitchRunner()
 
     @staticmethod
     def _build_filter() -> Any:
-        from backend.app.execution.runners.nodes.filter import FilterRunner
+        from app.execution.runners.nodes.filter import FilterRunner
 
         return FilterRunner()
 
     @staticmethod
     def _build_merge() -> Any:
-        from backend.app.execution.runners.nodes.merge import MergeRunner
+        from app.execution.runners.nodes.merge import MergeRunner
 
         return MergeRunner()
 
     @staticmethod
     def _build_aggregate() -> Any:
-        from backend.app.execution.runners.nodes.aggregate import AggregateRunner
+        from app.execution.runners.nodes.aggregate import AggregateRunner
 
         return AggregateRunner()
 
     @staticmethod
     def _build_datetime_format() -> Any:
-        from backend.app.execution.runners.nodes.datetime_format import (
+        from app.execution.runners.nodes.datetime_format import (
             DateTimeFormatRunner,
         )
 
@@ -94,13 +94,13 @@ class RunnerRegistry:
 
     @staticmethod
     def _build_split_in() -> Any:
-        from backend.app.execution.runners.nodes.split_in import SplitInRunner
+        from app.execution.runners.nodes.split_in import SplitInRunner
 
         return SplitInRunner()
 
     @staticmethod
     def _build_split_out() -> Any:
-        from backend.app.execution.runners.nodes.split_out import SplitOutRunner
+        from app.execution.runners.nodes.split_out import SplitOutRunner
 
         return SplitOutRunner()
 

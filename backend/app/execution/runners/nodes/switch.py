@@ -1,5 +1,5 @@
 from typing import Any
-from backend.app.execution.runners.nodes.if_else import evaluate_condition, get_nested_value
+from app.execution.runners.nodes.if_else import evaluate_condition, get_nested_value
 
 
 class SwitchRunner:

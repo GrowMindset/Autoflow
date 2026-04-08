@@ -1,16 +1,16 @@
 import unittest
 
-from backend.app.execution.runners.nodes.aggregate import AggregateRunner
-from backend.app.execution.runners.nodes.datetime_format import DateTimeFormatRunner
-from backend.app.execution.runners.nodes.filter import FilterRunner
-from backend.app.execution.runners.nodes.if_else import IfElseRunner
-from backend.app.execution.runners.nodes.merge import MergeRunner
-from backend.app.execution.runners.nodes.split_in import SplitInRunner
-from backend.app.execution.runners.nodes.split_out import SplitOutRunner
-from backend.app.execution.runners.nodes.switch import SwitchRunner
-from backend.app.execution.runners.triggers.form_trigger import FormTriggerRunner
-from backend.app.execution.runners.triggers.manual_trigger import ManualTriggerRunner
-from backend.app.execution.runners.triggers.webhook_trigger import WebhookTriggerRunner
+from app.execution.runners.nodes.aggregate import AggregateRunner
+from app.execution.runners.nodes.datetime_format import DateTimeFormatRunner
+from app.execution.runners.nodes.filter import FilterRunner
+from app.execution.runners.nodes.if_else import IfElseRunner
+from app.execution.runners.nodes.merge import MergeRunner
+from app.execution.runners.nodes.split_in import SplitInRunner
+from app.execution.runners.nodes.split_out import SplitOutRunner
+from app.execution.runners.nodes.switch import SwitchRunner
+from app.execution.runners.triggers.form_trigger import FormTriggerRunner
+from app.execution.runners.triggers.manual_trigger import ManualTriggerRunner
+from app.execution.runners.triggers.webhook_trigger import WebhookTriggerRunner
 
 
 class RunnerTests(unittest.TestCase):

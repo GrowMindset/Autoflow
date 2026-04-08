@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from backend.app.execution.runners.nodes.if_else import get_nested_value
+from app.execution.runners.nodes.if_else import get_nested_value
 
 
 class SplitInRunner:

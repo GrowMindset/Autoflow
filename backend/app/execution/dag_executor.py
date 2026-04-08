@@ -1,8 +1,8 @@
 from collections import deque
 from typing import Any
 
-from backend.app.execution.context import ExecutionContext
-from backend.app.execution.registry import RunnerRegistry
+from app.execution.context import ExecutionContext
+from app.execution.registry import RunnerRegistry
 
 
 TRIGGER_NODE_TYPES = {"manual_trigger", "form_trigger", "webhook_trigger"}

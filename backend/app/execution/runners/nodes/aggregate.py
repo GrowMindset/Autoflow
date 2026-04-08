@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from backend.app.execution.runners.nodes.if_else import get_nested_value
+from app.execution.runners.nodes.if_else import get_nested_value
 
 
 class AggregateRunner:
@@ -84,11 +84,11 @@ class AggregateRunner:
         return {output_key: result}
 
 
-# Testing
+# # Testing
 # runner = AggregateRunner()
 # result = runner.run(
 #     config={"input_key": "orders", "group_by": "country", "field": "amount", "operation": "sum", "output_key": "totals"},
 #     input_data={"orders": [{"country": "IN", "amount": 300}, {"country": "IN", "amount": 700}, {"country": "US", "amount": 500}]}
 # )
 # print(result)
-# # → {"totals": {"IN": 1000, "US": 500}}
+# # → {"totals": 1500}

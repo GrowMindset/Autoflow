@@ -1,6 +1,6 @@
 import unittest
 
-from backend.app.execution.dag_executor import DagExecutor
+from app.execution.dag_executor import DagExecutor
 
 
 class DagExecutorTests(unittest.TestCase):
