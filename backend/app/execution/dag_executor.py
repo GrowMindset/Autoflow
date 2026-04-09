@@ -10,6 +10,22 @@ BRANCHING_NODE_TYPES = {"if_else", "switch"}
 UNSUPPORTED_RUNTIME_NODE_TYPES = set()
 
 
+class NodeExecutionError(Exception):
+    def __init__(
+        self,
+        *,
+        node_id: str,
+        node_type: str,
+        input_data: Any,
+        original_exception: Exception,
+    ) -> None:
+        self.node_id = node_id
+        self.node_type = node_type
+        self.input_data = input_data
+        self.original_exception = original_exception
+        super().__init__(str(original_exception))
+
+
 class DagExecutor:
     """Executes dummy workflow JSON in memory."""
 
@@ -183,7 +199,15 @@ class DagExecutor:
         runner = self.registry.get_runner(node_type)
         config = node.get("config", {})
         context.node_inputs[node_id] = input_data
-        output_data = runner.run(config=config, input_data=input_data)
+        try:
+            output_data = runner.run(config=config, input_data=input_data)
+        except Exception as exc:
+            raise NodeExecutionError(
+                node_id=node_id,
+                node_type=node_type,
+                input_data=input_data,
+                original_exception=exc,
+            ) from exc
         output_data = self._preserve_internal_fields(
             node_type=node_type,
             input_data=input_data,
@@ -219,7 +243,15 @@ class DagExecutor:
         runner = self.registry.get_runner("split_in")
         config = context.nodes_by_id[node_id].get("config", {})
         context.node_inputs[node_id] = input_data
-        split_outputs = runner.run(config=config, input_data=input_data)
+        try:
+            split_outputs = runner.run(config=config, input_data=input_data)
+        except Exception as exc:
+            raise NodeExecutionError(
+                node_id=node_id,
+                node_type="split_in",
+                input_data=input_data,
+                original_exception=exc,
+            ) from exc
         context.node_outputs[node_id] = split_outputs
         context.visited_nodes.append(node_id)
         context.node_states[node_id] = "completed"
@@ -268,7 +300,15 @@ class DagExecutor:
         runner = self.registry.get_runner(node_type)
         config = node.get("config", {})
         context.node_inputs[node_id] = input_data
-        output_data = runner.run(config=config, input_data=input_data)
+        try:
+            output_data = runner.run(config=config, input_data=input_data)
+        except Exception as exc:
+            raise NodeExecutionError(
+                node_id=node_id,
+                node_type=node_type,
+                input_data=input_data,
+                original_exception=exc,
+            ) from exc
         output_data = self._preserve_internal_fields(
             node_type=node_type,
             input_data=input_data,
@@ -304,7 +344,15 @@ class DagExecutor:
         runner = self.registry.get_runner("split_out")
         config = context.nodes_by_id[node_id].get("config", {})
         context.node_inputs[node_id] = collected_inputs
-        output_data = runner.run(config=config, input_data=collected_inputs)
+        try:
+            output_data = runner.run(config=config, input_data=collected_inputs)
+        except Exception as exc:
+            raise NodeExecutionError(
+                node_id=node_id,
+                node_type="split_out",
+                input_data=collected_inputs,
+                original_exception=exc,
+            ) from exc
         context.node_outputs[node_id] = output_data
         context.visited_nodes.append(node_id)
         context.node_states[node_id] = "completed"
@@ -356,7 +404,15 @@ class DagExecutor:
         config = context.nodes_by_id[node_id].get("config", {})
         merge_inputs = list(context.pending_inputs[node_id])
         context.node_inputs[node_id] = merge_inputs
-        output_data = runner.run(config=config, input_data=merge_inputs)
+        try:
+            output_data = runner.run(config=config, input_data=merge_inputs)
+        except Exception as exc:
+            raise NodeExecutionError(
+                node_id=node_id,
+                node_type="merge",
+                input_data=merge_inputs,
+                original_exception=exc,
+            ) from exc
         context.node_outputs[node_id] = output_data
         context.visited_nodes.append(node_id)
         context.node_states[node_id] = "completed"

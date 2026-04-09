@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from secrets import token_urlsafe
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -24,6 +25,7 @@ class WorkflowService:
         )
         self.db.add(workflow)
         await self.db.commit()
+        await self._ensure_webhook_endpoints(workflow)
         await self.db.refresh(workflow)
         return workflow
 
@@ -76,8 +78,15 @@ class WorkflowService:
                 .where(WebhookEndpoint.workflow_id == workflow.id)
                 .values(is_active=False)
             )
+        elif updates.get("is_published") is True:
+            await self.db.execute(
+                update(WebhookEndpoint)
+                .where(WebhookEndpoint.workflow_id == workflow.id)
+                .values(is_active=True)
+            )
 
         await self.db.commit()
+        await self._ensure_webhook_endpoints(workflow)
         await self.db.refresh(workflow)
         return workflow
 
@@ -89,3 +98,34 @@ class WorkflowService:
         await self.db.delete(workflow)
         await self.db.commit()
         return True
+
+    async def _ensure_webhook_endpoints(self, workflow: Workflow) -> None:
+        trigger_node_ids = [
+            node["id"]
+            for node in workflow.definition.get("nodes", [])
+            if node.get("type") == "webhook_trigger"
+        ]
+        if not trigger_node_ids:
+            return
+
+        existing = (
+            await self.db.scalars(
+                select(WebhookEndpoint).where(WebhookEndpoint.workflow_id == workflow.id)
+            )
+        ).all()
+        existing_by_node_id = {webhook.node_id: webhook for webhook in existing}
+
+        for node_id in trigger_node_ids:
+            if node_id in existing_by_node_id:
+                continue
+            self.db.add(
+                WebhookEndpoint(
+                    workflow_id=workflow.id,
+                    user_id=workflow.user_id,
+                    node_id=node_id,
+                    path_token=token_urlsafe(16),
+                    is_active=workflow.is_published,
+                )
+            )
+
+        await self.db.commit()
