@@ -402,6 +402,33 @@ class DagExecutorTests(unittest.TestCase):
             },
         )
 
+    def test_execute_unknown_frontend_node_as_dummy_pass_through(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "send_gmail_message", "config": {}},
+                {"id": "n3", "type": "aggregate", "config": {
+                    "input_key": "orders",
+                    "operation": "count",
+                    "output_key": "order_count",
+                }},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+            ],
+        }
+
+        result = self.executor.execute(
+            definition=definition,
+            initial_payload={"orders": [{"id": 1}, {"id": 2}]},
+        )
+
+        self.assertEqual(result["visited_nodes"], ["n1", "n2", "n3"])
+        self.assertEqual(result["node_outputs"]["n2"]["dummy_node_executed"], True)
+        self.assertEqual(result["node_outputs"]["n2"]["dummy_node_type"], "send_gmail_message")
+        self.assertEqual(result["node_outputs"]["n3"], {"order_count": 2})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,7 @@ class ASGITestClient:
         path: str,
         *,
         json_body: Any | None = None,
+        data: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
         parsed = urlsplit(path)
@@ -24,6 +25,10 @@ class ASGITestClient:
         if json_body is not None:
             body = json.dumps(json_body).encode("utf-8")
             request_headers.append((b"content-type", b"application/json"))
+        elif data is not None:
+            from urllib.parse import urlencode
+            body = urlencode(data).encode("utf-8")
+            request_headers.append((b"content-type", b"application/x-www-form-urlencoded"))
 
         for key, value in (headers or {}).items():
             request_headers.append((key.lower().encode("latin-1"), value.encode("latin-1")))
@@ -76,9 +81,10 @@ class ASGITestClient:
         path: str,
         *,
         json_body: Any | None = None,
+        data: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> tuple[int, Any]:
-        return await self._json_request("POST", path, json_body=json_body, headers=headers)
+        return await self._json_request("POST", path, json_body=json_body, data=data, headers=headers)
 
     async def put(
         self,
@@ -100,10 +106,11 @@ class ASGITestClient:
         path: str,
         *,
         json_body: Any | None = None,
+        data: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> tuple[int, Any]:
         status_code, response_headers, body = await self.request(
-            method, path, json_body=json_body, headers=headers
+            method, path, json_body=json_body, data=data, headers=headers
         )
         content_type = response_headers.get("content-type", "")
         if "application/json" in content_type and body:

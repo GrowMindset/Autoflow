@@ -182,6 +182,82 @@ async def _run_execution(
         await engine.dispose()
 
 
+async def _run_node_test(
+    *,
+    execution_id: str,
+    node_id: str,
+    input_data: dict[str, Any] | None = None,
+) -> None:
+    session_factory = _create_task_session_factory()
+    engine = session_factory.kw["bind"]
+
+    try:
+        async with session_factory() as db:
+            execution = await db.scalar(
+                select(Execution).where(Execution.id == UUID(execution_id))
+            )
+            if execution is None:
+                raise ValueError(f"Execution '{execution_id}' was not found")
+
+            workflow = await db.scalar(
+                select(Workflow).where(
+                    Workflow.id == execution.workflow_id,
+                    Workflow.user_id == execution.user_id,
+                )
+            )
+            if workflow is None:
+                raise ValueError(f"Workflow '{execution.workflow_id}' not found")
+
+            # Find the node config
+            node_def = next((n for n in workflow.definition.get("nodes", []) if n["id"] == node_id), None)
+            if not node_def:
+                raise ValueError(f"Node '{node_id}' not found in definition")
+
+            execution.status = "RUNNING"
+            execution.started_at = _utcnow()
+
+            node_row = await db.scalar(
+                select(NodeExecution).where(
+                    NodeExecution.execution_id == execution.id,
+                    NodeExecution.node_id == node_id
+                )
+            )
+            if node_row is None:
+                node_row = NodeExecution(
+                    execution_id=execution.id,
+                    node_id=node_id,
+                    node_type=node_def["type"],
+                )
+                db.add(node_row)
+
+            node_row.status = "RUNNING"
+            node_row.started_at = execution.started_at
+            node_row.input_data = input_data
+            await db.commit()
+
+            # Execute single node
+            res = DagExecutor().execute_node(
+                node_id=node_id,
+                node_type=node_def["type"],
+                config=node_def.get("config", {}),
+                input_data=input_data,
+            )
+
+            # Update results
+            node_row.status = res["status"]
+            node_row.output_data = res["output_data"]
+            node_row.error_message = res["error_message"]
+            node_row.finished_at = _utcnow()
+
+            execution.status = res["status"]
+            execution.finished_at = node_row.finished_at
+            execution.error_message = res["error_message"]
+
+            await db.commit()
+    finally:
+        await engine.dispose()
+
+
 @celery_app.task(name="app.tasks.execute_workflow.run_execution")
 def run_execution(
     execution_id: str,
@@ -193,5 +269,20 @@ def run_execution(
             execution_id=execution_id,
             initial_payload=initial_payload,
             start_node_id=start_node_id,
+        )
+    )
+
+
+@celery_app.task(name="app.tasks.execute_workflow.run_node_test")
+def run_node_test(
+    execution_id: str,
+    node_id: str,
+    input_data: dict[str, Any] | None = None,
+) -> None:
+    asyncio.run(
+        _run_node_test(
+            execution_id=execution_id,
+            node_id=node_id,
+            input_data=input_data,
         )
     )

@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from app.execution.runners.nodes.if_else import get_nested_value
+from app.execution.utils import get_nested_value
 
 
 class AggregateRunner:
@@ -42,7 +42,7 @@ class AggregateRunner:
                 f"AggregateRunner: 'field' is required for operation '{operation}'"
             )
 
-        items = get_nested_value(input_data, input_key)
+        items = get_nested_value(input_data, input_key, runner_name="AggregateRunner")
         if not isinstance(items, list):
             raise ValueError(
                 f"AggregateRunner: '{input_key}' must be a list, got {type(items).__name__}"
@@ -56,7 +56,7 @@ class AggregateRunner:
             if not isinstance(item, dict):
                 raise ValueError("AggregateRunner: Each list item must be a dict")
 
-            value = get_nested_value(item, field)
+            value = get_nested_value(item, field, runner_name="AggregateRunner")
             try:
                 number = float(value)
             except (ValueError, TypeError):
@@ -82,13 +82,3 @@ class AggregateRunner:
             result = sum(values) / len(values)
 
         return {output_key: result}
-
-
-# # Testing
-# runner = AggregateRunner()
-# result = runner.run(
-#     config={"input_key": "orders", "group_by": "country", "field": "amount", "operation": "sum", "output_key": "totals"},
-#     input_data={"orders": [{"country": "IN", "amount": 300}, {"country": "IN", "amount": 700}, {"country": "US", "amount": 500}]}
-# )
-# print(result)
-# # → {"totals": 1500}

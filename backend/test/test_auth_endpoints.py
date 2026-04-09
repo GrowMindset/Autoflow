@@ -127,8 +127,8 @@ class AuthEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         status_code, payload = await self.client.post(
             "/auth/login",
-            json_body={
-                "email": "login@example.com",
+            data={
+                "username": "login@example.com",
                 "password": "mypassword123",
             },
         )
@@ -150,8 +150,8 @@ class AuthEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         wrong_password_status, wrong_password_payload = await self.client.post(
             "/auth/login",
-            json_body={
-                "email": "badlogin@example.com",
+            data={
+                "username": "badlogin@example.com",
                 "password": "wrong-password",
             },
         )
@@ -160,8 +160,8 @@ class AuthEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         missing_user_status, missing_user_payload = await self.client.post(
             "/auth/login",
-            json_body={
-                "email": "missing@example.com",
+            data={
+                "username": "missing@example.com",
                 "password": "mypassword123",
             },
         )
@@ -179,8 +179,8 @@ class AuthEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
         login_status, login_payload = await self.client.post(
             "/auth/login",
-            json_body={
-                "email": "me@example.com",
+            data={
+                "username": "me@example.com",
                 "password": "mypassword123",
             },
         )

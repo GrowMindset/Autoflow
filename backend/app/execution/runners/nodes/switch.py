@@ -1,5 +1,5 @@
 from typing import Any
-from app.execution.runners.nodes.if_else import evaluate_condition, get_nested_value
+from app.execution.utils import evaluate_condition, get_nested_value
 
 
 class SwitchRunner:
@@ -52,7 +52,7 @@ class SwitchRunner:
                 )
 
         # --- Step 3: Get field value from input_data ---
-        field_value = get_nested_value(input_data, field)
+        field_value = get_nested_value(input_data, field, runner_name="SwitchRunner")
 
         # --- Step 4: Evaluate cases one by one (first match wins) ---
         matched_branch = None

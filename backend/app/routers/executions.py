@@ -17,6 +17,7 @@ from app.schemas.executions import (
     ExecutionStatus,
     NodeExecutionResult,
     RunFormRequest,
+    RunNodeTestRequest,
     WebhookEnqueueResponse,
 )
 from app.services.execution_service import ExecutionService
@@ -79,6 +80,36 @@ async def run_workflow_form(
             else status.HTTP_400_BAD_REQUEST
         )
         raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    return ExecutionEnqueueResponse(
+        execution_id=execution.id,
+        workflow_id=execution.workflow_id,
+        status=execution.status,
+        triggered_by=execution.triggered_by,
+    )
+
+
+@router.post(
+    "/workflows/{workflow_id}/nodes/{node_id}/execute",
+    response_model=ExecutionEnqueueResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def run_node_execute(
+    workflow_id: UUID,
+    node_id: str,
+    payload: RunNodeTestRequest,
+    current_user: User = Depends(get_current_user),
+    execution_service: ExecutionService = Depends(get_execution_service),
+) -> ExecutionEnqueueResponse:
+    try:
+        execution = await execution_service.create_node_test_execution(
+            workflow_id=workflow_id,
+            node_id=node_id,
+            user=current_user,
+            input_data=payload.input_data,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     return ExecutionEnqueueResponse(
         execution_id=execution.id,

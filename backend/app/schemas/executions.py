@@ -8,11 +8,15 @@ from pydantic import BaseModel
 
 
 ExecutionStatus = Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED"]
-TriggeredBy = Literal["manual", "form", "webhook"]
+TriggeredBy = str
 
 
 class RunFormRequest(BaseModel):
     form_data: dict[str, str]
+
+
+class RunNodeTestRequest(BaseModel):
+    input_data: dict[str, Any] | None = None
 
 
 class ExecutionEnqueueResponse(BaseModel):

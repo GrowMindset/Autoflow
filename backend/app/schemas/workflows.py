@@ -7,6 +7,92 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
+    "manual_trigger": {},
+    "form_trigger": {
+        "form_title": "Form Submission",
+        "form_description": "",
+        "fields": [
+            {
+                "name": "email",
+                "label": "Email",
+                "type": "email",
+                "required": True,
+            }
+        ],
+    },
+    "webhook_trigger": {},
+    "workflow_trigger": {},
+    "get_gmail_message": {
+        "query": "",
+        "limit": "",
+    },
+    "send_gmail_message": {
+        "to": "",
+        "subject": "",
+        "body": "",
+    },
+    "create_google_sheets": {
+        "title": "",
+    },
+    "search_update_google_sheets": {
+        "spreadsheet_id": "",
+        "sheet_name": "",
+        "search_column": "",
+        "search_value": "",
+    },
+    "telegram": {
+        "chat_id": "",
+        "message": "",
+    },
+    "whatsapp": {
+        "phone_number": "",
+        "template_name": "",
+    },
+    "linkedin": {
+        "content": "",
+        "visibility": "",
+    },
+    "if_else": {
+        "field": "",
+        "operator": "equals",
+        "value": "",
+    },
+    "switch": {
+        "field": "",
+        "cases": [],
+        "default_case": "default",
+    },
+    "merge": {},
+    "filter": {
+        "input_key": "",
+        "field": "",
+        "operator": "equals",
+        "value": "",
+    },
+    "datetime_format": {
+        "field": "",
+        "output_format": "%Y-%m-%d",
+    },
+    "split_in": {
+        "input_key": "",
+    },
+    "split_out": {
+        "output_key": "results",
+    },
+    "aggregate": {
+        "input_key": "",
+        "field": "",
+        "operation": "sum",
+        "output_key": "",
+    },
+    "ai_agent": {
+        "prompt": "",
+        "model": "",
+    },
+}
+
+
 class WorkflowNodePosition(BaseModel):
     x: float | int
     y: float | int
@@ -18,6 +104,18 @@ class WorkflowNodeDefinition(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     position: WorkflowNodePosition
     config: dict[str, Any]
+
+    @model_validator(mode="after")
+    def normalize_config(self) -> "WorkflowNodeDefinition":
+        defaults = NODE_CONFIG_DEFAULTS.get(self.type)
+        if defaults is None:
+            return self
+
+        self.config = {
+            **defaults,
+            **self.config,
+        }
+        return self
 
 
 class WorkflowEdgeDefinition(BaseModel):
@@ -42,9 +140,30 @@ class WorkflowDefinition(BaseModel):
             raise ValueError("Workflow definition contains duplicate edge ids")
 
         node_id_set = set(node_ids)
+        nodes_by_id = {node.id: node for node in self.nodes}
         for edge in self.edges:
             if edge.source not in node_id_set or edge.target not in node_id_set:
                 raise ValueError("Workflow definition contains edges with unknown nodes")
+
+            source_node = nodes_by_id[edge.source]
+            if source_node.type == "if_else" and edge.branch not in {None, "true", "false"}:
+                raise ValueError(
+                    "Workflow definition contains invalid if_else branch labels"
+                )
+            if source_node.type == "switch":
+                switch_cases = source_node.config.get("cases", [])
+                allowed_branches = {
+                    case.get("label")
+                    for case in switch_cases
+                    if isinstance(case, dict) and case.get("label")
+                }
+                default_case = source_node.config.get("default_case")
+                if default_case:
+                    allowed_branches.add(default_case)
+                if edge.branch is not None and edge.branch not in allowed_branches:
+                    raise ValueError(
+                        "Workflow definition contains switch edges with unknown branch labels"
+                    )
         return self
 
 

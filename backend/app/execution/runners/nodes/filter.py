@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from app.execution.runners.nodes.if_else import evaluate_condition, get_nested_value
+from app.execution.utils import evaluate_condition, get_nested_value
 
 
 def set_nested_value(data: Dict[str, Any], field_path: str, value: Any) -> Dict[str, Any]:
@@ -55,7 +55,7 @@ class FilterRunner:
         if value is None:
             raise ValueError("FilterRunner: 'value' is missing in config")
 
-        array_value = get_nested_value(input_data, input_key)
+        array_value = get_nested_value(input_data, input_key, runner_name="FilterRunner")
         if not isinstance(array_value, list):
             raise ValueError(
                 f"FilterRunner: '{input_key}' must be a list, got {type(array_value).__name__}"
@@ -67,25 +67,8 @@ class FilterRunner:
                 raise ValueError(
                     "FilterRunner: Each element in the input list must be a dict"
                 )
-            field_value = get_nested_value(item, field)
+            field_value = get_nested_value(item, field, runner_name="FilterRunner")
             if evaluate_condition(field_value, operator, value):
                 filtered_items.append(item)
 
         return set_nested_value(input_data, input_key, filtered_items)
-
-
-# Testing
-# runner = FilterRunner()
-# result = runner.run(
-#     config={"input_key": "items", "field": "amount", "operator": "greater_than", "value": "500"},
-#     input_data={"items": [{"amount": 300}, {"amount": 700}, {"amount": 150}], "customer": "A"}
-# )
-# print(result)
-# # → {"items": [{"amount": 700}], "customer": "A"}
-
-# result = runner.run(
-#     config={"input_key": "items", "field": "status", "operator": "equals", "value": "ok"},
-#     input_data={"items": [{"status": "ok"}, {"status": "fail"}]}
-# )
-# print(result)
-# # → {"items": [{"status": "ok"}]}

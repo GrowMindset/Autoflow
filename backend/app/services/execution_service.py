@@ -13,7 +13,7 @@ from app.models.user import User
 from app.models.webhook import WebhookEndpoint
 from app.models.workflows import Workflow
 from app.schemas.executions import ExecutionStatus, TriggeredBy
-from app.tasks.execute_workflow import run_execution
+from app.tasks.execute_workflow import run_execution, run_node_test
 
 
 class ExecutionService:
@@ -97,6 +97,62 @@ class ExecutionService:
             initial_payload=payload,
             start_node_id=webhook.node_id,
         )
+
+    async def create_node_test_execution(
+        self,
+        *,
+        workflow_id: UUID,
+        node_id: str,
+        user: User,
+        input_data: dict[str, Any] | None = None,
+    ) -> Execution:
+        workflow = await self._get_owned_workflow(workflow_id=workflow_id, user_id=user.id)
+        if workflow is None:
+            raise ValueError("Workflow not found")
+
+        # Find the node to get its type for 'triggered_by'
+        node = next((n for n in workflow.definition.get("nodes", []) if n["id"] == node_id), None)
+        if node is None:
+            raise ValueError(f"Node '{node_id}' not found in workflow")
+
+        node_type = node.get("type", "unknown")
+
+        execution = Execution(
+            workflow_id=workflow.id,
+            user_id=user.id,
+            status="PENDING",
+            triggered_by=node_type,  # User requested node name/type as trigger type
+            started_at=None,
+            finished_at=None,
+            error_message=None,
+        )
+        self.db.add(execution)
+        await self.db.flush()
+
+        # Create only the target node execution row
+        self.db.add(
+            NodeExecution(
+                execution_id=execution.id,
+                node_id=node_id,
+                node_type=node_type,
+                status="PENDING",
+                input_data=input_data,
+                output_data=None,
+                error_message=None,
+                started_at=None,
+                finished_at=None,
+            )
+        )
+
+        await self.db.commit()
+        await self.db.refresh(execution)
+
+        run_node_test.delay(
+            execution_id=str(execution.id),
+            node_id=node_id,
+            input_data=input_data,
+        )
+        return execution
 
     async def get_execution_detail(
         self,

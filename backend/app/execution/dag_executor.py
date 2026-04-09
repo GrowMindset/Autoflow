@@ -70,6 +70,36 @@ class DagExecutor:
             "terminal_outputs": terminal_outputs,
         }
 
+    def execute_node(
+        self,
+        *,
+        node_id: str,
+        node_type: str,
+        config: dict[str, Any],
+        input_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Executes a single node in isolation for testing."""
+        runner = self.registry.get_runner(node_type)
+        try:
+            output_data = runner.run(config=config, input_data=input_data)
+            return {
+                "node_id": node_id,
+                "node_type": node_type,
+                "input_data": input_data,
+                "output_data": output_data,
+                "status": "SUCCEEDED",
+                "error_message": None,
+            }
+        except Exception as exc:
+            return {
+                "node_id": node_id,
+                "node_type": node_type,
+                "input_data": input_data,
+                "output_data": None,
+                "status": "FAILED",
+                "error_message": str(exc),
+            }
+
     def build_context(self, definition: dict[str, Any]) -> ExecutionContext:
         nodes = definition.get("nodes", [])
         edges = definition.get("edges", [])

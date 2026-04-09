@@ -26,11 +26,19 @@ class RunnerRegistry:
 
         factory = self._runner_factories.get(node_type)
         if factory is None:
-            raise ValueError(f"Unsupported node type: {node_type}")
+            runner = self._build_dummy(node_type)
+            self._cache[node_type] = runner
+            return runner
 
         runner = factory()
         self._cache[node_type] = runner
         return runner
+
+    @staticmethod
+    def _build_dummy(node_type: str) -> Any:
+        from app.execution.runners.nodes.dummy import DummyNodeRunner
+
+        return DummyNodeRunner(node_type=node_type)
 
     @staticmethod
     def _build_manual_trigger() -> Any:

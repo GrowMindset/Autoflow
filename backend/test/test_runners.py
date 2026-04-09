@@ -2,6 +2,7 @@ import unittest
 
 from app.execution.runners.nodes.aggregate import AggregateRunner
 from app.execution.runners.nodes.datetime_format import DateTimeFormatRunner
+from app.execution.runners.nodes.dummy import DummyNodeRunner
 from app.execution.runners.nodes.filter import FilterRunner
 from app.execution.runners.nodes.if_else import IfElseRunner
 from app.execution.runners.nodes.merge import MergeRunner
@@ -252,6 +253,23 @@ class RunnerTests(unittest.TestCase):
                 config={"input_key": "orders", "field": "amount", "operation": "min"},
                 input_data={"orders": []},
             )
+
+    def test_dummy_node_runner_passes_input_to_next_node(self):
+        runner = DummyNodeRunner("send_gmail_message")
+        result = runner.run(
+            config={},
+            input_data={"email": "user@example.com", "country": "IN"},
+        )
+        self.assertEqual(
+            result,
+            {
+                "email": "user@example.com",
+                "country": "IN",
+                "dummy_node_executed": True,
+                "dummy_node_type": "send_gmail_message",
+                "dummy_node_message": "Dummy node executed for 'send_gmail_message'",
+            },
+        )
 
     def test_manual_trigger_runner_returns_metadata_with_no_input(self):
         runner = ManualTriggerRunner()

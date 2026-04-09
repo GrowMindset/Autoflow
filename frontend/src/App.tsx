@@ -1,0 +1,31 @@
+import React from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import MainLayout from './components/layout/MainLayout';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
+import ProtectedRoute from './components/auth/ProtectedRoute';
+import { Toaster } from 'react-hot-toast';
+
+const App: React.FC = () => {
+  return (
+    <BrowserRouter>
+      <Routes>
+        {/* Public Routes */}
+        <Route path="/login" element={<Login />} />
+        <Route path="/signup" element={<Signup />} />
+
+        {/* Protected Routes */}
+        <Route element={<ProtectedRoute />}>
+          <Route path="/" element={<MainLayout />} />
+          <Route path="/app/*" element={<MainLayout />} />
+        </Route>
+
+        {/* Fallback */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+      <Toaster position="bottom-right" />
+    </BrowserRouter>
+  );
+};
+
+export default App;

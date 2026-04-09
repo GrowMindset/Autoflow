@@ -5,6 +5,7 @@ from .filter import FilterRunner
 from .split_in import SplitInRunner
 from .split_out import SplitOutRunner
 from .aggregate import AggregateRunner
+from .dummy import DummyNodeRunner
 
 try:
     from .datetime_format import DateTimeFormatRunner
@@ -19,6 +20,7 @@ __all__ = [
     "SplitInRunner",
     "SplitOutRunner",
     "AggregateRunner",
+    "DummyNodeRunner",
 ]
 
 if DateTimeFormatRunner is not None:
