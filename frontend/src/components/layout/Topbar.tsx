@@ -6,27 +6,36 @@ import toast from 'react-hot-toast';
 
 interface TopbarProps {
   workflowName: string;
+  workflowDescription: string;
   onRename: (newName: string) => void;
+  onDescribeWorkflow: (desc: string) => void;
   onToggleNodePalette: () => void;
   isNodePaletteOpen: boolean;
   onNewWorkflow: () => void;
   onSave: () => void;
+  saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
 }
 
-const Topbar: React.FC<TopbarProps> = ({ 
-  workflowName, 
-  onRename, 
-  onToggleNodePalette, 
+const Topbar: React.FC<TopbarProps> = ({
+  workflowName,
+  workflowDescription,
+  onRename,
+  onDescribeWorkflow,
+  onToggleNodePalette,
   isNodePaletteOpen,
   onNewWorkflow,
-  onSave 
+  onSave,
+  saveStatus = 'idle'
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [tempName, setTempName] = useState(workflowName);
+  const [isEditingDesc, setIsEditingDesc] = useState(false);
+  const [tempDesc, setTempDesc] = useState(workflowDescription);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const descRef = useRef<HTMLInputElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
-  
+
   const user = useAuthStore((state) => state.user);
   const clearAuth = useAuthStore((state) => state.clearAuth);
   const navigate = useNavigate();
@@ -36,11 +45,22 @@ const Topbar: React.FC<TopbarProps> = ({
   }, [workflowName]);
 
   useEffect(() => {
+    setTempDesc(workflowDescription);
+  }, [workflowDescription]);
+
+  useEffect(() => {
     if (isEditing && inputRef.current) {
-        inputRef.current.focus();
-        inputRef.current.select();
+      inputRef.current.focus();
+      inputRef.current.select();
     }
   }, [isEditing]);
+
+  useEffect(() => {
+    if (isEditingDesc && descRef.current) {
+      descRef.current.focus();
+      descRef.current.select();
+    }
+  }, [isEditingDesc]);
 
   // Handle clicks outside user menu to close it
   useEffect(() => {
@@ -56,17 +76,30 @@ const Topbar: React.FC<TopbarProps> = ({
   const handleBlur = () => {
     setIsEditing(false);
     if (tempName.trim()) {
-        onRename(tempName.trim());
+      onRename(tempName.trim());
     } else {
-        setTempName(workflowName);
+      setTempName(workflowName);
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') handleBlur();
     if (e.key === 'Escape') {
-        setTempName(workflowName);
-        setIsEditing(false);
+      setTempName(workflowName);
+      setIsEditing(false);
+    }
+  };
+
+  const handleDescBlur = () => {
+    setIsEditingDesc(false);
+    onDescribeWorkflow(tempDesc.trim());
+  };
+
+  const handleDescKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') handleDescBlur();
+    if (e.key === 'Escape') {
+      setTempDesc(workflowDescription);
+      setIsEditingDesc(false);
     }
   };
 
@@ -78,24 +111,52 @@ const Topbar: React.FC<TopbarProps> = ({
 
   return (
     <header className="h-14 bg-white border-b border-slate-200 flex items-center px-6 sticky top-0 z-40">
-      <div className="flex-1 flex items-center gap-1">
+      <div className="flex-1 flex flex-col justify-center gap-0">
+        {/* Workflow Name */}
         {isEditing ? (
           <input
             ref={inputRef}
             type="text"
-            className="text-base font-bold text-slate-800 bg-slate-50 border-b-2 border-blue-500 outline-none px-2 py-0.5"
+            className="text-sm font-bold text-slate-800 bg-slate-50 border-b-2 border-blue-500 outline-none px-2 py-0.5 w-fit max-w-xs"
             value={tempName}
             onChange={(e) => setTempName(e.target.value)}
             onBlur={handleBlur}
             onKeyDown={handleKeyDown}
           />
         ) : (
-          <div 
-            className="flex items-center gap-2 group cursor-pointer px-2 py-1 hover:bg-slate-50 rounded transition-colors"
+          <div
+            className="flex items-center gap-1.5 group cursor-pointer hover:bg-slate-50 rounded px-2 py-0.5 transition-colors w-fit"
             onClick={() => setIsEditing(true)}
           >
-            <h2 className="text-base font-bold text-slate-800 tracking-tight">{workflowName}</h2>
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-300 group-hover:text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+            <h2 className="text-sm font-bold text-slate-800 tracking-tight leading-none">{workflowName}</h2>
+            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-300 group-hover:text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+          </div>
+        )}
+
+        {/* Workflow Description */}
+        {isEditingDesc ? (
+          <input
+            ref={descRef}
+            type="text"
+            placeholder="Add a description..."
+            className="text-[10px] text-slate-500 bg-transparent border-b border-blue-400 outline-none px-2 py-0 w-64 leading-tight"
+            value={tempDesc}
+            onChange={(e) => setTempDesc(e.target.value)}
+            onBlur={handleDescBlur}
+            onKeyDown={handleDescKeyDown}
+          />
+        ) : (
+          <div
+            className="flex items-center gap-1 group/desc cursor-pointer px-2 hover:opacity-80 transition-opacity w-fit"
+            onClick={() => setIsEditingDesc(true)}
+            title="Click to edit description"
+          >
+            <span className={`text-[10px] leading-tight truncate max-w-[280px] ${
+              workflowDescription ? 'text-slate-400' : 'text-slate-300 italic'
+            }`}>
+              {workflowDescription || 'Add a description...'}
+            </span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-slate-300 opacity-0 group-hover/desc:opacity-100 transition-opacity flex-shrink-0"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
           </div>
         )}
       </div>
@@ -109,16 +170,16 @@ const Topbar: React.FC<TopbarProps> = ({
               : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
           }`}
         >
-          <svg 
-            xmlns="http://www.w3.org/2000/svg" 
-            width="14" 
-            height="14" 
-            viewBox="0 0 24 24" 
-            fill="none" 
-            stroke="currentColor" 
-            strokeWidth="3" 
-            strokeLinecap="round" 
-            strokeLinejoin="round" 
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
             className={`transition-transform duration-300 ${isNodePaletteOpen ? 'rotate-45 text-red-400' : ''}`}
           >
             <path d="M12 5v14"/><path d="M5 12h14"/>
@@ -126,18 +187,42 @@ const Topbar: React.FC<TopbarProps> = ({
           {isNodePaletteOpen ? 'Close Nodes' : 'Add Node'}
         </button>
 
-        <button 
-           onClick={onNewWorkflow}
-           className="px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] bg-white text-slate-600 hover:bg-slate-50 border border-slate-200 transition-all active:scale-95"
+        <button
+          onClick={onNewWorkflow}
+          className="px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] bg-white text-slate-600 hover:bg-slate-50 border border-slate-200 transition-all active:scale-95"
         >
-            New Flow
+          New Flow
         </button>
 
-        <button 
+        <div className="flex items-center gap-3 mr-4">
+          {saveStatus === 'saving' && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-50/50">
+              <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-[9px] font-black uppercase tracking-widest text-blue-500">Saving</span>
+            </div>
+          )}
+          {saveStatus === 'saved' && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-50/50">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="M20 6 9 17l-5-5"/></svg>
+              <span className="text-[9px] font-black uppercase tracking-widest text-emerald-500">Saved</span>
+            </div>
+          )}
+          {saveStatus === 'error' && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-50/50">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-red-500"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <span className="text-[9px] font-black uppercase tracking-widest text-red-500">Error</span>
+            </div>
+          )}
+        </div>
+
+        <button
           onClick={onSave}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all active:scale-95 shadow-lg shadow-blue-500/20"
+          disabled={saveStatus === 'saving'}
+          className={`${
+            saveStatus === 'saving' ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed shadow-none' : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-500/20'
+          } px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all active:scale-95`}
         >
-          Save Changes
+          {saveStatus === 'saving' ? 'Saving...' : 'Save Changes'}
         </button>
       </div>
 
@@ -146,8 +231,8 @@ const Topbar: React.FC<TopbarProps> = ({
           <span className="text-xs font-black text-slate-800 leading-none">{user?.username}</span>
           <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">{user?.email}</span>
         </div>
-        
-        <button 
+
+        <button
           onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
           className={`flex items-center gap-2 p-1 rounded-xl transition-all border ${
             isUserMenuOpen ? 'bg-slate-50 border-slate-200' : 'bg-transparent border-transparent hover:bg-slate-50'
@@ -164,14 +249,14 @@ const Topbar: React.FC<TopbarProps> = ({
             <div className="px-4 py-3 border-b border-slate-50 mb-1">
               <p className="text-xs font-black text-slate-400 uppercase tracking-widest leading-none">Account Settings</p>
             </div>
-            
+
             <button className="w-full flex items-center gap-3 px-4 py-2.5 text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-all text-sm font-bold">
               <div className="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center">
                 <Settings size={16} />
               </div>
               Preferences
             </button>
-            
+
             <button className="w-full flex items-center gap-3 px-4 py-2.5 text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-all text-sm font-bold">
               <div className="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center">
                 <CreditCard size={16} />
@@ -188,7 +273,7 @@ const Topbar: React.FC<TopbarProps> = ({
 
             <div className="h-px bg-slate-100 my-1 mx-2"></div>
 
-            <button 
+            <button
               onClick={handleLogout}
               className="w-full flex items-center gap-3 px-4 py-2.5 text-red-500 hover:bg-red-50 transition-all text-sm font-black mt-1"
             >

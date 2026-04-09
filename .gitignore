@@ -1,39 +1,77 @@
-
-__pycache__/
-*.py[cod]
-*$py.class
-
+# --- Environments & Secrets ---
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
 .venv/
 venv/
 env/
 ENV/
-myenv/
-.env
-.env.local
-.env.*.local
+*.env
 
+# --- OS Specific ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# --- IDEs & Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.project
+.settings/
+.classpath
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 .coverage.*
 htmlcov/
+nosetests.xml
+coverage.xml
+*.rc
+pip-log.txt
+pip-delete-this-directory.txt
 
-.idea/
-.vscode/
-*.swp
-*.swo
-
+# --- Node.js & Frontend ---
+node_modules/
+frontend/node_modules/
 dist/
+frontend/dist/
+backend/dist/
 build/
-*.egg-info/
-.eggs/
+.next/
+.serverless/
+.fusebox/
+.dynamodb/
+.tern-port
+out/
+.parcel-cache/
+.cache/
+.vite
+.eslintcache
 
-pip-wheel-metadata/
-
-logs/
+# --- Logs & Databases ---
 *.log
+logs/
+*.sqlite
+*.sqlite3
+*.db
+!/backend/alembic/versions/*.py
 
-.DS_Store
-Thumbs.db
-
+# --- Deployment ---
+.terraform/
+.serverless/
+docker-compose.override.yml

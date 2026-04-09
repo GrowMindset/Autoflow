@@ -122,6 +122,8 @@ class WorkflowEdgeDefinition(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     source: str = Field(min_length=1, max_length=100)
     target: str = Field(min_length=1, max_length=100)
+    sourceHandle: str | None = Field(default=None, max_length=100)
+    targetHandle: str | None = Field(default=None, max_length=100)
     branch: str | None = Field(default=None, max_length=100)
 
 

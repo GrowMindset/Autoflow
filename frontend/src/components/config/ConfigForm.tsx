@@ -145,13 +145,27 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
 
       case 'array':
         const cases = Array.isArray(value) ? value : [];
+        
+        // Auto-migration: Ensure every case has a stable ID
+        const casesWithIds = cases.map((c: any, idx: number) => {
+          if (!c.id) {
+            return { ...c, id: c.label || `case_${idx}` };
+          }
+          return c;
+        });
+
+        // Trigger update if we added missing IDs
+        if (JSON.stringify(cases) !== JSON.stringify(casesWithIds)) {
+            onChange(field.key, casesWithIds);
+        }
+
         return (
           <div className="space-y-3">
-            {cases.map((c: any, idx: number) => (
-              <div key={idx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2 relative group">
+            {casesWithIds.map((c: any, idx: number) => (
+              <div key={c.id || idx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2 relative group">
                 <button 
                   onClick={() => {
-                    const next = [...cases];
+                    const next = [...casesWithIds];
                     next.splice(idx, 1);
                     onChange(field.key, next);
                   }}
@@ -165,7 +179,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                     placeholder="Label"
                     value={c.label || ''}
                     onChange={(e) => {
-                      const next = [...cases];
+                      const next = [...casesWithIds];
                       next[idx] = { ...c, label: e.target.value };
                       onChange(field.key, next);
                     }}
@@ -174,7 +188,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                   <select
                     value={c.operator || ''}
                     onChange={(e) => {
-                      const next = [...cases];
+                      const next = [...casesWithIds];
                       next[idx] = { ...c, operator: e.target.value };
                       onChange(field.key, next);
                     }}
@@ -189,7 +203,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                   placeholder="Value"
                   value={c.value || ''}
                   onChange={(e) => {
-                    const next = [...cases];
+                    const next = [...casesWithIds];
                     next[idx] = { ...c, value: e.target.value };
                     onChange(field.key, next);
                   }}
@@ -198,7 +212,10 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
               </div>
             ))}
             <button
-              onClick={() => onChange(field.key, [...cases, { label: `case_${cases.length + 1}`, operator: 'equals', value: '' }])}
+              onClick={() => {
+                const newId = `case_${Math.random().toString(36).substring(2, 9)}`;
+                onChange(field.key, [...casesWithIds, { id: newId, label: `Case ${casesWithIds.length + 1}`, operator: 'equals', value: '' }]);
+              }}
               className="w-full py-2 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 text-xs font-bold hover:border-blue-300 hover:text-blue-500 transition-all flex items-center justify-center gap-2"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>

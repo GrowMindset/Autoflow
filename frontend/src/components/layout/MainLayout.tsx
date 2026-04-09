@@ -9,6 +9,7 @@ import { workflowService } from '../../services/workflowService';
 interface Workflow {
   id: string;
   name: string;
+  description?: string;
 }
 
 const MainLayout: React.FC = () => {
@@ -17,7 +18,11 @@ const MainLayout: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isLeftSidebarCollapsed, setIsLeftSidebarCollapsed] = useState(false);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
-  
+
+  // Save Status State
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [currentDescription, setCurrentDescription] = useState<string>('');
+
   // Initial fetch
   useEffect(() => {
     const fetchWorkflows = async () => {
@@ -40,11 +45,11 @@ const MainLayout: React.FC = () => {
   const currentWorkflow = workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow' };
 
   const onNewWorkflow = useCallback(() => {
-    // For new workflows, we just reset the canvas. 
     // They will get an ID once saved to the backend.
     setCurrentWorkflowId('new');
+    setCurrentDescription('');
     if ((window as any).loadCanvasWorkflowData) {
-        (window as any).loadCanvasWorkflowData({ nodes: [], edges: [] });
+      (window as any).loadCanvasWorkflowData({ nodes: [], edges: [] });
     }
   }, []);
 
@@ -54,19 +59,22 @@ const MainLayout: React.FC = () => {
 
   const onSelectWorkflow = useCallback(async (id: string) => {
     if (id === 'new') {
-        onNewWorkflow();
-        return;
+      onNewWorkflow();
+      return;
     }
 
     setCurrentWorkflowId(id);
     setIsLoading(true);
     try {
-        const fullWorkflow = await workflowService.getWorkflow(id);
-        if (fullWorkflow && (window as any).loadCanvasWorkflowData) {
-            (window as any).loadCanvasWorkflowData(fullWorkflow.definition);
+      const fullWorkflow = await workflowService.getWorkflow(id);
+      if (fullWorkflow) {
+        setCurrentDescription(fullWorkflow.description || '');
+        if ((window as any).loadCanvasWorkflowData) {
+          (window as any).loadCanvasWorkflowData(fullWorkflow.definition);
         }
+      }
     } finally {
-        setIsLoading(false);
+      setIsLoading(false);
     }
   }, [onNewWorkflow]);
 
@@ -76,17 +84,19 @@ const MainLayout: React.FC = () => {
     const workflowData = (window as any).getCanvasWorkflowData(currentWorkflow.name);
     const savePayload = {
       ...workflowData,
+      description: currentDescription,
       id: currentWorkflowId === 'new' ? undefined : currentWorkflowId
     };
-    const { name, definition } = savePayload;
+    const { definition } = savePayload;
 
-    // 1. Validation: Content (prevent completely empty flows)
+    // Validation: prevent completely empty flows
     if (definition.nodes.length === 0) {
       toast.error('Cannot save an empty workflow');
       return;
     }
 
     // 4. Execution with Toast feedback
+    setSaveStatus('saving');
     try {
       const savedResult = await toast.promise(
         workflowService.saveWorkflow(savePayload),
@@ -96,21 +106,49 @@ const MainLayout: React.FC = () => {
           error: <b>Could not save workflow.</b>,
         }
       );
-      
+
       // Update workflows list
       const updatedWorkflows = await workflowService.getWorkflows();
       setWorkflows(updatedWorkflows);
-      
+
       // If it was a new workflow, switch to the newly created ID
       if (currentWorkflowId === 'new' && savedResult.id) {
-          setCurrentWorkflowId(savedResult.id);
+        setCurrentWorkflowId(savedResult.id);
       }
-      
+
+      setSaveStatus('saved');
       console.log('--- SAVED DATA ---', savedResult);
     } catch (error) {
+      setSaveStatus('error');
       console.error('Save failed:', error);
     }
-  }, [currentWorkflow.name, currentWorkflowId]);
+  }, [currentWorkflow.name, currentWorkflowId, currentDescription]);
+
+  const handleDeleteWorkflow = async (id: string) => {
+    await toast.promise(
+      workflowService.deleteWorkflow(id),
+      {
+        loading: 'Deleting workflow...',
+        success: <b>Workflow deleted.</b>,
+        error: <b>Could not delete workflow.</b>,
+      }
+    );
+    // Refresh the workflow list
+    const updatedWorkflows = await workflowService.getWorkflows();
+    setWorkflows(updatedWorkflows);
+    // If the deleted workflow was active, navigate away
+    if (currentWorkflowId === id) {
+      if (updatedWorkflows.length > 0) {
+        setCurrentWorkflowId(updatedWorkflows[0].id);
+        const full = await workflowService.getWorkflow(updatedWorkflows[0].id);
+        if (full && (window as any).loadCanvasWorkflowData) {
+          (window as any).loadCanvasWorkflowData(full.definition);
+        }
+      } else {
+        onNewWorkflow();
+      }
+    }
+  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-white font-sans antialiased text-slate-900">
@@ -124,24 +162,28 @@ const MainLayout: React.FC = () => {
       )}
 
       {/* Workflow Navigation (Left Sidebar) */}
-      <WorkflowSidebar 
+      <WorkflowSidebar
         workflows={workflows}
         currentWorkflowId={currentWorkflowId}
         onSelectWorkflow={onSelectWorkflow}
         onNewWorkflow={onNewWorkflow}
+        onDeleteWorkflow={handleDeleteWorkflow}
         isCollapsed={isLeftSidebarCollapsed}
         onToggleCollapse={() => setIsLeftSidebarCollapsed(!isLeftSidebarCollapsed)}
       />
 
       <div className="flex-1 flex flex-col min-w-0 relative">
         {/* Topbar with Editable Title */}
-        <Topbar 
+        <Topbar
           workflowName={currentWorkflow.name}
+          workflowDescription={currentDescription}
           onRename={(newName) => onRenameWorkflow(currentWorkflow.id, newName)}
-          onToggleNodePalette={() => setIsRightSidebarOpen(!isRightSidebarOpen)} 
+          onDescribeWorkflow={(desc) => setCurrentDescription(desc)}
+          onToggleNodePalette={() => setIsRightSidebarOpen(!isRightSidebarOpen)}
           isNodePaletteOpen={isRightSidebarOpen}
           onNewWorkflow={onNewWorkflow}
           onSave={handleSave}
+          saveStatus={saveStatus}
         />
 
         <div className="flex-1 flex overflow-hidden">
@@ -151,10 +193,9 @@ const MainLayout: React.FC = () => {
           </main>
 
           {/* Node Palette (Right Sidebar) - Now a push-sidebar */}
-          <div 
-            className={`h-full border-l border-slate-200 bg-white transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 ${
-              isRightSidebarOpen ? 'w-[320px] opacity-100' : 'w-0 opacity-0 border-none'
-            }`}
+          <div
+            className={`h-full border-l border-slate-200 bg-white transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 ${isRightSidebarOpen ? 'w-[320px] opacity-100' : 'w-0 opacity-0 border-none'
+              }`}
           >
             <div className="w-[320px] h-full overflow-hidden">
               <NodeSidebar />
