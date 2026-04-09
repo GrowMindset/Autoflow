@@ -9,6 +9,7 @@
 venv/
 env/
 ENV/
+myenv/
 *.env
 
 # --- OS Specific ---
