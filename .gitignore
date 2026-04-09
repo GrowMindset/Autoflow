@@ -1,25 +1,77 @@
-# Environments
+# --- Environments & Secrets ---
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
 .venv/
 venv/
 env/
-.env
-.env.local
+ENV/
+*.env
 
-# Python
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-
-# IDEs
-.vscode/
-.idea/
-
-# OS
+# --- OS Specific ---
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
-# Project Specific
+# --- IDEs & Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.project
+.settings/
+.classpath
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.rc
+pip-log.txt
+pip-delete-this-directory.txt
+
+# --- Node.js & Frontend ---
+node_modules/
 frontend/node_modules/
+dist/
 frontend/dist/
 backend/dist/
+build/
+.next/
+.serverless/
+.fusebox/
+.dynamodb/
+.tern-port
+out/
+.parcel-cache/
+.cache/
+.vite
+.eslintcache
+
+# --- Logs & Databases ---
+*.log
+logs/
+*.sqlite
+*.sqlite3
+*.db
+!/backend/alembic/versions/*.py
+
+# --- Deployment ---
+.terraform/
+.serverless/
+docker-compose.override.yml

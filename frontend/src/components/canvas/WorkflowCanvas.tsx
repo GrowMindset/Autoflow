@@ -16,6 +16,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { WorkflowNode, WorkflowEdge, WorkflowNodeData } from '../../types/workflow';
 import BaseNode from './BaseNode';
+import DeletableEdge from './DeletableEdge';
 import { NODE_LIBRARY } from '../../constants/nodeLibrary';
 import { createNode } from '../../utils/nodeFactory';
 import ConfigPanel from '../config/ConfigPanel';
@@ -27,10 +28,16 @@ const nodeTypes = {
   ai: BaseNode,
 };
 
+const edgeTypes = {
+  deletable: DeletableEdge,
+};
+
 const initialNodes: WorkflowNode[] = [];
 const initialEdges: WorkflowEdge[] = [];
 
-const WorkflowCanvas: React.FC = () => {
+interface WorkflowCanvasProps { }
+
+const WorkflowCanvas: React.FC<WorkflowCanvasProps> = () => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const connectingNodeId = useRef<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -44,6 +51,14 @@ const WorkflowCanvas: React.FC = () => {
   // Config Panel State
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
+  const isValidConnection = useCallback((connection: Connection) => {
+    // Only allow one connection per source handle
+    const existingEdge = edges.find(
+      (edge) => edge.source === connection.source && edge.sourceHandle === connection.sourceHandle
+    );
+    return !existingEdge;
+  }, [edges]);
+
   const onConnect = useCallback((params: Connection) => {
     if (!params.source || !params.target) return;
 
@@ -51,11 +66,13 @@ const WorkflowCanvas: React.FC = () => {
       ...params,
       source: params.source,
       target: params.target,
+      sourceHandle: params.sourceHandle,
+      targetHandle: params.targetHandle,
       id: `e_${params.source}_${params.target}_${params.sourceHandle || 'def'}_${Date.now()}`,
+      type: 'deletable',
       animated: true,
       style: { stroke: '#94a3b8', strokeWidth: 2 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
-      branch: params.sourceHandle || undefined
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' }
     };
     setEdges((eds) => addEdge(newEdge as any, eds));
   }, [setEdges]);
@@ -84,6 +101,10 @@ const WorkflowCanvas: React.FC = () => {
     },
     [reactFlowInstance]
   );
+
+  const onPaneClick = useCallback(() => {
+    setMenuVisible(false);
+  }, []);
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
@@ -121,6 +142,7 @@ const WorkflowCanvas: React.FC = () => {
           id: `e_${connectingNodeId.current}_${newNodeId}`,
           source: connectingNodeId.current!,
           target: newNodeId,
+          type: 'deletable',
           animated: true,
           style: { stroke: '#94a3b8', strokeWidth: 2 },
           markerEnd: {
@@ -157,7 +179,8 @@ const WorkflowCanvas: React.FC = () => {
           id: e.id,
           source: e.source,
           target: e.target,
-          ...(e.branch ? { branch: e.branch } : {})
+          sourceHandle: e.sourceHandle,
+          targetHandle: e.targetHandle
         }))
       }
     };
@@ -166,17 +189,16 @@ const WorkflowCanvas: React.FC = () => {
   // Deserialization logic (restore from backend format)
   const loadWorkflowData = useCallback((definition: any) => {
     if (!definition) return;
-    
+
     // Map simplified nodes back to React Flow format
     const rfNodes: WorkflowNode[] = (definition.nodes || []).map((n: any) => {
-      // Determine the category based on the node library structure
       const category = NODE_LIBRARY.trigger.some(ref => ref.type === n.type) ? 'trigger' :
-                      NODE_LIBRARY.action.some(ref => ref.type === n.type) ? 'action' :
-                      NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' : 'ai';
-      
+        NODE_LIBRARY.action.some(ref => ref.type === n.type) ? 'action' :
+          NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' : 'ai';
+
       return {
         id: n.id,
-        type: category, // Map category back to React Flow's 'type' for correct component rendering
+        type: category,
         position: n.position,
         data: {
           label: n.label,
@@ -188,15 +210,27 @@ const WorkflowCanvas: React.FC = () => {
     });
 
     setNodes(rfNodes);
-    setEdges(definition.edges || []);
+
+    // Map simplified edges back to React Flow format with handle awareness
+    const rfEdges = (definition.edges || []).map((e: any) => ({
+      ...e,
+      type: 'deletable',
+      sourceHandle: e.sourceHandle || e.branch || null,
+      targetHandle: e.targetHandle || null,
+      animated: true,
+      style: { stroke: '#94a3b8', strokeWidth: 2 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
+    }));
+
+    setEdges(rfEdges);
   }, [setNodes, setEdges]);
 
   // Expose serialization helpers
   useEffect(() => {
     (window as any).getCanvasWorkflowData = getWorkflowData;
     (window as any).loadCanvasWorkflowData = loadWorkflowData;
-    return () => { 
-      delete (window as any).getCanvasWorkflowData; 
+    return () => {
+      delete (window as any).getCanvasWorkflowData;
       delete (window as any).loadCanvasWorkflowData;
     };
   }, [getWorkflowData, loadWorkflowData]);
@@ -223,14 +257,12 @@ const WorkflowCanvas: React.FC = () => {
     const upstreamEdges = edges.filter(e => e.target === nodeId) as WorkflowEdge[];
     if (upstreamEdges.length === 0) return null;
 
-    // Merge outputs from all direct parents
     const combinedData: Record<string, any> = {};
     upstreamEdges.forEach(edge => {
       const sourceNode = nodes.find(n => n.id === edge.source);
       if (sourceNode?.data.last_output) {
         Object.assign(combinedData, sourceNode.data.last_output);
       } else {
-        // Provide rich mock data based on node type if no output yet
         const mockMap: Record<string, any> = {
           manual_trigger: { body: { message: "Hello world" }, user: { id: "u_123", name: "Ishika" } },
           webhook_trigger: { query: { id: 50 }, headers: { "Content-Type": "application/json" } },
@@ -263,7 +295,11 @@ const WorkflowCanvas: React.FC = () => {
         onDrop={onDrop}
         onDragOver={onDragOver}
         onNodeDoubleClick={onNodeDoubleClick}
+        onPaneClick={onPaneClick}
+        isValidConnection={isValidConnection}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        deleteKeyCode={['Delete', 'Backspace']}
         fitView
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#000000ff" />
@@ -282,8 +318,6 @@ const WorkflowCanvas: React.FC = () => {
           pannable
           zoomable
         />
-
-
 
         {menuVisible && menuPosition && (
           <div

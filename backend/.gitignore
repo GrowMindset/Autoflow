@@ -1,39 +1,27 @@
-
-__pycache__/
-*.py[cod]
-*$py.class
-
-.venv/
-venv/
-env/
-ENV/
-
+# Local environment files
 .env
 .env.local
 .env.*.local
 
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
-.coverage.*
-htmlcov/
 
-.idea/
-.vscode/
-*.swp
-*.swo
-
+# Build and distribution
 dist/
 build/
 *.egg-info/
 .eggs/
-
 pip-wheel-metadata/
 
+# Logs
 logs/
 *.log
 
-.DS_Store
-Thumbs.db
-
+# Databases (Local)
+*.sqlite
+*.db

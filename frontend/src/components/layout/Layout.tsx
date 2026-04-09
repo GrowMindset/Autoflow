@@ -5,7 +5,17 @@ import WorkflowCanvas from '../canvas/WorkflowCanvas';
 function Layout() {
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden">
-      <Topbar />
+      <Topbar 
+        workflowName="Legacy Layout" 
+        workflowDescription="" 
+        onRename={() => {}} 
+        onDescribeWorkflow={() => {}} 
+        onToggleNodePalette={() => {}} 
+        isNodePaletteOpen={false} 
+        onNewWorkflow={() => {}} 
+        onSave={() => {}} 
+        saveStatus="idle"
+      />
       <div className="flex min-h-0 flex-1">
         <Sidebar />
         <main className="min-h-0 flex-1 bg-slate-50 p-4">
