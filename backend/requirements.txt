@@ -2,6 +2,8 @@ alembic
 asyncpg
 bcrypt
 fastapi
+pydantic
+pydantic-settings
 PyJWT
 psycopg[binary]
 python-dotenv

@@ -16,6 +16,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { WorkflowNode, WorkflowEdge, WorkflowNodeData } from '../../types/workflow';
 import BaseNode from './BaseNode';
+import DeletableEdge from './DeletableEdge';
 import { NODE_LIBRARY } from '../../constants/nodeLibrary';
 import { createNode } from '../../utils/nodeFactory';
 import ConfigPanel from '../config/ConfigPanel';
@@ -27,10 +28,17 @@ const nodeTypes = {
   ai: BaseNode,
 };
 
+const edgeTypes = {
+  deletable: DeletableEdge,
+};
+
 const initialNodes: WorkflowNode[] = [];
 const initialEdges: WorkflowEdge[] = [];
 
-const WorkflowCanvas: React.FC = () => {
+interface WorkflowCanvasProps {
+}
+
+const WorkflowCanvas: React.FC<WorkflowCanvasProps> = () => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const connectingNodeId = useRef<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -44,6 +52,14 @@ const WorkflowCanvas: React.FC = () => {
   // Config Panel State
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
+  const isValidConnection = useCallback((connection: Connection) => {
+    // Only allow one connection per source handle
+    const existingEdge = edges.find(
+      (edge) => edge.source === connection.source && edge.sourceHandle === connection.sourceHandle
+    );
+    return !existingEdge;
+  }, [edges]);
+
   const onConnect = useCallback((params: Connection) => {
     if (!params.source || !params.target) return;
 
@@ -51,11 +67,13 @@ const WorkflowCanvas: React.FC = () => {
       ...params,
       source: params.source,
       target: params.target,
+      sourceHandle: params.sourceHandle,
+      targetHandle: params.targetHandle,
       id: `e_${params.source}_${params.target}_${params.sourceHandle || 'def'}_${Date.now()}`,
+      type: 'deletable',
       animated: true,
       style: { stroke: '#94a3b8', strokeWidth: 2 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
-      branch: params.sourceHandle || undefined
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' }
     };
     setEdges((eds) => addEdge(newEdge as any, eds));
   }, [setEdges]);
@@ -84,6 +102,10 @@ const WorkflowCanvas: React.FC = () => {
     },
     [reactFlowInstance]
   );
+
+  const onPaneClick = useCallback(() => {
+    setMenuVisible(false);
+  }, []);
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
@@ -121,6 +143,7 @@ const WorkflowCanvas: React.FC = () => {
           id: `e_${connectingNodeId.current}_${newNodeId}`,
           source: connectingNodeId.current!,
           target: newNodeId,
+          type: 'deletable',
           animated: true,
           style: { stroke: '#94a3b8', strokeWidth: 2 },
           markerEnd: {
@@ -157,7 +180,8 @@ const WorkflowCanvas: React.FC = () => {
           id: e.id,
           source: e.source,
           target: e.target,
-          ...(e.branch ? { branch: e.branch } : {})
+          sourceHandle: e.sourceHandle,
+          targetHandle: e.targetHandle
         }))
       }
     };
@@ -188,7 +212,19 @@ const WorkflowCanvas: React.FC = () => {
     });
 
     setNodes(rfNodes);
-    setEdges(definition.edges || []);
+    
+    // Map simplified edges back to React Flow format with handle awareness
+    const rfEdges = (definition.edges || []).map((e: any) => ({
+      ...e,
+      type: 'deletable',
+      sourceHandle: e.sourceHandle || e.branch || null,
+      targetHandle: e.targetHandle || null,
+      animated: true,
+      style: { stroke: '#94a3b8', strokeWidth: 2 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
+    }));
+
+    setEdges(rfEdges);
   }, [setNodes, setEdges]);
 
   // Expose serialization helpers
@@ -200,6 +236,12 @@ const WorkflowCanvas: React.FC = () => {
       delete (window as any).loadCanvasWorkflowData;
     };
   }, [getWorkflowData, loadWorkflowData]);
+
+  // Serialization helpers handled via window exposure
+  const isInitialMount = useRef(true);
+  useEffect(() => {
+    isInitialMount.current = false;
+  }, []);
 
   const updateNodeConfig = useCallback((id: string, config: Record<string, any>, output?: any) => {
     setNodes((nds) =>
@@ -263,7 +305,11 @@ const WorkflowCanvas: React.FC = () => {
         onDrop={onDrop}
         onDragOver={onDragOver}
         onNodeDoubleClick={onNodeDoubleClick}
+        onPaneClick={onPaneClick}
+        isValidConnection={isValidConnection}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        deleteKeyCode={['Delete', 'Backspace']}
         fitView
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#000000ff" />
