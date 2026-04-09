@@ -62,3 +62,20 @@ class DateTimeFormatRunner:
 
         formatted = parsed.strftime(output_format)
         return set_nested_value(input_data, field, formatted)
+
+
+# Testing
+# runner = DateTimeFormatRunner()
+# result = runner.run(
+#     config={"field": "order_date", "output_format": "%d %B %Y"},
+#     input_data={"order_date": "2026-04-07", "amount": 500}
+# )
+# print(result)
+# # → {"order_date": "07 April 2026", "amount": 500}
+
+# result = runner.run(
+#     config={"field": "order_date", "output_format": "%I:%M %p"},
+#     input_data={"order_date": "2026-04-07T14:30:00Z"}
+# )
+# print(result)
+# # → {"order_date": "02:30 PM"}

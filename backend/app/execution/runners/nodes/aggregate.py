@@ -82,3 +82,13 @@ class AggregateRunner:
             result = sum(values) / len(values)
 
         return {output_key: result}
+
+
+# # Testing
+# runner = AggregateRunner()
+# result = runner.run(
+#     config={"input_key": "orders", "group_by": "country", "field": "amount", "operation": "sum", "output_key": "totals"},
+#     input_data={"orders": [{"country": "IN", "amount": 300}, {"country": "IN", "amount": 700}, {"country": "US", "amount": 500}]}
+# )
+# print(result)
+# # → {"totals": 1500}

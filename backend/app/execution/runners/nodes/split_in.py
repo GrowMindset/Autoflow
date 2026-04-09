@@ -34,3 +34,13 @@ class SplitInRunner:
             {"item": item, "_split_index": index}
             for index, item in enumerate(items)
         ]
+
+
+# Testing
+# runner = SplitInRunner()
+# result = runner.run(
+#     config={"input_key": "tickets"},
+#     input_data={"tickets": [{"id": 1}, {"id": 2}]}
+# )
+# print(result)
+# # → [{"item": {"id": 1}, "_split_index": 0}, {"item": {"id": 2}, "_split_index": 1}]

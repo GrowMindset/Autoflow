@@ -72,3 +72,20 @@ class FilterRunner:
                 filtered_items.append(item)
 
         return set_nested_value(input_data, input_key, filtered_items)
+
+
+# Testing
+# runner = FilterRunner()
+# result = runner.run(
+#     config={"input_key": "items", "field": "amount", "operator": "greater_than", "value": "500"},
+#     input_data={"items": [{"amount": 300}, {"amount": 700}, {"amount": 150}], "customer": "A"}
+# )
+# print(result)
+# # → {"items": [{"amount": 700}], "customer": "A"}
+
+# result = runner.run(
+#     config={"input_key": "items", "field": "status", "operator": "equals", "value": "ok"},
+#     input_data={"items": [{"status": "ok"}, {"status": "fail"}]}
+# )
+# print(result)
+# # → {"items": [{"status": "ok"}]}
