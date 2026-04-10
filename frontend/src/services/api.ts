@@ -63,7 +63,13 @@ api.interceptors.response.use(
 
     if (status === 401) {
       localStorage.removeItem('token');
-      if (!window.location.pathname.includes('/login') && !window.location.pathname.includes('/signup')) {
+      const isAuthPage = window.location.pathname.includes('/login') || window.location.pathname.includes('/signup');
+      
+      if (isAuthPage) {
+        // Show the actual error from backend (e.g. "Invalid credentials")
+        toast.error(message);
+      } else {
+        // Background session expiry
         toast.error('Session expired. Please login again.');
         window.location.href = '/login';
       }

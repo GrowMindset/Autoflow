@@ -20,6 +20,9 @@ import DeletableEdge from './DeletableEdge';
 import { NODE_LIBRARY } from '../../constants/nodeLibrary';
 import { createNode } from '../../utils/nodeFactory';
 import ConfigPanel from '../config/ConfigPanel';
+import { executionService } from '../../services/executionService';
+import toast from 'react-hot-toast';
+import { Play, LayoutGrid } from 'lucide-react';
 
 const nodeTypes = {
   trigger: BaseNode,
@@ -53,6 +56,135 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
   // Config Panel State
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
+  // Alignment Detection
+  const [isAligned, setIsAligned] = useState(true);
+
+  useEffect(() => {
+    const misaligned = nodes.some(
+      (node) => node.position.x % 20 !== 0 || node.position.y % 20 !== 0
+    );
+    setIsAligned(!misaligned);
+  }, [nodes]);
+
+  const alignNodes = useCallback(() => {
+    // 1. Build adjacency list and find roots
+    const adj: Record<string, string[]> = {};
+    const inDegree: Record<string, number> = {};
+    
+    nodes.forEach(n => {
+      adj[n.id] = [];
+      inDegree[n.id] = 0;
+    });
+    
+    edges.forEach(e => {
+      if (adj[e.source]) adj[e.source].push(e.target);
+      if (inDegree[e.target] !== undefined) inDegree[e.target]++;
+    });
+
+    const roots = nodes.filter(n => inDegree[n.id] === 0);
+    if (roots.length === 0 && nodes.length > 0) roots.push(nodes[0]); // Fallback for cycles
+
+    // 2. BFS to determine levels and vertical ordering
+    const levels: Record<string, number> = {};
+    const levelNodes: Record<number, string[]> = {};
+    const queue: [string, number][] = roots.map(r => [r.id, 0]);
+    const visited = new Set<string>();
+
+    while (queue.length > 0) {
+      const [id, level] = queue.shift()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+
+      levels[id] = Math.max(levels[id] || 0, level);
+      if (!levelNodes[level]) levelNodes[level] = [];
+      if (!levelNodes[level].includes(id)) levelNodes[level].push(id);
+
+      (adj[id] || []).forEach(childId => {
+        queue.push([childId, level + 1]);
+      });
+    }
+
+    // 3. Calculate positions
+    const HORIZONTAL_SPACING = 300;
+    const VERTICAL_SPACING = 150;
+    const newPositions: Record<string, XYPosition> = {};
+
+    // First pass: Assign X based on levels
+    nodes.forEach(node => {
+      const level = levels[node.id] || 0;
+      newPositions[node.id] = { 
+        x: level * HORIZONTAL_SPACING, 
+        y: 0 
+      };
+    });
+
+    // Second pass: Assign Y to achieve "straight lines" and structured branching
+    const processedY = new Set<string>();
+    
+    const assignY = (nodeId: string, currentY: number) => {
+      if (processedY.has(nodeId)) return;
+      processedY.add(nodeId);
+      
+      newPositions[nodeId].y = currentY;
+      const children = adj[nodeId] || [];
+      
+      if (children.length === 1) {
+        // Straight line
+        assignY(children[0], currentY);
+      } else if (children.length > 1) {
+        // Symmetrical branching
+        const totalHeight = (children.length - 1) * VERTICAL_SPACING;
+        let startY = currentY - totalHeight / 2;
+        children.forEach(childId => {
+          assignY(childId, startY);
+          startY += VERTICAL_SPACING;
+        });
+      }
+    };
+
+    let rootY = 0;
+    roots.forEach(r => {
+      assignY(r.id, rootY);
+      rootY += VERTICAL_SPACING * 2; // Space out different disconnected trees
+    });
+
+    // Carry over any nodes not reached by roots (extra safety)
+    nodes.forEach(node => {
+      if (!processedY.has(node.id)) {
+        newPositions[node.id].y = 0;
+      }
+    });
+
+    // 4. Update nodes
+    setNodes((nds) =>
+      nds.map((node) => ({
+        ...node,
+        position: newPositions[node.id] || node.position,
+      }))
+    );
+    toast.success('Workflow perfectly aligned');
+  }, [nodes, edges, setNodes]);
+
+  const handleRunWorkflow = useCallback(async () => {
+    if (workflowId === 'new') {
+      toast.error('Please save your workflow before running');
+      return;
+    }
+
+    try {
+      await toast.promise(
+        executionService.runWorkflow(workflowId),
+        {
+          loading: 'Starting execution...',
+          success: 'Workflow execution started!',
+          error: 'Failed to start execution',
+        }
+      );
+    } catch (error) {
+      console.error('Execution failed:', error);
+    }
+  }, [workflowId]);
+
   const isValidConnection = useCallback((connection: Connection) => {
     // Only allow one connection per source handle
     const existingEdge = edges.find(
@@ -77,6 +209,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' }
     };
     setEdges((eds) => addEdge(newEdge as any, eds));
+    toast.success('Nodes connected');
   }, [setEdges]);
 
   const onConnectStart = useCallback((_: any, { nodeId }: { nodeId: string | null }) => {
@@ -138,6 +271,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       const newNodeId = newNode.id;
 
       setNodes((nds) => nds.concat(newNode));
+      toast.success(`${newNode.data.label} added`);
 
       if (connectingNodeId.current) {
         setEdges((eds) => addEdge({
@@ -304,6 +438,30 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
         deleteKeyCode={['Delete', 'Backspace']}
         fitView
       >
+        {/* Floating Action Buttons - Bottom Center */}
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[1000] flex flex-row items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-500">
+          {!isAligned && (
+            <button
+              onClick={alignNodes}
+              className="group flex items-center gap-2 bg-white hover:bg-slate-900 text-slate-600 hover:text-white px-5 py-3 rounded-2xl border border-slate-200 shadow-[0_20px_40px_rgba(0,0,0,0.1)] transition-all duration-300"
+            >
+              <LayoutGrid size={18} className="group-hover:rotate-90 transition-transform duration-500" />
+              <span className="text-xs font-black uppercase tracking-[0.1em]">Perfect Align</span>
+            </button>
+          )}
+
+          <button
+            onClick={handleRunWorkflow}
+            className="group flex items-center gap-3 bg-blue-600 hover:bg-blue-700 text-white px-7 py-3 rounded-2xl border border-blue-500 shadow-[0_20px_40px_rgba(37,99,235,0.3)] transition-all duration-300 active:scale-95"
+          >
+            <div className="relative">
+              <Play size={18} fill="currentColor" stroke="none" className="group-hover:scale-110 transition-transform" />
+              <div className="absolute inset-0 bg-white/20 rounded-full scale-150 opacity-0 group-hover:animate-ping" />
+            </div>
+            <span className="text-xs font-black uppercase tracking-[0.1em]">Execute Workflow</span>
+          </button>
+        </div>
+
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#000000ff" />
         <Controls position="bottom-right" className="bg-white border border-slate-200 rounded-xl shadow-lg !m-4 !mr-[230px]" />
         <MiniMap

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, LogOut, ChevronDown, Settings, CreditCard, Shield } from 'lucide-react';
+import { User, LogOut, ChevronDown, Settings, CreditCard, Shield, Download, Upload } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
+import ImportModal from './ImportModal';
 
 interface TopbarProps {
   workflowName: string;
@@ -11,8 +12,10 @@ interface TopbarProps {
   onDescribeWorkflow: (desc: string) => void;
   onToggleNodePalette: () => void;
   isNodePaletteOpen: boolean;
-  onNewWorkflow: () => void;
   onSave: () => void;
+  onImport: (data: any) => void;
+  isPublished?: boolean;
+  onTogglePublish?: () => void;
   saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
 }
 
@@ -23,8 +26,10 @@ const Topbar: React.FC<TopbarProps> = ({
   onDescribeWorkflow,
   onToggleNodePalette,
   isNodePaletteOpen,
-  onNewWorkflow,
   onSave,
+  onImport,
+  isPublished = false,
+  onTogglePublish,
   saveStatus = 'idle'
 }) => {
   const [isEditing, setIsEditing] = useState(false);
@@ -32,9 +37,11 @@ const Topbar: React.FC<TopbarProps> = ({
   const [isEditingDesc, setIsEditingDesc] = useState(false);
   const [tempDesc, setTempDesc] = useState(workflowDescription);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const descRef = useRef<HTMLInputElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const user = useAuthStore((state) => state.user);
   const clearAuth = useAuthStore((state) => state.clearAuth);
@@ -107,6 +114,20 @@ const Topbar: React.FC<TopbarProps> = ({
     clearAuth();
     toast.success('Logged out successfully');
     navigate('/login');
+  };
+
+  const handleExport = () => {
+    if ((window as any).getCanvasWorkflowData) {
+      const data = (window as any).getCanvasWorkflowData(workflowName);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, '_blank');
+      if (win) {
+        toast.success('Workflow JSON opened in new tab');
+      } else {
+        toast.error('Pop-up blocked! Please allow pop-ups to export.');
+      }
+    }
   };
 
   return (
@@ -187,13 +208,6 @@ const Topbar: React.FC<TopbarProps> = ({
           {isNodePaletteOpen ? 'Close Nodes' : 'Add Node'}
         </button>
 
-        <button
-          onClick={onNewWorkflow}
-          className="px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] bg-white text-slate-600 hover:bg-slate-50 border border-slate-200 transition-all active:scale-95"
-        >
-          New Flow
-        </button>
-
         <div className="flex items-center gap-3 mr-4">
           {saveStatus === 'saving' && (
             <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-50/50">
@@ -215,6 +229,33 @@ const Topbar: React.FC<TopbarProps> = ({
           )}
         </div>
 
+        <div className="flex items-center gap-1.5 mr-4 border-r border-slate-100 pr-4">
+          <button
+            onClick={() => setIsImportModalOpen(true)}
+            className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all group relative"
+            title="Import Workflow"
+          >
+            <Download size={14} strokeWidth={3} />
+            <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-slate-900 text-white text-[9px] font-black uppercase tracking-widest rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 shadow-xl">Import</span>
+          </button>
+
+          <button
+            onClick={handleExport}
+            className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all group relative"
+            title="Export Workflow"
+          >
+            <Upload size={14} strokeWidth={3} />
+            <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-slate-900 text-white text-[9px] font-black uppercase tracking-widest rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 shadow-xl">Export</span>
+          </button>
+        </div>
+
+        {isImportModalOpen && (
+          <ImportModal 
+            onClose={() => setIsImportModalOpen(false)} 
+            onImport={onImport} 
+          />
+        )}
+
         <button
           onClick={onSave}
           disabled={saveStatus === 'saving'}
@@ -224,12 +265,23 @@ const Topbar: React.FC<TopbarProps> = ({
         >
           {saveStatus === 'saving' ? 'Saving...' : 'Save Changes'}
         </button>
+
+        <button
+          onClick={onTogglePublish}
+          className={`px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all active:scale-95 flex items-center gap-2 ${
+            isPublished
+              ? 'bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200'
+              : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/20'
+          }`}
+        >
+          <div className={`w-2 h-2 rounded-full ${isPublished ? 'bg-emerald-500 animate-pulse' : 'bg-white/50'}`} />
+          {isPublished ? 'Unpublish' : 'Publish'}
+        </button>
       </div>
 
       <div className="flex items-center gap-4 relative" ref={userMenuRef}>
         <div className="hidden xl:flex flex-col items-end text-right mr-1">
           <span className="text-xs font-black text-slate-800 leading-none">{user?.username}</span>
-          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">{user?.email}</span>
         </div>
 
         <button
@@ -246,8 +298,11 @@ const Topbar: React.FC<TopbarProps> = ({
 
         {isUserMenuOpen && (
           <div className="absolute top-12 right-0 w-64 bg-white border border-slate-200 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.15)] overflow-hidden animate-in fade-in zoom-in-95 duration-200 py-2">
-            <div className="px-4 py-3 border-b border-slate-50 mb-1">
-              <p className="text-xs font-black text-slate-400 uppercase tracking-widest leading-none">Account Settings</p>
+            <div className="px-4 py-3 border-b border-slate-50 mb-1 flex flex-col gap-1">
+              <p className="text-xs font-black text-slate-800 tracking-tight leading-none">{user?.username}</p>
+              <p className="text-[10px] font-bold text-slate-400 truncate">{user?.email}</p>
+              <div className="h-2" />
+              <p className="text-[9px] font-black text-slate-300 uppercase tracking-widest leading-none">Account Settings</p>
             </div>
 
             <button className="w-full flex items-center gap-3 px-4 py-2.5 text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-all text-sm font-bold">
