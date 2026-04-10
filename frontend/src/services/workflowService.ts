@@ -10,6 +10,7 @@ export interface WorkflowSaveData {
   name: string;
   description?: string;
   definition: WorkflowDefinition;
+  is_published?: boolean;
 }
 
 export const workflowService = {
@@ -24,7 +25,8 @@ export const workflowService = {
       const response = await api.put(`/workflows/${data.id}`, {
         name: data.name,
         description: data.description || '',
-        definition: data.definition
+        definition: data.definition,
+        is_published: data.is_published
       });
       return response.data;
     } else {
@@ -70,5 +72,15 @@ export const workflowService = {
    */
   deleteWorkflow: async (id: string): Promise<void> => {
     await api.delete(`/workflows/${id}`);
+  },
+
+  /**
+   * Update publish status specifically
+   */
+  updatePublishStatus: async (id: string, isPublished: boolean): Promise<any> => {
+    const response = await api.put(`/workflows/${id}`, {
+      is_published: isPublished
+    });
+    return response.data;
   }
 };

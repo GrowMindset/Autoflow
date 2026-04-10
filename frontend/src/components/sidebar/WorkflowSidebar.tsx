@@ -149,9 +149,11 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">My Workflows</span>
                 <button
                   onClick={onNewWorkflow}
-                  className="w-5 h-5 rounded-md bg-slate-50 border border-slate-100 flex items-center justify-center hover:bg-white hover:border-slate-200 transition-colors group"
+                  title="Create new workflow"
+                  className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/30 active:scale-90 group relative overflow-hidden"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 group-hover:text-slate-600">
+                  <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" className="text-white relative z-10 transition-transform group-hover:rotate-90">
                     <path d="M5 12h14" />
                     <path d="M12 5v14" />
                   </svg>
@@ -221,9 +223,10 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
           {isCollapsed && (
             <button
               onClick={onNewWorkflow}
-              className="w-10 h-10 rounded-xl border border-slate-200 text-slate-400 flex items-center justify-center hover:bg-slate-50 hover:text-blue-600 transition-all self-center mt-2 group"
+              className="w-12 h-12 rounded-2xl bg-blue-600 text-white flex items-center justify-center hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/40 self-center mt-2 group relative overflow-hidden active:scale-90"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="transition-transform group-hover:scale-110">
+              <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
+              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="relative z-10 transition-transform group-hover:scale-110 group-hover:rotate-90 duration-300">
                 <path d="M5 12h14" />
                 <path d="M12 5v14" />
               </svg>

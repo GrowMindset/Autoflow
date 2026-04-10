@@ -10,6 +10,7 @@ interface Workflow {
   id: string;
   name: string;
   description?: string;
+  is_published?: boolean;
 }
 
 const MainLayout: React.FC = () => {
@@ -42,7 +43,8 @@ const MainLayout: React.FC = () => {
     fetchWorkflows();
   }, []);
 
-  const currentWorkflow = workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow' };
+  const currentWorkflow = workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };
+  const isPublished = currentWorkflow.is_published || false;
 
   const onNewWorkflow = useCallback(() => {
     // They will get an ID once saved to the backend.
@@ -51,11 +53,37 @@ const MainLayout: React.FC = () => {
     if ((window as any).loadCanvasWorkflowData) {
       (window as any).loadCanvasWorkflowData({ nodes: [], edges: [] });
     }
+    toast.success('Started a fresh workflow draft');
   }, []);
 
   const onRenameWorkflow = useCallback((id: string, newName: string) => {
     setWorkflows(prev => prev.map(w => w.id === id ? { ...w, name: newName } : w));
+    toast.success(`Workflow renamed to "${newName}"`);
   }, []);
+
+  const handleImportWorkflow = useCallback((data: any) => {
+    if (!data || !data.definition) {
+      toast.error('Invalid workflow file');
+      return;
+    }
+
+    // Update current workflow in list or create a "new" draft if current is 'new'
+    if (currentWorkflowId === 'new') {
+      // Just update the temporary visual state
+      setWorkflows(prev => prev.map(w => w.id === 'new' ? { ...w, name: data.name || 'Imported Workflow' } : w));
+    } else {
+      setWorkflows(prev => prev.map(w => w.id === currentWorkflowId ? { ...w, name: data.name || w.name } : w));
+    }
+
+    setCurrentDescription(data.definition.description || '');
+    
+    // Load into canvas
+    if ((window as any).loadCanvasWorkflowData) {
+      (window as any).loadCanvasWorkflowData(data.definition);
+    }
+    
+    toast.success('Workflow data loaded. Click "Save Changes" to persist.');
+  }, [currentWorkflowId, setWorkflows]);
 
   const onSelectWorkflow = useCallback(async (id: string) => {
     if (id === 'new') {
@@ -124,6 +152,32 @@ const MainLayout: React.FC = () => {
     }
   }, [currentWorkflow.name, currentWorkflowId, currentDescription]);
 
+  const handleTogglePublish = useCallback(async () => {
+    if (currentWorkflowId === 'new') {
+      toast.error('Please save the workflow first');
+      return;
+    }
+
+    const newStatus = !isPublished;
+    try {
+      await toast.promise(
+        workflowService.updatePublishStatus(currentWorkflowId, newStatus),
+        {
+          loading: newStatus ? 'Publishing...' : 'Unpublishing...',
+          success: <b>Workflow {newStatus ? 'published' : 'unpublished'} successfully!</b>,
+          error: <b>Failed to update publish status.</b>,
+        }
+      );
+
+      // Update local state
+      setWorkflows(prev => prev.map(w =>
+        w.id === currentWorkflowId ? { ...w, is_published: newStatus } : w
+      ));
+    } catch (error) {
+      console.error('Failed to toggle publish status:', error);
+    }
+  }, [currentWorkflowId, isPublished]);
+
   const handleDeleteWorkflow = async (id: string) => {
     await toast.promise(
       workflowService.deleteWorkflow(id),
@@ -178,12 +232,17 @@ const MainLayout: React.FC = () => {
           workflowName={currentWorkflow.name}
           workflowDescription={currentDescription}
           onRename={(newName) => onRenameWorkflow(currentWorkflow.id, newName)}
-          onDescribeWorkflow={(desc) => setCurrentDescription(desc)}
+          onDescribeWorkflow={(desc) => {
+            setCurrentDescription(desc);
+            toast.success('Description updated');
+          }}
           onToggleNodePalette={() => setIsRightSidebarOpen(!isRightSidebarOpen)}
           isNodePaletteOpen={isRightSidebarOpen}
-          onNewWorkflow={onNewWorkflow}
           onSave={handleSave}
+          isPublished={isPublished}
+          onTogglePublish={handleTogglePublish}
           saveStatus={saveStatus}
+          onImport={handleImportWorkflow}
         />
 
         <div className="flex-1 flex overflow-hidden">

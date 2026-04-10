@@ -10,6 +10,11 @@ export const executionService = {
     return response.data;
   },
 
+  runWorkflow: async (workflowId: string): Promise<any> => {
+    const response = await api.post(`/workflows/${workflowId}/run`);
+    return response.data;
+  },
+
   getExecution: async (executionId: string): Promise<any> => {
     const response = await api.get(`/executions/${executionId}`);
     return response.data;

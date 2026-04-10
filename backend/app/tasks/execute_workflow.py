@@ -264,13 +264,17 @@ def run_execution(
     initial_payload: dict[str, Any] | None = None,
     start_node_id: str | None = None,
 ) -> None:
-    asyncio.run(
-        _run_execution(
-            execution_id=execution_id,
-            initial_payload=initial_payload,
-            start_node_id=start_node_id,
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor() as executor:
+        future = executor.submit(
+            asyncio.run,
+            _run_execution(
+                execution_id=execution_id,
+                initial_payload=initial_payload,
+                start_node_id=start_node_id,
+            )
         )
-    )
+        future.result()
 
 
 @celery_app.task(name="app.tasks.execute_workflow.run_node_test")
@@ -279,10 +283,14 @@ def run_node_test(
     node_id: str,
     input_data: dict[str, Any] | None = None,
 ) -> None:
-    asyncio.run(
-        _run_node_test(
-            execution_id=execution_id,
-            node_id=node_id,
-            input_data=input_data,
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor() as executor:
+        future = executor.submit(
+            asyncio.run,
+            _run_node_test(
+                execution_id=execution_id,
+                node_id=node_id,
+                input_data=input_data,
+            )
         )
-    )
+        future.result()
