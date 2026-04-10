@@ -494,15 +494,10 @@ Today the executor supports:
 - `split_in`
 - `split_out`
 
-## Current Limitations
+## Engine Limitations
 
-These are important to know before extending the code:
+These are important to know before extending the in-memory engine:
 
-- no database writes
-- no API integration
-- no Celery integration
-- no execution persistence
-- no per-node status rows in DB
 - split-loop nodes overwrite `node_inputs` and `node_outputs` for repeated visits
 - nested `split_in` loops are not supported
 - multiple `split_out` targets from one split loop are not supported
@@ -510,20 +505,31 @@ These are important to know before extending the code:
 - `split_in` inside another split loop is not supported yet
 - direct standalone execution of `split_out` is not allowed
 
+## Integration with Database and Tasks
+
+*(Note: The limitations about no DB, no API, and no Celery have been resolved.)*
+
+While the `execution/` folder focuses purely on **in-memory** evaluation of the DAG:
+- **API & Routing** is handled by FastApi routers in `backend/app/routers/`.
+- **Database Persistence** (saving `Execution` and `NodeExecution` rows) and **Job Dispatching** is handled by `backend/app/services/` (e.g., `ExecutionService`).
+- **Background Execution** is handled by Celery in `backend/app/tasks/execute_workflow.py`. The Celery workers load the DB state, run the `DagExecutor` (or single `execute_node`), and update the status rows back to the database in real-time.
+
 ## Recommended Reading Order for New Developers
 
 If you are reading this code for the first time, use this order:
 
-1. `backend/app/execution/demo_run.py`
-2. `backend/app/execution/dag_executor.py`
-3. `backend/app/execution/context.py`
-4. `backend/app/execution/registry.py`
-5. `backend/app/execution/runners/triggers/`
-6. `backend/app/execution/runners/nodes/`
-7. `backend/test/test_dag_executor.py`
+1. `backend/app/services/code_guide.md` (Explains integration)
+2. `backend/app/execution/demo_run.py`
+3. `backend/app/execution/dag_executor.py`
+4. `backend/app/execution/context.py`
+5. `backend/app/execution/registry.py`
+6. `backend/app/execution/runners/triggers/`
+7. `backend/app/execution/runners/nodes/`
+8. `backend/test/test_dag_executor.py`
 
 This order is best because:
 
+- `code_guide.md` in services shows how everything hooks up at a high level
 - `demo_run.py` shows how the engine is called
 - `dag_executor.py` shows the runtime flow
 - `context.py` explains the stored state
