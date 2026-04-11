@@ -1,5 +1,6 @@
 import React, { memo, useEffect } from 'react';
 import { Handle, Position, NodeProps, useUpdateNodeInternals, useReactFlow } from 'reactflow';
+import { Check, Loader2, AlertCircle } from 'lucide-react';
 import { WorkflowNodeData } from '../../types/workflow';
 import { CATEGORY_ACCENTS } from '../../constants/nodeLibrary';
 import NodeBadge from '../sidebar/NodeBadge';
@@ -22,9 +23,23 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
 
   return (
     <div
-      className={`px-3 py-2.5 rounded-xl border border-slate-200 transition-all shadow-sm min-w-[150px] max-w-[150px] bg-white group/node ${selected ? 'ring-2 ring-blue-500/10 border-blue-500' : ''}`}
+      className={`px-3 py-2.5 rounded-xl border-2 transition-all shadow-sm min-w-[150px] max-w-[150px] bg-white group/node relative 
+        ${selected ? 'ring-2 ring-blue-500/10 border-blue-500' : 'border-slate-200'}
+        ${data.status === 'RUNNING' ? 'border-blue-400 ring-4 ring-blue-500/20' : ''}
+        ${data.status === 'SUCCEEDED' ? 'border-emerald-500 ring-4 ring-emerald-500/10' : ''}
+        ${data.status === 'FAILED' ? 'border-rose-500 ring-4 ring-rose-500/10' : ''}
+      `}
       style={{ borderTop: `4px solid ${accentColor}` }}
     >
+      {/* Execution Status Icon */}
+      {data.status && (
+        <div className="absolute -top-3 -right-3 p-1 rounded-full bg-white border border-slate-100 shadow-md z-20">
+          {data.status === 'RUNNING' && <Loader2 size={12} className="text-blue-500 animate-spin" />}
+          {data.status === 'SUCCEEDED' && <Check size={12} className="text-emerald-500" strokeWidth={3} />}
+          {data.status === 'FAILED' && <AlertCircle size={12} className="text-rose-500" />}
+        </div>
+      )}
+
       {/* Node Delete Button */}
       <button
         id={`delete-node-${id}`}

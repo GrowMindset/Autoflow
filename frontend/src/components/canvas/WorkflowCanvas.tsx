@@ -44,7 +44,7 @@ interface WorkflowCanvasProps {
 
 const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const connectingNodeId = useRef<string | null>(null);
+  const connectingNode = useRef<{ nodeId: string; handleId: string | null } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<any>(initialEdges);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
@@ -58,6 +58,14 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
 
   // Alignment Detection
   const [isAligned, setIsAligned] = useState(true);
+
+  // Execution State
+  const pollingIntervalRef = useRef<number | null>(null);
+
+  // Trigger Form Modal State
+  const [showTriggerForm, setShowTriggerForm] = useState(false);
+  const [triggerFormData, setTriggerFormData] = useState<Record<string, string>>({});
+  const [triggerNode, setTriggerNode] = useState<WorkflowNode | null>(null);
 
   useEffect(() => {
     const misaligned = nodes.some(
@@ -165,25 +173,114 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
     toast.success('Workflow perfectly aligned');
   }, [nodes, edges, setNodes]);
 
+  const stopPolling = useCallback(() => {
+    if (pollingIntervalRef.current !== null) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+  }, []);
+
+  const pollExecution = useCallback(async (executionId: string) => {
+    try {
+      const detail = await executionService.getExecution(executionId);
+      
+      // Update nodes with their execution status and results
+      setNodes((nds) =>
+        nds.map((node) => {
+          const result = detail.node_results.find((r: any) => r.node_id === node.id);
+          if (result) {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                status: result.status,
+                last_execution_result: result
+              }
+            };
+          }
+          return node;
+        })
+      );
+
+      if (detail.status === 'SUCCEEDED' || detail.status === 'FAILED') {
+        stopPolling();
+        if (detail.status === 'SUCCEEDED') {
+          toast.success('Workflow finished successfully');
+        } else {
+          toast.error(`Workflow failed: ${detail.error_message || 'Unknown error'}`);
+        }
+      }
+    } catch (error) {
+      console.error('Polling failed:', error);
+      stopPolling();
+    }
+  }, [setNodes, stopPolling]);
+
   const handleRunWorkflow = useCallback(async () => {
     if (workflowId === 'new') {
       toast.error('Please save your workflow before running');
       return;
     }
 
+    // Find the trigger node (node with no incoming edges)
+    const triggerNodes = nodes.filter(node => {
+      const hasIncoming = edges.some(edge => edge.target === node.id);
+      return !hasIncoming && ['manual_trigger', 'form_trigger', 'webhook_trigger'].includes(node.data.type);
+    });
+
+    if (triggerNodes.length === 0) {
+      toast.error('No trigger node found in workflow');
+      return;
+    }
+
+    if (triggerNodes.length > 1) {
+      toast.error('Multiple trigger nodes found. Please ensure only one trigger node exists.');
+      return;
+    }
+
+    const trigger = triggerNodes[0];
+
+    // Reset status of all nodes before starting
+    setNodes((nds) =>
+      nds.map((node) => ({
+        ...node,
+        data: { ...node.data, status: 'PENDING', last_execution_result: null }
+      }))
+    );
+
     try {
-      await toast.promise(
-        executionService.runWorkflow(workflowId),
-        {
-          loading: 'Starting execution...',
-          success: 'Workflow execution started!',
-          error: 'Failed to start execution',
-        }
-      );
+      if (trigger.data.type === 'manual_trigger') {
+        const enqueue = await executionService.runWorkflow(workflowId);
+        toast.success('Workflow execution started!');
+        
+        // Start polling
+        pollingIntervalRef.current = setInterval(() => {
+          pollExecution(enqueue.execution_id);
+        }, 2000);
+      } else if (trigger.data.type === 'form_trigger') {
+        // Show form modal for form trigger
+        setTriggerNode(trigger);
+        setShowTriggerForm(true);
+      } else if (trigger.data.type === 'webhook_trigger') {
+        // For webhook triggers, show information about webhook usage
+        toast.success('Webhook trigger: Use HTTP POST to the webhook endpoint to trigger this workflow', { duration: 5000 });
+      } else {
+        toast.error(`Unsupported trigger type: ${trigger.data.type}`);
+      }
     } catch (error) {
       console.error('Execution failed:', error);
+      toast.error('Failed to start execution');
     }
-  }, [workflowId]);
+  }, [workflowId, pollExecution, setNodes, nodes, edges]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+    };
+  }, []);
 
   const isValidConnection = useCallback((connection: Connection) => {
     // Only allow one connection per source handle
@@ -202,6 +299,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       target: params.target,
       sourceHandle: params.sourceHandle,
       targetHandle: params.targetHandle,
+      branch: params.sourceHandle ?? undefined,
       id: `e_${params.source}_${params.target}_${params.sourceHandle || 'def'}_${Date.now()}`,
       type: 'deletable',
       animated: true,
@@ -209,16 +307,21 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' }
     };
     setEdges((eds) => addEdge(newEdge as any, eds));
+    connectingNode.current = null; // Clear connection state after successful connection
     toast.success('Nodes connected');
   }, [setEdges]);
 
-  const onConnectStart = useCallback((_: any, { nodeId }: { nodeId: string | null }) => {
-    connectingNodeId.current = nodeId;
+  const onConnectStart = useCallback((_: any, { nodeId, handleId }: { nodeId: string | null; handleId?: string | null }) => {
+    if (!nodeId) {
+      connectingNode.current = null;
+      return;
+    }
+    connectingNode.current = { nodeId, handleId: handleId ?? null };
   }, []);
 
   const onConnectEnd = useCallback(
     (event: any) => {
-      if (!connectingNodeId.current || !reactFlowInstance) return;
+      if (!connectingNode.current || !reactFlowInstance) return;
 
       const targetIsPane = event.target.classList.contains('react-flow__pane');
 
@@ -239,6 +342,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
 
   const onPaneClick = useCallback(() => {
     setMenuVisible(false);
+    connectingNode.current = null; // Clear connection state when clicking on pane
   }, []);
 
   const onDragOver = useCallback((event: React.DragEvent) => {
@@ -273,11 +377,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       setNodes((nds) => nds.concat(newNode));
       toast.success(`${newNode.data.label} added`);
 
-      if (connectingNodeId.current) {
+      if (connectingNode.current) {
+        const sourceHandle = connectingNode.current.handleId ?? undefined;
         setEdges((eds) => addEdge({
-          id: `e_${connectingNodeId.current}_${newNodeId}`,
-          source: connectingNodeId.current!,
+          id: `e_${connectingNode.current!.nodeId}_${newNodeId}`,
+          source: connectingNode.current!.nodeId,
           target: newNodeId,
+          sourceHandle,
+          targetHandle: null,
+          branch: sourceHandle ?? undefined,
           type: 'deletable',
           animated: true,
           style: { stroke: '#94a3b8', strokeWidth: 2 },
@@ -286,7 +394,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
             color: '#94a3b8',
           },
         }, eds));
-        connectingNodeId.current = null;
+        connectingNode.current = null;
       }
 
       setMenuVisible(false);
@@ -316,7 +424,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
           source: e.source,
           target: e.target,
           sourceHandle: e.sourceHandle,
-          targetHandle: e.targetHandle
+          targetHandle: e.targetHandle,
+          branch: e.branch ?? e.sourceHandle ?? undefined,
         }))
       }
     };
@@ -525,6 +634,116 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Trigger Form Modal */}
+        {showTriggerForm && triggerNode && (
+          <div className="fixed inset-0 z-[9999] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 md:p-8 animate-in fade-in zoom-in-95 duration-300">
+            <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-[0_40px_100px_rgba(0,0,0,0.5)] overflow-hidden border border-white/20">
+              <div className="p-8">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h2 className="text-xl font-black text-slate-900">{triggerNode.data.config?.form_title || 'Form Trigger'}</h2>
+                    <p className="text-sm text-slate-500 mt-1">{triggerNode.data.config?.form_description || 'Fill out the form to trigger the workflow.'}</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowTriggerForm(false);
+                      setTriggerFormData({});
+                      setTriggerNode(null);
+                    }}
+                    className="p-2 hover:bg-slate-100 rounded-xl transition-colors text-slate-400 hover:text-slate-600"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                  </button>
+                </div>
+
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    try {
+                      const enqueue = await executionService.runWorkflowForm(workflowId, {
+                        form_data: triggerFormData,
+                      });
+                      toast.success('Workflow execution started!');
+                      setShowTriggerForm(false);
+                      setTriggerFormData({});
+                      setTriggerNode(null);
+
+                      // Start polling
+                      pollingIntervalRef.current = setInterval(() => {
+                        pollExecution(enqueue.execution_id);
+                      }, 2000);
+                    } catch (error) {
+                      console.error('Form submission failed:', error);
+                      toast.error('Failed to start workflow execution');
+                    }
+                  }}
+                  className="space-y-6"
+                >
+                  {Array.isArray(triggerNode.data.config?.fields) && triggerNode.data.config.fields.length > 0 ? (
+                    triggerNode.data.config.fields.map((field: any, index: number) => {
+                      const fieldName = field?.name || `field_${index + 1}`;
+                      const label = field?.label || fieldName;
+                      const inputType = field?.type === 'textarea' ? 'textarea' : (field?.type || 'text');
+                      const value = triggerFormData[fieldName] ?? '';
+
+                      return (
+                        <div key={`${fieldName}_${index}`} className="space-y-2">
+                          <label className="text-sm font-bold text-slate-700">
+                            {label}
+                            {field?.required ? ' *' : ''}
+                          </label>
+                          {inputType === 'textarea' ? (
+                            <textarea
+                              value={value}
+                              required={Boolean(field?.required)}
+                              onChange={(e) => setTriggerFormData(prev => ({ ...prev, [fieldName]: e.target.value }))}
+                              className="w-full min-h-[100px] rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:bg-white"
+                              placeholder={`Enter ${label.toLowerCase()}`}
+                            />
+                          ) : (
+                            <input
+                              type={inputType}
+                              value={value}
+                              required={Boolean(field?.required)}
+                              onChange={(e) => setTriggerFormData(prev => ({ ...prev, [fieldName]: e.target.value }))}
+                              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:bg-white"
+                              placeholder={`Enter ${label.toLowerCase()}`}
+                            />
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="text-center py-8 text-slate-500">
+                      <p>No form fields configured. Add fields in the trigger node configuration.</p>
+                    </div>
+                  )}
+
+                  <div className="flex justify-end gap-3 pt-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowTriggerForm(false);
+                        setTriggerFormData({});
+                        setTriggerNode(null);
+                      }}
+                      className="px-6 py-2.5 text-sm font-bold text-slate-600 hover:text-slate-800 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-xl transition-colors"
+                    >
+                      Submit & Run Workflow
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           </div>
         )}

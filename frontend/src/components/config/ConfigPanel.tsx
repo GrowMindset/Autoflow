@@ -15,6 +15,18 @@ interface ConfigPanelProps {
   onUpdate: (id: string, config: Record<string, any>, output?: any) => void;
 }
 
+const LogSection: React.FC<{ title: string; data: any; icon?: React.ReactNode }> = ({ title, data, icon }) => (
+  <div className="flex flex-col gap-2">
+    <div className="flex items-center gap-2 px-1">
+      {icon}
+      <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{title}</span>
+    </div>
+    <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-2">
+      {data ? <JsonTree data={data} /> : <span className="text-[10px] text-slate-300 italic px-2">No data recorded</span>}
+    </div>
+  </div>
+);
+
 const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamData, onClose, onUpdate }) => {
   const [output, setOutput] = useState<any>(node.data.last_output || null);
   const [isExecuting, setIsExecuting] = useState(false);
@@ -67,13 +79,13 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
       // If it's a form trigger, we should use the test form values as the input data
       const testInput = node.data.type === 'form_trigger' ? formValues : upstreamData;
       const enqueue = await executionService.executeNode(workflowId, node.id, testInput);
-      
+
       let executionDetail = null;
       // Poll for 15 seconds
       for (let attempt = 0; attempt < 15; attempt += 1) {
         await new Promise((r) => setTimeout(r, 1000));
         executionDetail = await executionService.getExecution(enqueue.execution_id);
-        
+
         const nodeResult = executionDetail.node_results.find(
           (result: any) => result.node_id === node.id
         );
@@ -127,14 +139,14 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
 
       const nextOutput = executionDetail
         ? {
-            enqueue,
-            form_node: formNodeResult || null,
-            execution: executionDetail,
-          }
+          enqueue,
+          form_node: formNodeResult || null,
+          execution: executionDetail,
+        }
         : {
-            enqueue,
-            submitted_form_data: formValues,
-          };
+          enqueue,
+          submitted_form_data: formValues,
+        };
 
       setOutput(nextOutput);
       onUpdate(node.id, node.data.config, nextOutput);
@@ -153,14 +165,33 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
         {/* Header */}
         <div className="h-20 px-8 border-b border-slate-100 flex items-center justify-between bg-white z-20">
           <div className="flex items-center gap-5">
-            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-100 shadow-sm">
+            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-100 shadow-sm relative">
               <div className={`w-4 h-4 rounded-full ${node.data.category === 'trigger' ? 'bg-emerald-500' :
                 node.data.category === 'action' ? 'bg-blue-500' :
                   node.data.category === 'transform' ? 'bg-amber-500' : 'bg-purple-500'
                 } shadow-[0_0_10px_rgba(0,0,0,0.1)]`} />
+
+              {node.data.status && (
+                <div className={`absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-white flex items-center justify-center
+                  ${node.data.status === 'SUCCEEDED' ? 'bg-emerald-500' :
+                    node.data.status === 'FAILED' ? 'bg-rose-500' :
+                      node.data.status === 'RUNNING' ? 'bg-blue-500' : 'bg-slate-300'}
+                `} />
+              )}
             </div>
             <div>
-              <h2 className="text-base font-black text-slate-800 tracking-tight">{node.data.label}</h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-base font-black text-slate-800 tracking-tight">{node.data.label}</h2>
+                {node.data.status && (
+                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-full text-white uppercase tracking-widest
+                    ${node.data.status === 'SUCCEEDED' ? 'bg-emerald-500' :
+                      node.data.status === 'FAILED' ? 'bg-rose-500' :
+                        node.data.status === 'RUNNING' ? 'bg-blue-500 animate-pulse' : 'bg-slate-300'}
+                  `}>
+                    {node.data.status}
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-2">
                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-0.5 rounded-full">{node.data.type}</span>
                 <span className="text-[10px] text-slate-300 font-mono">ID: {node.id.split('_').slice(0, 2).join('_')}</span>
@@ -194,12 +225,14 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
         {/* 3-Column Layout */}
         <div className="flex-1 flex overflow-hidden relative bg-slate-50/20">
 
-          {/* Column 1: Input Data */}
+          {/* Column 1: Input Data / Global Execution Logs */}
           <div className={`flex flex-col border-r border-slate-100 transition-all duration-500 ease-in-out bg-white ${isLeftVisible ? 'w-[350px] opacity-100' : 'w-12 opacity-80'}`}>
             <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 bg-white group select-none">
               {isLeftVisible ? (
                 <>
-                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">INPUT DATA</span>
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+                    {node.data.last_execution_result ? 'EXECUTION LOGS' : 'INPUT DATA'}
+                  </span>
                   <button onClick={() => setIsLeftVisible(false)} className="p-1 hover:bg-slate-100 rounded-md text-slate-300 hover:text-slate-600 transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
                   </button>
@@ -211,8 +244,40 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
               )}
             </div>
             {isLeftVisible && (
-              <div className="flex-1 overflow-auto custom-scrollbar p-2 animate-in slide-in-from-left-4 duration-300">
-                {upstreamData ? (
+              <div className="flex-1 overflow-auto custom-scrollbar p-4 animate-in slide-in-from-left-4 duration-300">
+                {node.data.last_execution_result ? (
+                  <div className="space-y-6">
+                    <div className="flex flex-col gap-1.5 p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Status</span>
+                        <span className={`text-[8px] font-black uppercase tracking-widest ${node.data.last_execution_result.status === 'SUCCEEDED' ? 'text-emerald-500' : 'text-rose-500'}`}>
+                          {node.data.last_execution_result.status}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Started At</span>
+                        <span className="text-[8px] font-mono text-slate-500">{new Date(node.data.last_execution_result.started_at).toLocaleTimeString()}</span>
+                      </div>
+                      {node.data.last_execution_result.finished_at && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Finished At</span>
+                          <span className="text-[8px] font-mono text-slate-500">{new Date(node.data.last_execution_result.finished_at).toLocaleTimeString()}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <LogSection title="Execution Input" data={node.data.last_execution_result.input_data} />
+
+                    {node.data.last_execution_result.error_message && (
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-rose-500">Error Message</span>
+                        <div className="p-3 rounded-2xl bg-rose-50 border border-rose-100 text-[10px] text-rose-600 font-mono leading-relaxed">
+                          {node.data.last_execution_result.error_message}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : upstreamData ? (
                   <JsonTree data={upstreamData} />
                 ) : (
                   <div className="h-full flex flex-col items-center justify-center text-slate-300 p-8 text-center space-y-4">
@@ -316,7 +381,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
             </div>
           </div>
 
-          {/* Column 3: Output Data */}
+          {/* Column 3: Output Data / Execution Result */}
           <div className={`flex flex-col border-l border-slate-100 transition-all duration-500 ease-in-out bg-white ${isRightVisible ? 'w-[400px] opacity-100' : 'w-12 opacity-80'}`}>
             <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 bg-white group select-none">
               {!isRightVisible ? (
@@ -328,13 +393,19 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                   <button onClick={() => setIsRightVisible(false)} className="p-1 hover:bg-slate-100 rounded-md text-slate-300 hover:text-slate-600 transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                   </button>
-                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">OUTPUT DATA</span>
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+                    {node.data.last_execution_result ? 'EXECUTION OUTPUT' : 'OUTPUT DATA'}
+                  </span>
                 </>
               )}
             </div>
             {isRightVisible && (
-              <div className="flex-1 overflow-auto custom-scrollbar p-2 animate-in slide-in-from-right-4 duration-300">
-                {output ? (
+              <div className="flex-1 overflow-auto custom-scrollbar p-4 animate-in slide-in-from-right-4 duration-300">
+                {node.data.last_execution_result ? (
+                  <div className="space-y-6">
+                    <LogSection title="Result Payload" data={node.data.last_execution_result.output_data} />
+                  </div>
+                ) : output ? (
                   <JsonTree data={output} />
                 ) : (
                   <div className="h-full flex flex-col items-center justify-center text-slate-300 p-8 text-center space-y-4">

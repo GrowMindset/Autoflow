@@ -112,35 +112,48 @@ async def _run_execution(
                     start_node_id=start_node_id,
                 )
 
-                visited_nodes = set(result.get("visited_nodes", []))
+                visited_nodes = result.get("visited_nodes", [])
                 node_inputs = result.get("node_inputs", {})
                 node_outputs = result.get("node_outputs", {})
 
-                for node in workflow.definition.get("nodes", []):
-                    node_id = node["id"]
+                visited_node_ids = set(visited_nodes)
+
+                # Persist succeeded nodes in the actual execution order.
+                # This allows frontends to sort logs by the order nodes were visited.
+                for node_id in visited_nodes:
+                    node_def = next((n for n in workflow.definition.get("nodes", []) if n["id"] == node_id), None)
                     row = _upsert_node_row(
                         node_execution_by_id=node_execution_by_id,
                         execution=execution,
                         db=db,
                         node_id=node_id,
-                        node_type=node["type"],
+                        node_type=node_def["type"] if node_def is not None else "unknown",
                     )
-
-                    if node_id not in visited_nodes:
-                        row.status = "PENDING"
-                        row.input_data = None
-                        row.output_data = None
-                        row.error_message = None
-                        row.started_at = None
-                        row.finished_at = None
-                        continue
-
                     row.status = "SUCCEEDED"
                     row.input_data = node_inputs.get(node_id)
                     row.output_data = node_outputs.get(node_id)
                     row.error_message = None
                     row.started_at = execution.started_at
                     row.finished_at = _utcnow()
+
+                # Mark non-visited nodes as pending
+                for node in workflow.definition.get("nodes", []):
+                    if node["id"] in visited_node_ids:
+                        continue
+
+                    row = _upsert_node_row(
+                        node_execution_by_id=node_execution_by_id,
+                        execution=execution,
+                        db=db,
+                        node_id=node["id"],
+                        node_type=node["type"],
+                    )
+                    row.status = "PENDING"
+                    row.input_data = None
+                    row.output_data = None
+                    row.error_message = None
+                    row.started_at = None
+                    row.finished_at = None
 
                 execution.status = "SUCCEEDED"
                 execution.finished_at = _utcnow()

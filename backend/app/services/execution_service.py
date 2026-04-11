@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -173,9 +175,20 @@ class ExecutionService:
 
         workflow = execution.workflow
         node_by_id = {node_execution.node_id: node_execution for node_execution in execution.node_executions}
+
+        executed_rows = sorted(
+            [node_execution for node_execution in execution.node_executions if node_execution.status != "PENDING"],
+            key=lambda row: row.finished_at or row.started_at or datetime.max,
+        )
+        executed_ids = {row.node_id for row in executed_rows}
+
         ordered_nodes: list[NodeExecution] = []
+        ordered_nodes.extend(executed_rows)
 
         for node in workflow.definition.get("nodes", []):
+            if node["id"] in executed_ids:
+                continue
+
             existing = node_by_id.get(node["id"])
             if existing is not None:
                 ordered_nodes.append(existing)
@@ -196,6 +209,28 @@ class ExecutionService:
             )
 
         return execution, ordered_nodes
+
+    async def get_latest_execution_detail(
+        self,
+        *,
+        workflow_id: UUID,
+        user_id: UUID,
+    ) -> tuple[Execution, list[NodeExecution]] | None:
+        execution = await self.db.scalar(
+            select(Execution)
+            .where(
+                Execution.workflow_id == workflow_id,
+                Execution.user_id == user_id
+            )
+            .order_by(Execution.started_at.desc().nullslast(), Execution.id.desc())
+        )
+        if execution is None:
+            return None
+
+        return await self.get_execution_detail(
+            execution_id=execution.id,
+            user_id=user_id
+        )
 
     async def list_executions(
         self,

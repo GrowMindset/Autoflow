@@ -20,10 +20,8 @@ export const executionService = {
     return response.data;
   },
 
-  executeNode: async (workflowId: string, nodeId: string, inputData: any): Promise<any> => {
-    const response = await api.post(`/workflows/${workflowId}/nodes/${nodeId}/execute`, {
-      input_data: inputData,
-    });
+  getLatestExecution: async (workflowId: string): Promise<any> => {
+    const response = await api.get(`/workflows/${workflowId}/executions/latest`);
     return response.data;
   },
 };

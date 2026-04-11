@@ -5,6 +5,7 @@ import NodeSidebar from '../sidebar/NodeSidebar';
 import WorkflowSidebar from '../sidebar/WorkflowSidebar';
 import WorkflowCanvas from '../canvas/WorkflowCanvas';
 import { workflowService } from '../../services/workflowService';
+import { executionService } from '../../services/executionService';
 
 interface Workflow {
   id: string;
@@ -23,6 +24,10 @@ const MainLayout: React.FC = () => {
   // Save Status State
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [currentDescription, setCurrentDescription] = useState<string>('');
+
+  // Logs Panel State
+  const [logsVisible, setLogsVisible] = useState(false);
+  const [executionLogs, setExecutionLogs] = useState<any[]>([]);
 
   // Initial fetch
   useEffect(() => {
@@ -45,6 +50,29 @@ const MainLayout: React.FC = () => {
 
   const currentWorkflow = workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };
   const isPublished = currentWorkflow.is_published || false;
+
+  const loadExecutionLogs = useCallback(async () => {
+    if (currentWorkflowId === 'new') {
+      toast.error('Please save the workflow first');
+      return;
+    }
+    try {
+      const executionDetail = await executionService.getLatestExecution(currentWorkflowId);
+      const logs = executionDetail.node_results.map((node: any) => ({
+        node_id: node.node_id,
+        node_type: node.node_type,
+        status: node.status,
+        error_message: node.error_message,
+        started_at: node.started_at,
+        finished_at: node.finished_at,
+        branch: node.output_data?._branch ?? node.input_data?._branch ?? null,
+      }));
+      setExecutionLogs(logs);
+    } catch (error) {
+      console.error('Failed to load execution logs', error);
+      toast.error('Failed to load execution logs');
+    }
+  }, [currentWorkflowId]);
 
   const onNewWorkflow = useCallback(() => {
     // They will get an ID once saved to the backend.
@@ -243,12 +271,70 @@ const MainLayout: React.FC = () => {
           onTogglePublish={handleTogglePublish}
           saveStatus={saveStatus}
           onImport={handleImportWorkflow}
+          onToggleLogs={() => {
+            setLogsVisible(!logsVisible);
+            if (!logsVisible) loadExecutionLogs();
+          }}
+          logsVisible={logsVisible}
         />
 
         <div className="flex-1 flex overflow-hidden">
           {/* Main Canvas Area */}
           <main className="flex-1 overflow-hidden relative">
             <WorkflowCanvas key={currentWorkflowId} workflowId={currentWorkflowId} />
+
+            {/* Logs Panel */}
+            {logsVisible && (
+              <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4 max-h-64 overflow-y-auto shadow-lg">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-bold text-slate-800">Execution Logs</h3>
+                  <button
+                    onClick={() => setLogsVisible(false)}
+                    className="text-slate-400 hover:text-slate-600"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18"/>
+                      <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+                {executionLogs.length === 0 ? (
+                  <p className="text-sm text-slate-500">No execution logs available. Run the workflow to see logs.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {executionLogs.map((log, index) => (
+                      <div key={index} className="flex items-start gap-3 p-2 bg-slate-50 rounded text-xs">
+                        <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${log.status === 'SUCCEEDED' ? 'bg-green-500' : log.status === 'FAILED' ? 'bg-red-500' : 'bg-yellow-500'}`} />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="font-mono text-slate-600 truncate">{log.node_id}</span>
+                            <span className="text-slate-400">({log.node_type})</span>
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${log.status === 'SUCCEEDED' ? 'bg-green-100 text-green-700' : log.status === 'FAILED' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                              {log.status}
+                            </span>
+                          </div>
+                          {log.error_message && (
+                            <div className="text-red-600 bg-red-50 p-2 rounded text-[11px] mt-1">
+                              {log.error_message}
+                            </div>
+                          )}
+                          {log.branch && (
+                            <div className="text-slate-600 text-[11px] mt-1">
+                              Branch: <span className="font-semibold">{log.branch}</span>
+                            </div>
+                          )}
+                          {log.started_at && log.finished_at && (
+                            <div className="text-slate-400 text-[10px] mt-1">
+                              {new Date(log.started_at).toLocaleTimeString()} - {new Date(log.finished_at).toLocaleTimeString()}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </main>
 
           {/* Node Palette (Right Sidebar) - Now a push-sidebar */}
