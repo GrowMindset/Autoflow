@@ -158,8 +158,8 @@ const Topbar: React.FC<TopbarProps> = ({
             className="flex items-center gap-1.5 group cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 rounded px-2 py-0.5 transition-colors w-fit"
             onClick={() => setIsEditing(true)}
           >
-            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 tracking-tight leading-none">{workflowName}</h2>
-            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-300 dark:text-slate-600 group-hover:text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
+            <h2 className="text-sm font-bold text-slate-800 tracking-tight leading-none">{workflowName}</h2>
+            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-300 group-hover:text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
           </div>
         )}
 
@@ -181,9 +181,7 @@ const Topbar: React.FC<TopbarProps> = ({
             onClick={() => setIsEditingDesc(true)}
             title="Click to edit description"
           >
-            <span className={`text-[10px] leading-tight truncate max-w-[280px] transition-colors ${workflowDescription 
-                ? 'text-slate-400 dark:text-slate-500' 
-                : 'text-slate-300 dark:text-slate-600 italic'
+            <span className={`text-[10px] leading-tight truncate max-w-[280px] ${workflowDescription ? 'text-slate-400' : 'text-slate-300 italic'
               }`}>
               {workflowDescription || 'Add a description...'}
             </span>
@@ -225,28 +223,28 @@ const Topbar: React.FC<TopbarProps> = ({
                <span className="text-[9px] font-black uppercase tracking-widest text-purple-600">Running</span>
              </div>
           ) : lastExecutionTime !== undefined ? (
-             <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase">Run time</span>
-                <span className="text-[10px] font-black text-slate-700 dark:text-slate-200">{(lastExecutionTime / 1000).toFixed(2)}s</span>
+             <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-slate-50 border border-slate-200">
+                <span className="text-[9px] font-bold text-slate-400 uppercase">Run time</span>
+                <span className="text-[10px] font-black text-slate-700">{(lastExecutionTime / 1000).toFixed(2)}s</span>
              </div>
           ) : null}
 
           {saveStatus === 'saving' && (
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-50/50 dark:bg-blue-900/20">
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-50/50">
               <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-              <span className="text-[9px] font-black uppercase tracking-widest text-blue-500 dark:text-blue-400">Saving</span>
+              <span className="text-[9px] font-black uppercase tracking-widest text-blue-500">Saving</span>
             </div>
           )}
           {saveStatus === 'saved' && (
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-50/50 dark:bg-emerald-900/20">
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500 dark:text-emerald-400"><path d="M20 6 9 17l-5-5" /></svg>
-              <span className="text-[9px] font-black uppercase tracking-widest text-emerald-500 dark:text-emerald-400">Saved</span>
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-50/50">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="M20 6 9 17l-5-5" /></svg>
+              <span className="text-[9px] font-black uppercase tracking-widest text-emerald-500">Saved</span>
             </div>
           )}
           {saveStatus === 'error' && (
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-50/50 dark:bg-red-900/20">
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-red-500 dark:text-red-400"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
-              <span className="text-[9px] font-black uppercase tracking-widest text-red-500 dark:text-red-400">Error</span>
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-50/50">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-red-500"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+              <span className="text-[9px] font-black uppercase tracking-widest text-red-500">Error</span>
             </div>
           )}
         </div>

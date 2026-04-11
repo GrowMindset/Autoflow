@@ -315,7 +315,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                   <div className="mt-10 space-y-8 animate-in fade-in slide-in-from-bottom-4">
                     <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 flex flex-col gap-4">
                       <div>
-                        <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Webhook URL</h3>
+                        <h3 className="text-sm font-black text-slate-800">Webhook URL</h3>
                         <p className="text-xs text-slate-500">Send an HTTP {node.data.config?.method || 'POST'} request to this endpoint to trigger the workflow.</p>
                       </div>
                       <div className="flex items-center gap-2">
