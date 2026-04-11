@@ -15,6 +15,7 @@ from app.models.executions import Execution
 from app.models.nodes_executions import NodeExecution
 from app.models.user import User
 from app.models.workflows import Workflow
+from app.tasks import execute_workflow as execute_workflow_tasks
 from test.asgi_client import ASGITestClient
 
 
@@ -43,6 +44,12 @@ class NodeExecutionTests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(Base.metadata.create_all)
 
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
+        self._original_task_session_factory = execute_workflow_tasks._create_task_session_factory
+
+        def override_task_session_factory():
+            return self.session_factory
+
+        execute_workflow_tasks._create_task_session_factory = override_task_session_factory
 
         async def override_get_db():
             async with self.session_factory() as session:
@@ -53,6 +60,7 @@ class NodeExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         app.dependency_overrides.clear()
+        execute_workflow_tasks._create_task_session_factory = self._original_task_session_factory
         await self.engine.dispose()
         async with self.admin_engine.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA "{self.schema_name}" CASCADE'))

@@ -15,6 +15,7 @@ from app.models.executions import Execution
 from app.models.nodes_executions import NodeExecution
 from app.models.user import User
 from app.models.workflows import Workflow
+from app.tasks import execute_workflow as execute_workflow_tasks
 from test.asgi_client import ASGITestClient
 
 
@@ -43,6 +44,12 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(Base.metadata.create_all)
 
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
+        self._original_task_session_factory = execute_workflow_tasks._create_task_session_factory
+
+        def override_task_session_factory():
+            return self.session_factory
+
+        execute_workflow_tasks._create_task_session_factory = override_task_session_factory
 
         async def override_get_db() -> AsyncSession:
             async with self.session_factory() as session:
@@ -53,6 +60,7 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         app.dependency_overrides.clear()
+        execute_workflow_tasks._create_task_session_factory = self._original_task_session_factory
         await self.engine.dispose()
         async with self.admin_engine.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA "{self.schema_name}" CASCADE'))
@@ -322,3 +330,145 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(hidden_status, 404)
         self.assertEqual(hidden_payload["detail"], "Workflow not found")
+
+    async def test_run_form_executes_form_filter_if_else_aggregate_workflow(self) -> None:
+        user = await self._create_user(email="form@example.com", username="form-user")
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Form Execution Workflow",
+            definition={
+                "nodes": [
+                    {
+                        "id": "form_start",
+                        "type": "form_trigger",
+                        "label": "Form Trigger",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "fields": [
+                                {"name": "customer_name", "required": True},
+                                {"name": "items", "required": True},
+                            ]
+                        },
+                    },
+                    {
+                        "id": "filter_paid",
+                        "type": "filter",
+                        "label": "Filter High Value",
+                        "position": {"x": 200, "y": 0},
+                        "config": {
+                            "input_key": "items",
+                            "field": "amount",
+                            "operator": "greater_than",
+                            "value": "500",
+                        },
+                    },
+                    {
+                        "id": "check_vip",
+                        "type": "if_else",
+                        "label": "Check VIP",
+                        "position": {"x": 400, "y": 0},
+                        "config": {
+                            "field": "customer_name",
+                            "operator": "equals",
+                            "value": "Asha",
+                        },
+                    },
+                    {
+                        "id": "count_matches",
+                        "type": "aggregate",
+                        "label": "Count Matches",
+                        "position": {"x": 600, "y": 0},
+                        "config": {
+                            "input_key": "items",
+                            "operation": "count",
+                            "output_key": "matched_count",
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "form_start", "target": "filter_paid"},
+                    {"id": "e2", "source": "filter_paid", "target": "check_vip"},
+                    {
+                        "id": "e3",
+                        "source": "check_vip",
+                        "target": "count_matches",
+                        "branch": "true",
+                    },
+                ],
+            },
+        )
+
+        form_data = {
+            "customer_name": "Asha",
+            "items": [
+                {"id": "o1", "amount": 120},
+                {"id": "o2", "amount": 875},
+                {"id": "o3", "amount": 640},
+            ],
+        }
+
+        status_code, payload = await self.client.post(
+            f"/workflows/{workflow.id}/run-form",
+            json_body={"form_data": form_data},
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(status_code, 202)
+        self.assertEqual(payload["workflow_id"], str(workflow.id))
+        self.assertEqual(payload["triggered_by"], "form")
+        execution_id = UUID(payload["execution_id"])
+
+        async with self.session_factory() as session:
+            execution = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution)
+            self.assertEqual(execution.status, "SUCCEEDED")
+            self.assertEqual(execution.triggered_by, "form")
+
+            rows = (
+                await session.execute(
+                    select(NodeExecution)
+                    .where(NodeExecution.execution_id == execution_id)
+                    .order_by(NodeExecution.node_id)
+                )
+            ).scalars().all()
+
+        self.assertEqual(len(rows), 4)
+        rows_by_id = {row.node_id: row for row in rows}
+
+        expected_form_output = {
+            "triggered": True,
+            "trigger_type": "form",
+            **form_data,
+        }
+        expected_filtered_output = {
+            "triggered": True,
+            "trigger_type": "form",
+            "customer_name": "Asha",
+            "items": [
+                {"id": "o2", "amount": 875},
+                {"id": "o3", "amount": 640},
+            ],
+        }
+        expected_if_output = {
+            **expected_filtered_output,
+            "_branch": "true",
+        }
+
+        self.assertEqual(rows_by_id["form_start"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["form_start"].input_data, form_data)
+        self.assertEqual(rows_by_id["form_start"].output_data, expected_form_output)
+
+        self.assertEqual(rows_by_id["filter_paid"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["filter_paid"].input_data, expected_form_output)
+        self.assertEqual(rows_by_id["filter_paid"].output_data, expected_filtered_output)
+
+        self.assertEqual(rows_by_id["check_vip"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["check_vip"].input_data, expected_filtered_output)
+        self.assertEqual(rows_by_id["check_vip"].output_data, expected_if_output)
+
+        self.assertEqual(rows_by_id["count_matches"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["count_matches"].input_data, expected_filtered_output)
+        self.assertEqual(
+            rows_by_id["count_matches"].output_data,
+            {"matched_count": 2},
+        )

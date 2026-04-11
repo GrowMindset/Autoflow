@@ -12,7 +12,7 @@ TriggeredBy = str
 
 
 class RunFormRequest(BaseModel):
-    form_data: dict[str, str]
+    form_data: dict[str, Any]
 
 
 class RunNodeTestRequest(BaseModel):
