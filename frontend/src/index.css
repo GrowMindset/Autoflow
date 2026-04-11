@@ -11,5 +11,23 @@ body,
 }
 
 body {
-  @apply bg-slate-100 text-slate-900 antialiased;
+  @apply bg-slate-100 text-slate-900 antialiased transition-colors duration-300;
+}
+
+.dark body {
+  @apply bg-slate-950 text-slate-100;
+}
+
+/* React Flow Dark Mode Defaults */
+.dark .react-flow {
+  background-color: #020617; /* slate-950 */
+}
+
+.dark .react-flow__edge-path {
+  stroke: #475569; /* slate-600 */
+}
+
+.dark .react-flow__handle {
+  background-color: #334155; /* slate-700 */
+  border-color: #0f172a; /* slate-900 */
 }

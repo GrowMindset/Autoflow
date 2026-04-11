@@ -17,6 +17,7 @@ interface Workflow {
 const MainLayout: React.FC = () => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [currentWorkflowId, setCurrentWorkflowId] = useState<string>('');
+  const [newWorkflowDraftName, setNewWorkflowDraftName] = useState<string>('Untitled Workflow');
   const [isLoading, setIsLoading] = useState(true);
   const [isLeftSidebarCollapsed, setIsLeftSidebarCollapsed] = useState(false);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
@@ -28,6 +29,15 @@ const MainLayout: React.FC = () => {
   // Logs Panel State
   const [logsVisible, setLogsVisible] = useState(false);
   const [executionLogs, setExecutionLogs] = useState<any[]>([]);
+
+  // Execution State
+  const [executionState, setExecutionState] = useState<string>('idle');
+  const [lastExecutionDuration, setLastExecutionDuration] = useState<number | undefined>(undefined);
+
+  const handleExecutionUpdate = useCallback((status: string, durationMs?: number) => {
+    setExecutionState(status);
+    if (durationMs !== undefined) setLastExecutionDuration(durationMs);
+  }, []);
 
   // Initial fetch
   useEffect(() => {
@@ -48,7 +58,10 @@ const MainLayout: React.FC = () => {
     fetchWorkflows();
   }, []);
 
-  const currentWorkflow = workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };
+  const currentWorkflow = currentWorkflowId === 'new'
+    ? { id: 'new', name: newWorkflowDraftName, is_published: false }
+    : workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };
+    
   const isPublished = currentWorkflow.is_published || false;
 
   const loadExecutionLogs = useCallback(async () => {
@@ -77,6 +90,7 @@ const MainLayout: React.FC = () => {
   const onNewWorkflow = useCallback(() => {
     // They will get an ID once saved to the backend.
     setCurrentWorkflowId('new');
+    setNewWorkflowDraftName('Untitled Workflow');
     setCurrentDescription('');
     if ((window as any).loadCanvasWorkflowData) {
       (window as any).loadCanvasWorkflowData({ nodes: [], edges: [] });
@@ -85,7 +99,11 @@ const MainLayout: React.FC = () => {
   }, []);
 
   const onRenameWorkflow = useCallback((id: string, newName: string) => {
-    setWorkflows(prev => prev.map(w => w.id === id ? { ...w, name: newName } : w));
+    if (id === 'new') {
+      setNewWorkflowDraftName(newName);
+    } else {
+      setWorkflows(prev => prev.map(w => w.id === id ? { ...w, name: newName } : w));
+    }
     toast.success(`Workflow renamed to "${newName}"`);
   }, []);
 
@@ -97,8 +115,7 @@ const MainLayout: React.FC = () => {
 
     // Update current workflow in list or create a "new" draft if current is 'new'
     if (currentWorkflowId === 'new') {
-      // Just update the temporary visual state
-      setWorkflows(prev => prev.map(w => w.id === 'new' ? { ...w, name: data.name || 'Imported Workflow' } : w));
+      setNewWorkflowDraftName(data.name || 'Imported Workflow');
     } else {
       setWorkflows(prev => prev.map(w => w.id === currentWorkflowId ? { ...w, name: data.name || w.name } : w));
     }
@@ -233,12 +250,12 @@ const MainLayout: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-white font-sans antialiased text-slate-900">
+    <div className="flex h-screen overflow-hidden bg-white dark:bg-slate-950 font-sans antialiased text-slate-900 dark:text-slate-100 transition-colors duration-300">
       {isLoading && (
-        <div className="absolute inset-0 z-[9999] bg-white/50 backdrop-blur-sm flex items-center justify-center">
+        <div className="absolute inset-0 z-[9999] bg-white/50 dark:bg-slate-950/50 backdrop-blur-sm flex items-center justify-center">
           <div className="flex flex-col items-center gap-4">
             <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm font-bold text-slate-500 animate-pulse uppercase tracking-widest">Loading Workflow...</p>
+            <p className="text-sm font-bold text-slate-500 dark:text-slate-400 animate-pulse uppercase tracking-widest">Loading Workflow...</p>
           </div>
         </div>
       )}
@@ -255,7 +272,7 @@ const MainLayout: React.FC = () => {
       />
 
       <div className="flex-1 flex flex-col min-w-0 relative">
-        {/* Topbar with Editable Title */}
+
         <Topbar
           workflowName={currentWorkflow.name}
           workflowDescription={currentDescription}
@@ -271,6 +288,8 @@ const MainLayout: React.FC = () => {
           onTogglePublish={handleTogglePublish}
           saveStatus={saveStatus}
           onImport={handleImportWorkflow}
+          executionState={executionState}
+          lastExecutionTime={lastExecutionDuration}
           onToggleLogs={() => {
             setLogsVisible(!logsVisible);
             if (!logsVisible) loadExecutionLogs();
@@ -339,7 +358,7 @@ const MainLayout: React.FC = () => {
 
           {/* Node Palette (Right Sidebar) - Now a push-sidebar */}
           <div
-            className={`h-full border-l border-slate-200 bg-white transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 ${isRightSidebarOpen ? 'w-[320px] opacity-100' : 'w-0 opacity-0 border-none'
+            className={`h-full border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 ${isRightSidebarOpen ? 'w-[320px] opacity-100' : 'w-0 opacity-0 border-none'
               }`}
           >
             <div className="w-[320px] h-full overflow-hidden">

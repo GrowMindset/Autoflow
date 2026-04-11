@@ -30,11 +30,11 @@ const CategorySection: React.FC<CategorySectionProps> = ({ title, category, node
     <div className="flex flex-col gap-1">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 transition-all group"
+        className="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-all group"
       >
         <div className="flex items-center gap-3">
             <div className={`w-1.5 h-1.5 rounded-full ${getCategoryColor(category)}`} />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{title}</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">{title}</span>
         </div>
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -46,7 +46,7 @@ const CategorySection: React.FC<CategorySectionProps> = ({ title, category, node
           strokeWidth="2.5"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className={`text-slate-300 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+          className={`text-slate-300 dark:text-slate-700 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
         >
           <path d="m6 9 6 6 6-6" />
         </svg>

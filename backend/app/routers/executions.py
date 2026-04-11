@@ -234,18 +234,20 @@ async def list_executions(
 
 
 @router.post(
-    "/webhook/{path_token}",
+    "/webhook/{workflow_id}/{path:path}",
     response_model=WebhookEnqueueResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def trigger_webhook(
-    path_token: str,
+    workflow_id: UUID,
+    path: str,
     payload: dict[str, Any] = Body(default_factory=dict),
     execution_service: ExecutionService = Depends(get_execution_service),
 ) -> WebhookEnqueueResponse:
     try:
         execution = await execution_service.create_webhook_execution(
-            path_token=path_token,
+            workflow_id=workflow_id,
+            path=path,
             payload=payload,
         )
     except ValueError as exc:

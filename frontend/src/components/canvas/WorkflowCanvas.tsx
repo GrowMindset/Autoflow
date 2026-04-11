@@ -22,6 +22,7 @@ import { createNode } from '../../utils/nodeFactory';
 import ConfigPanel from '../config/ConfigPanel';
 import { executionService } from '../../services/executionService';
 import toast from 'react-hot-toast';
+import { useTheme } from '../../context/ThemeContext';
 import { Play, LayoutGrid } from 'lucide-react';
 
 const nodeTypes = {
@@ -46,8 +47,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const connectingNode = useRef<{ nodeId: string; handleId: string | null } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<any>(initialEdges);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<WorkflowEdge>(initialEdges);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const { isDark } = useTheme();
 
   // Quick Add State
   const [menuVisible, setMenuVisible] = useState(false);
@@ -78,12 +80,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
     // 1. Build adjacency list and find roots
     const adj: Record<string, string[]> = {};
     const inDegree: Record<string, number> = {};
-    
+
     nodes.forEach(n => {
       adj[n.id] = [];
       inDegree[n.id] = 0;
     });
-    
+
     edges.forEach(e => {
       if (adj[e.source]) adj[e.source].push(e.target);
       if (inDegree[e.target] !== undefined) inDegree[e.target]++;
@@ -120,22 +122,22 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
     // First pass: Assign X based on levels
     nodes.forEach(node => {
       const level = levels[node.id] || 0;
-      newPositions[node.id] = { 
-        x: level * HORIZONTAL_SPACING, 
-        y: 0 
+      newPositions[node.id] = {
+        x: level * HORIZONTAL_SPACING,
+        y: 0
       };
     });
 
     // Second pass: Assign Y to achieve "straight lines" and structured branching
     const processedY = new Set<string>();
-    
+
     const assignY = (nodeId: string, currentY: number) => {
       if (processedY.has(nodeId)) return;
       processedY.add(nodeId);
-      
+
       newPositions[nodeId].y = currentY;
       const children = adj[nodeId] || [];
-      
+
       if (children.length === 1) {
         // Straight line
         assignY(children[0], currentY);
@@ -163,13 +165,20 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       }
     });
 
-    // 4. Update nodes
     setNodes((nds) =>
       nds.map((node) => ({
         ...node,
         position: newPositions[node.id] || node.position,
       }))
     );
+
+    // 5. Center and focus the workflow
+    if (reactFlowInstance) {
+      setTimeout(() => {
+        reactFlowInstance.fitView({ duration: 800, padding: 0.2 });
+      }, 50);
+    }
+
     toast.success('Workflow perfectly aligned');
   }, [nodes, edges, setNodes]);
 
@@ -269,18 +278,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       }
     } catch (error) {
       console.error('Execution failed:', error);
-      toast.error('Failed to start execution');
     }
-  }, [workflowId, pollExecution, setNodes, nodes, edges]);
-
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current);
-      }
-    };
-  }, []);
+  }, [workflowId]);
 
   const isValidConnection = useCallback((connection: Connection) => {
     // Only allow one connection per source handle
@@ -379,7 +378,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
 
       if (connectingNode.current) {
         const sourceHandle = connectingNode.current.handleId ?? undefined;
-        setEdges((eds) => addEdge({
+        const newEdge: WorkflowEdge = {
           id: `e_${connectingNode.current!.nodeId}_${newNodeId}`,
           source: connectingNode.current!.nodeId,
           target: newNodeId,
@@ -393,7 +392,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
             type: MarkerType.ArrowClosed,
             color: '#94a3b8',
           },
-        }, eds));
+        };
+        setEdges((eds) => addEdge(newEdge, eds));
         connectingNode.current = null;
       }
 
@@ -527,7 +527,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
   const upstreamData = selectedNodeId ? getUpstreamData(selectedNodeId) : null;
 
   return (
-    <div className="flex-1 relative h-full bg-slate-50 overflow-hidden" ref={reactFlowWrapper}>
+    <div className="flex-1 relative h-full bg-slate-50 dark:bg-slate-950 overflow-hidden" ref={reactFlowWrapper}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -552,7 +552,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
           {!isAligned && (
             <button
               onClick={alignNodes}
-              className="group flex items-center gap-2 bg-white hover:bg-slate-900 text-slate-600 hover:text-white px-5 py-3 rounded-2xl border border-slate-200 shadow-[0_20px_40px_rgba(0,0,0,0.1)] transition-all duration-300"
+              className="group flex items-center gap-2 bg-white dark:bg-slate-800 hover:bg-slate-900 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-white dark:hover:text-white px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-[0_20px_40px_rgba(0,0,0,0.1)] transition-all duration-300"
             >
               <LayoutGrid size={18} className="group-hover:rotate-90 transition-transform duration-500" />
               <span className="text-xs font-black uppercase tracking-[0.1em]">Perfect Align</span>
@@ -571,40 +571,45 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
           </button>
         </div>
 
-        <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#000000ff" />
-        <Controls position="bottom-right" className="bg-white border border-slate-200 rounded-xl shadow-lg !m-4 !mr-[230px]" />
+        <Background 
+          variant={BackgroundVariant.Dots} 
+          gap={24} 
+          size={1} 
+          color={isDark ? '#ffffff' : '#000000'} 
+        />
+        <Controls position="bottom-right" className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg !m-4 !mr-[230px]" />
         <MiniMap
-          className="bg-white border border-slate-200 rounded-xl shadow-lg !m-4 overflow-hidden"
+          className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-lg !m-4 overflow-hidden"
           nodeColor={(n) => {
             const data = n.data as WorkflowNodeData;
             if (data.category === 'trigger') return '#10b981';
             if (data.category === 'action') return '#3b82f6';
             if (data.category === 'transform') return '#f59e0b';
             if (data.category === 'ai') return '#a855f7';
-            return '#cbd5e1';
+            return isDark ? '#334155' : '#cbd5e1';
           }}
-          maskColor="rgba(241, 245, 249, 0.7)"
+          maskColor={isDark ? 'rgba(15, 23, 42, 0.7)' : 'rgba(241, 245, 249, 0.7)'}
           pannable
           zoomable
         />
 
         {menuVisible && menuPosition && (
           <div
-            className="absolute z-[1000] bg-white border border-slate-200 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.15)] p-4 w-72 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-200 pointer-events-auto"
+            className="absolute z-[1000] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.15)] p-4 w-72 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-200 pointer-events-auto"
             style={{
-              left: reactFlowInstance ? reactFlowInstance.flowToScreenPosition(menuPosition).x - (reactFlowWrapper.current?.getBoundingClientRect().left || 0) : 0,
-              top: reactFlowInstance ? reactFlowInstance.flowToScreenPosition(menuPosition).y - (reactFlowWrapper.current?.getBoundingClientRect().top || 0) : 0,
+              left: (reactFlowInstance && menuPosition) ? reactFlowInstance.flowToScreenPosition(menuPosition).x - (reactFlowWrapper.current?.getBoundingClientRect().left || 0) : 0,
+              top: (reactFlowInstance && menuPosition) ? reactFlowInstance.flowToScreenPosition(menuPosition).y - (reactFlowWrapper.current?.getBoundingClientRect().top || 0) : 0,
               transform: 'translate(-50%, -50%)'
             }}
           >
-            <div className="flex items-center justify-between border-b border-slate-50 pb-2">
+            <div className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800 pb-2">
               <div className="flex items-center gap-2">
                 <div className="w-1.5 h-1.5 bg-blue-500 rounded-full" />
-                <h3 className="text-xs font-black uppercase tracking-widest text-slate-400">Quick Add Node</h3>
+                <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 dark:text-slate-500">Quick Add Node</h3>
               </div>
               <button
                 onClick={() => setMenuVisible(false)}
-                className="p-1 hover:bg-slate-100 rounded-md transition-colors text-slate-400 hover:text-slate-600"
+                className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors text-slate-400 dark:text-slate-600 hover:text-slate-600 dark:hover:text-slate-400"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
               </button>
@@ -613,22 +618,22 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
             <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1 custom-scrollbar">
               {Object.entries(NODE_LIBRARY).map(([category, nodes]) => (
                 <div key={category} className="mb-2 last:mb-0">
-                  <div className="text-[10px] font-bold uppercase text-slate-300 mb-2 ml-1 tracking-widest">{category}</div>
+                  <div className="text-[10px] font-bold uppercase text-slate-300 dark:text-slate-600 mb-2 ml-1 tracking-widest">{category}</div>
                   <div className="grid grid-cols-1 gap-1">
                     {nodes.map(node => (
                       <button
                         key={node.type}
-                        onClick={() => addNodeAtPosition(node.type, menuPosition)}
-                        className="flex flex-col gap-0.5 p-2.5 rounded-xl hover:bg-slate-50 border border-transparent hover:border-slate-100 transition-all text-left group"
+                        onClick={() => menuPosition && addNodeAtPosition(node.type, menuPosition)}
+                        className="flex flex-col gap-0.5 p-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 border border-transparent hover:border-slate-100 dark:hover:border-slate-700 transition-all text-left group"
                       >
                         <div className="flex items-center gap-2">
-                          <div className={`w-2 h-2 rounded-full ring-4 ring-white shadow-sm ${category === 'trigger' ? 'bg-emerald-400' :
+                          <div className={`w-2 h-2 rounded-full ring-4 ring-white dark:ring-slate-900 shadow-sm ${category === 'trigger' ? 'bg-emerald-400' :
                             category === 'action' ? 'bg-blue-400' :
                               category === 'transform' ? 'bg-amber-400' : 'bg-purple-400'
                             }`} />
-                          <span className="text-sm font-bold text-slate-700 group-hover:text-blue-600">{node.label}</span>
+                          <span className="text-sm font-bold text-slate-700 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400">{node.label}</span>
                         </div>
-                        <span className="text-[10px] text-slate-400 ml-4 line-clamp-1">{node.description}</span>
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-4 line-clamp-1">{node.description}</span>
                       </button>
                     ))}
                   </div>
@@ -750,7 +755,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
 
         {selectedNode && (
           <ConfigPanel
-            node={selectedNode}
+            node={selectedNode as WorkflowNode}
             workflowId={workflowId}
             upstreamData={upstreamData}
             onClose={() => setSelectedNodeId(null)}

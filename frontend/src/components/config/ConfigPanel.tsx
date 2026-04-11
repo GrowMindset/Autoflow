@@ -62,6 +62,13 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
     return `${baseUrl}/workflows/${workflowId}/run-form`;
   }, [workflowId]);
 
+  const webhookUrl = useMemo(() => {
+    if (!workflowId || workflowId === 'new') return '';
+    const baseUrl = String(api.defaults.baseURL || '').replace(/\/$/, '');
+    const path = node.data.config?.path || 'your-path';
+    return `${baseUrl}/webhook/${workflowId}/${path.replace(/^\//, '')}`;
+  }, [workflowId, node.data.config?.path]);
+
   // Sync state if node changes externally
   const handleConfigChange = (key: string, value: any) => {
     const nextConfig = { ...node.data.config, [key]: value };
@@ -160,12 +167,12 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
 
   return createPortal(
     <div className="fixed inset-0 z-[9999] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 md:p-8 animate-in fade-in zoom-in-95 duration-300">
-      <div className="bg-white w-full h-[92vh] max-w-[1700px] rounded-[2.5rem] shadow-[0_40px_100px_rgba(0,0,0,0.5)] flex flex-col overflow-hidden border border-white/20">
+      <div className="bg-white dark:bg-slate-900 w-full h-[92vh] max-w-[1700px] rounded-[2.5rem] shadow-[0_40px_100px_rgba(0,0,0,0.5)] flex flex-col overflow-hidden border border-white/20 dark:border-slate-800 transition-colors duration-300">
 
         {/* Header */}
-        <div className="h-20 px-8 border-b border-slate-100 flex items-center justify-between bg-white z-20">
+        <div className="h-20 px-8 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 z-20">
           <div className="flex items-center gap-5">
-            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-100 shadow-sm relative">
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 shadow-sm">
               <div className={`w-4 h-4 rounded-full ${node.data.category === 'trigger' ? 'bg-emerald-500' :
                 node.data.category === 'action' ? 'bg-blue-500' :
                   node.data.category === 'transform' ? 'bg-amber-500' : 'bg-purple-500'
@@ -181,7 +188,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
             </div>
             <div>
               <div className="flex items-center gap-3">
-                <h2 className="text-base font-black text-slate-800 tracking-tight">{node.data.label}</h2>
+                <h2 className="text-base font-black text-slate-800 dark:text-slate-100 tracking-tight">{node.data.label}</h2>
                 {node.data.status && (
                   <span className={`text-[9px] font-black px-2 py-0.5 rounded-full text-white uppercase tracking-widest
                     ${node.data.status === 'SUCCEEDED' ? 'bg-emerald-500' :
@@ -193,8 +200,8 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-0.5 rounded-full">{node.data.type}</span>
-                <span className="text-[10px] text-slate-300 font-mono">ID: {node.id.split('_').slice(0, 2).join('_')}</span>
+                <span className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">{node.data.type}</span>
+                <span className="text-[10px] text-slate-300 dark:text-slate-600 font-mono">ID: {node.id.split('_').slice(0, 2).join('_')}</span>
               </div>
             </div>
           </div>
@@ -203,7 +210,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
             <button
               onClick={handleExecute}
               disabled={isExecuting}
-              className={`flex items-center gap-2.5 px-6 py-2.5 bg-slate-900 text-white rounded-2xl text-xs font-bold hover:bg-slate-800 transition-all shadow-[0_10px_20px_rgba(0,0,0,0.15)] active:scale-95 disabled:opacity-50 ${isExecuting ? 'animate-pulse' : ''}`}
+              className={`flex items-center gap-2.5 px-6 py-2.5 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 rounded-2xl text-xs font-bold hover:bg-slate-800 dark:hover:bg-slate-200 transition-all shadow-[0_10px_20px_rgba(0,0,0,0.15)] active:scale-95 disabled:opacity-50 ${isExecuting ? 'animate-pulse' : ''}`}
             >
               {isExecuting ? 'Executing...' : (
                 <>
@@ -212,10 +219,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                 </>
               )}
             </button>
-            <div className="w-px h-8 bg-slate-100 mx-2" />
+            <div className="w-px h-8 bg-slate-100 dark:bg-slate-800 mx-2" />
             <button
               onClick={onClose}
-              className="p-3 hover:bg-slate-100 rounded-2xl transition-all text-slate-400 hover:text-slate-800 active:bg-slate-200"
+              className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-all text-slate-400 dark:text-slate-600 hover:text-slate-800 dark:hover:text-slate-200 active:bg-slate-200 dark:active:bg-slate-700"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
             </button>
@@ -223,17 +230,17 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
         </div>
 
         {/* 3-Column Layout */}
-        <div className="flex-1 flex overflow-hidden relative bg-slate-50/20">
+        <div className="flex-1 flex overflow-hidden relative bg-slate-50/20 dark:bg-slate-950/20">
 
           {/* Column 1: Input Data / Global Execution Logs */}
-          <div className={`flex flex-col border-r border-slate-100 transition-all duration-500 ease-in-out bg-white ${isLeftVisible ? 'w-[350px] opacity-100' : 'w-12 opacity-80'}`}>
-            <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 bg-white group select-none">
+          <div className={`flex flex-col border-r border-slate-100 dark:border-slate-800 transition-all duration-500 ease-in-out bg-white dark:bg-slate-900 ${isLeftVisible ? 'w-[350px] opacity-100' : 'w-12 opacity-80'}`}>
+            <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900 group select-none">
               {isLeftVisible ? (
                 <>
-                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500">
                     {node.data.last_execution_result ? 'EXECUTION LOGS' : 'INPUT DATA'}
                   </span>
-                  <button onClick={() => setIsLeftVisible(false)} className="p-1 hover:bg-slate-100 rounded-md text-slate-300 hover:text-slate-600 transition-colors">
+                  <button onClick={() => setIsLeftVisible(false)} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-300 dark:text-slate-700 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
                   </button>
                 </>
@@ -292,9 +299,9 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
           </div>
 
           {/* Column 2: Parameters Form */}
-          <div className="flex-1 flex flex-col overflow-hidden bg-white z-10 shadow-[0_0_50px_rgba(0,0,0,0.02)]">
-            <div className="h-12 px-8 flex items-center border-b border-slate-50 bg-white">
-              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">PARAMETERS</span>
+          <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-slate-900 z-10 shadow-[0_0_50px_rgba(0,0,0,0.02)]">
+            <div className="h-12 px-8 flex items-center border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900">
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500">PARAMETERS</span>
             </div>
             <div className="flex-1 overflow-auto p-10 custom-scrollbar">
               <div className="max-w-2xl mx-auto pb-20">
@@ -303,33 +310,73 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                   config={node.data.config}
                   onChange={handleConfigChange}
                 />
+                
+                {node.data.type === 'webhook_trigger' && (
+                  <div className="mt-10 space-y-8 animate-in fade-in slide-in-from-bottom-4">
+                    <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 flex flex-col gap-4">
+                      <div>
+                        <h3 className="text-sm font-black text-slate-800">Webhook URL</h3>
+                        <p className="text-xs text-slate-500">Send an HTTP {node.data.config?.method || 'POST'} request to this endpoint to trigger the workflow.</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-600 break-all select-all">
+                          {webhookUrl || 'Save the workflow to generate the Webhook URL.'}
+                        </div>
+                        <button 
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(webhookUrl);
+                            toast.success('Copied to clipboard');
+                          }}
+                          disabled={!webhookUrl}
+                          className="px-4 py-3 bg-white border border-slate-200 rounded-2xl text-slate-500 hover:text-slate-800 transition-colors disabled:opacity-50 font-bold text-xs"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    </section>
+                  </div>
+                )}
+
                 {node.data.type === 'form_trigger' && (
                   <div className="mt-10 space-y-8">
-                    <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6">
+                    <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 p-6">
                       <div className="flex items-center justify-between gap-4">
                         <div>
-                          <h3 className="text-sm font-black text-slate-800">Test URL</h3>
-                          <p className="text-xs text-slate-500">Use this authenticated endpoint to submit test form data into the workflow.</p>
+                          <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Test URL</h3>
+                          <p className="text-xs text-slate-500 dark:text-slate-500">Use this authenticated endpoint to submit test form data into the workflow.</p>
                         </div>
                       </div>
-                      <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-600 break-all">
-                        {testUrl || 'Save the workflow to generate the test URL.'}
+                      <div className="mt-4 flex items-center gap-2">
+                        <div className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-600 break-all select-all">
+                          {testUrl || 'Save the workflow to generate the test URL.'}
+                        </div>
+                        <button 
+                          className="px-4 py-3 bg-white border border-slate-200 rounded-2xl text-slate-500 hover:text-slate-800 transition-colors disabled:opacity-50 font-bold text-xs"
+                          disabled={!testUrl}
+                          onClick={() => {
+                            navigator.clipboard.writeText(testUrl);
+                            toast.success('Copied test URL');
+                          }}
+                        >
+                          Copy
+                        </button>
                       </div>
                     </section>
 
-                    <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                    <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800/20 p-6 shadow-sm">
                       <div className="mb-5">
-                        <h3 className="text-lg font-black text-slate-900">
+                        <h3 className="text-lg font-black text-slate-900 dark:text-slate-100">
                           {node.data.config?.form_title || 'Form Submission'}
                         </h3>
                         {node.data.config?.form_description ? (
-                          <p className="mt-2 text-sm text-slate-500">{node.data.config.form_description}</p>
+                          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">{node.data.config.form_description}</p>
                         ) : null}
                       </div>
 
                       <form className="space-y-4" onSubmit={handleFormSubmit}>
                         {formFields.length === 0 ? (
-                          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-400">
+                          <div className="rounded-2xl border border-dashed border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 px-4 py-6 text-sm text-slate-400 dark:text-slate-600">
                             Add at least one field above to test the form trigger.
                           </div>
                         ) : (
@@ -341,7 +388,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
 
                             return (
                               <div key={`${fieldName}_${index}`} className="space-y-2">
-                                <label className="text-xs font-black uppercase tracking-widest text-slate-400">
+                                <label className="text-xs font-black uppercase tracking-widest text-slate-400 dark:text-slate-600">
                                   {label}
                                   {field?.required ? ' *' : ''}
                                 </label>
@@ -350,7 +397,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                                     value={value}
                                     required={Boolean(field?.required)}
                                     onChange={(e) => setFormValues((prev) => ({ ...prev, [fieldName]: e.target.value }))}
-                                    className="min-h-[110px] w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:bg-white"
+                                    className="min-h-[110px] w-full rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-4 py-3 text-sm text-slate-700 dark:text-slate-300 outline-none transition-all focus:border-blue-500 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 shadow-sm"
                                   />
                                 ) : (
                                   <input
@@ -358,7 +405,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                                     value={value}
                                     required={Boolean(field?.required)}
                                     onChange={(e) => setFormValues((prev) => ({ ...prev, [fieldName]: e.target.value }))}
-                                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:bg-white"
+                                    className="w-full rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-4 py-3 text-sm text-slate-700 dark:text-slate-300 outline-none transition-all focus:border-blue-500 dark:focus:border-blue-400 focus:bg-white dark:focus:bg-slate-800 shadow-sm"
                                   />
                                 )}
                               </div>
@@ -369,7 +416,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                         <button
                           type="submit"
                           disabled={isSubmittingForm || formFields.length === 0}
-                          className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-5 py-3 text-sm font-bold text-white transition-all hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 dark:bg-slate-100 px-5 py-3 text-sm font-bold text-white dark:text-slate-900 transition-all hover:bg-slate-800 dark:hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50 shadow-lg"
                         >
                           {isSubmittingForm ? 'Submitting...' : 'Submit Test Form'}
                         </button>
@@ -382,18 +429,18 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
           </div>
 
           {/* Column 3: Output Data / Execution Result */}
-          <div className={`flex flex-col border-l border-slate-100 transition-all duration-500 ease-in-out bg-white ${isRightVisible ? 'w-[400px] opacity-100' : 'w-12 opacity-80'}`}>
-            <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 bg-white group select-none">
+          <div className={`flex flex-col border-l border-slate-100 dark:border-slate-800 transition-all duration-500 ease-in-out bg-white dark:bg-slate-900 ${isRightVisible ? 'w-[400px] opacity-100' : 'w-12 opacity-80'}`}>
+            <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900 group select-none">
               {!isRightVisible ? (
-                <button onClick={() => setIsRightVisible(true)} className="w-full h-full flex items-center justify-center hover:bg-slate-50 text-slate-300 hover:text-blue-500 transition-all">
+                <button onClick={() => setIsRightVisible(true)} className="w-full h-full flex items-center justify-center hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-300 dark:text-slate-700 hover:text-blue-500 transition-all">
                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
                 </button>
               ) : (
                 <>
-                  <button onClick={() => setIsRightVisible(false)} className="p-1 hover:bg-slate-100 rounded-md text-slate-300 hover:text-slate-600 transition-colors">
+                  <button onClick={() => setIsRightVisible(false)} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-300 dark:text-slate-700 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                   </button>
-                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500">
                     {node.data.last_execution_result ? 'EXECUTION OUTPUT' : 'OUTPUT DATA'}
                   </span>
                 </>
