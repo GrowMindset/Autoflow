@@ -47,4 +47,10 @@ export const executionService = {
     const response = await api.get(`/workflows/${workflowId}/executions/latest`);
     return response.data;
   },
+
+  listExecutions: async (workflowId?: string): Promise<any> => {
+    const params = workflowId ? { workflow_id: workflowId } : {};
+    const response = await api.get(`/executions`, { params });
+    return response.data;
+  },
 };
