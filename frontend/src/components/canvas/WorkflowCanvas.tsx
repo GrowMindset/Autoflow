@@ -40,9 +40,10 @@ const initialEdges: WorkflowEdge[] = [];
 
 interface WorkflowCanvasProps {
   workflowId: string;
+  onExecutionUpdate?: (status: string, durationMs?: number) => void;
 }
 
-const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
+const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, onExecutionUpdate }) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const connectingNodeId = useRef<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -179,7 +180,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
     }
 
     try {
-      await toast.promise(
+      if (onExecutionUpdate) onExecutionUpdate('STARTING');
+      
+      const result = await toast.promise(
         executionService.runWorkflow(workflowId),
         {
           loading: 'Starting execution...',
@@ -187,10 +190,79 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
           error: 'Failed to start execution',
         }
       );
+      
+      if (onExecutionUpdate) onExecutionUpdate('RUNNING');
+      
+      // Reset node statuses and make all edges static (no animation) during run
+      setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, executionStatus: 'PENDING' } })));
+      setEdges(eds => eds.map(e => ({ ...e, animated: false, style: { ...((e as any).style || {}), stroke: '#cbd5e1', strokeWidth: 2 } })));
+
+      const pollRef = window.setInterval(async () => {
+        try {
+          const detail = await executionService.getExecution(result.execution_id);
+          
+          // Build set of nodes that succeeded
+          const succeededNodeIds = new Set<string>(
+            (detail.node_results || []).filter((r: any) => r.status === 'SUCCEEDED').map((r: any) => r.node_id)
+          );
+          const failedNodeIds = new Set<string>(
+            (detail.node_results || []).filter((r: any) => r.status === 'FAILED').map((r: any) => r.node_id)
+          );
+
+          setNodes(nds => nds.map(n => {
+            const res = detail.node_results?.find((r: any) => r.node_id === n.id);
+            if (res) {
+              return {
+                ...n,
+                data: {
+                  ...n.data,
+                  executionStatus: res.status,
+                  last_output: res.output_data || n.data.last_output
+                }
+              };
+            }
+            return n;
+          }));
+
+          // Animate only edges that are part of the executed path
+          setEdges(eds => eds.map(e => {
+            const srcOk = succeededNodeIds.has(e.source);
+            const tgtOk = succeededNodeIds.has(e.target) || failedNodeIds.has(e.target);
+            const isExecutedPath = srcOk && tgtOk;
+            return {
+              ...e,
+              animated: isExecutedPath,
+              style: {
+                ...((e as any).style || {}),
+                stroke: isExecutedPath ? '#10b981' : '#cbd5e1',
+                strokeWidth: isExecutedPath ? 2.5 : 1.5,
+              },
+            };
+          }));
+
+          if (detail.status === 'SUCCEEDED' || detail.status === 'FAILED') {
+            clearInterval(pollRef);
+            const duration = detail.started_at && detail.finished_at 
+              ? new Date(detail.finished_at).getTime() - new Date(detail.started_at).getTime()
+              : undefined;
+            if (onExecutionUpdate) onExecutionUpdate(detail.status, duration);
+            
+            if (detail.status === 'SUCCEEDED') {
+              toast.success('Execution completed successfully!');
+            } else {
+              toast.error(detail.error_message || 'Execution failed');
+            }
+          }
+        } catch (err) {
+          console.error("Polling error", err);
+        }
+      }, 2000);
+
     } catch (error) {
       console.error('Execution failed:', error);
+      if (onExecutionUpdate) onExecutionUpdate('FAILED');
     }
-  }, [workflowId]);
+  }, [workflowId, onExecutionUpdate, setNodes, setEdges]);
 
   const isValidConnection = useCallback((connection: Connection) => {
     // Only allow one connection per source handle

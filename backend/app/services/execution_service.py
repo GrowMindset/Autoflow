@@ -32,7 +32,7 @@ class ExecutionService:
 
         start_node_id = self._resolve_start_node_id(
             definition=workflow.definition,
-            expected_type="manual_trigger",
+            expected_types=None, # any trigger is fine for manual execution tests
         )
         return await self._create_and_enqueue_execution(
             workflow=workflow,
@@ -55,7 +55,7 @@ class ExecutionService:
 
         start_node_id = self._resolve_start_node_id(
             definition=workflow.definition,
-            expected_type="form_trigger",
+            expected_types={"form_trigger"},
         )
         return await self._create_and_enqueue_execution(
             workflow=workflow,
@@ -68,34 +68,35 @@ class ExecutionService:
     async def create_webhook_execution(
         self,
         *,
-        path_token: str,
+        workflow_id: UUID,
+        path: str,
         payload: dict,
     ) -> Execution:
-        webhook = await self.db.scalar(
-            select(WebhookEndpoint)
-            .options(selectinload(WebhookEndpoint.workflow))
-            .where(
-                WebhookEndpoint.path_token == path_token,
-                WebhookEndpoint.is_active.is_(True),
-            )
-        )
-        if webhook is None:
-            raise ValueError("Webhook not found")
-
-        workflow = webhook.workflow
+        workflow = await self.db.scalar(select(Workflow).where(Workflow.id == workflow_id))
+        
         if workflow is None or not workflow.is_published:
-            raise ValueError("Webhook not found")
+            raise ValueError("Webhook not found or workflow not published")
 
-        user = await self.db.get(User, webhook.user_id)
-        if user is None:
-            raise ValueError("Webhook not found")
+        # Find the trigger node
+        target_node_id = None
+        for node in workflow.definition.get("nodes", []):
+            if node.get("type") == "webhook_trigger":
+                node_path = node.get("config", {}).get("path", "your-path").lstrip("/")
+                if node_path == path.lstrip("/"):
+                    target_node_id = node.get("id")
+                    break
+
+        if not target_node_id:
+            raise ValueError("Webhook path not found in workflow")
+
+        user = await self.db.get(User, workflow.user_id)
 
         return await self._create_and_enqueue_execution(
             workflow=workflow,
             user=user,
             triggered_by="webhook",
-            initial_payload=payload,
-            start_node_id=webhook.node_id,
+            initial_payload={"body": payload},
+            start_node_id=target_node_id,
         )
 
     async def create_node_test_execution(
@@ -281,7 +282,10 @@ class ExecutionService:
         return workflow
 
     @staticmethod
-    def _resolve_start_node_id(*, definition: dict, expected_type: str) -> str:
+    def _resolve_start_node_id(*, definition: dict, expected_types: set[str] | str = None) -> str:
+        if isinstance(expected_types, str):
+            expected_types = {expected_types}
+            
         nodes = definition.get("nodes", [])
         edges = definition.get("edges", [])
         indegree = {node.get("id"): 0 for node in nodes}
@@ -291,12 +295,24 @@ class ExecutionService:
                 indegree[target] += 1
 
         candidates = [
-            node["id"]
+            node
             for node in nodes
-            if node.get("type") == expected_type and indegree.get(node.get("id")) == 0
+            if indegree.get(node.get("id")) == 0
         ]
+        
+        if expected_types:
+            candidates = [c for c in candidates if c.get("type") in expected_types]
+        else:
+            # Default to checking against standard triggers if expected_types not provided
+            candidates = [c for c in candidates if c.get("type") in {"manual_trigger", "form_trigger", "webhook_trigger", "workflow_trigger"}]
+
         if not candidates:
-            raise ValueError(f"Workflow does not have a valid {expected_type} start node")
-        if len(candidates) > 1:
-            raise ValueError(f"Workflow has multiple {expected_type} start nodes")
-        return candidates[0]
+            raise ValueError(f"Workflow does not have a valid start node")
+            
+        # Prioritize manual_trigger if multiple triggers are found
+        manual_triggers = [c for c in candidates if c.get("type") == "manual_trigger"]
+        if manual_triggers:
+            return manual_triggers[0]["id"]
+
+        # Otherwise just return the first valid trigger found (allows testing form/webhook flows)
+        return candidates[0]["id"]

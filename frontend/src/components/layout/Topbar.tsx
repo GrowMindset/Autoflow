@@ -17,6 +17,8 @@ interface TopbarProps {
   isPublished?: boolean;
   onTogglePublish?: () => void;
   saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
+  executionState?: string;
+  lastExecutionTime?: number;
 }
 
 const Topbar: React.FC<TopbarProps> = ({
@@ -30,7 +32,9 @@ const Topbar: React.FC<TopbarProps> = ({
   onImport,
   isPublished = false,
   onTogglePublish,
-  saveStatus = 'idle'
+  saveStatus = 'idle',
+  executionState = 'idle',
+  lastExecutionTime
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [tempName, setTempName] = useState(workflowName);
@@ -206,6 +210,19 @@ const Topbar: React.FC<TopbarProps> = ({
         </button>
 
         <div className="flex items-center gap-3 mr-4">
+          {/* Execution Time state */}
+          {executionState === 'STARTING' || executionState === 'RUNNING' ? (
+             <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-purple-50/50 border border-purple-100">
+               <div className="w-3 h-3 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+               <span className="text-[9px] font-black uppercase tracking-widest text-purple-600">Running</span>
+             </div>
+          ) : lastExecutionTime !== undefined ? (
+             <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-slate-50 border border-slate-200">
+                <span className="text-[9px] font-bold text-slate-400 uppercase">Run time</span>
+                <span className="text-[10px] font-black text-slate-700">{(lastExecutionTime / 1000).toFixed(2)}s</span>
+             </div>
+          ) : null}
+
           {saveStatus === 'saving' && (
             <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-50/50">
               <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />

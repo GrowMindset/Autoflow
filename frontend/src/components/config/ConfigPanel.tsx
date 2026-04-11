@@ -50,6 +50,13 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
     return `${baseUrl}/workflows/${workflowId}/run-form`;
   }, [workflowId]);
 
+  const webhookUrl = useMemo(() => {
+    if (!workflowId || workflowId === 'new') return '';
+    const baseUrl = String(api.defaults.baseURL || '').replace(/\/$/, '');
+    const path = node.data.config?.path || 'your-path';
+    return `${baseUrl}/webhook/${workflowId}/${path.replace(/^\//, '')}`;
+  }, [workflowId, node.data.config?.path]);
+
   // Sync state if node changes externally
   const handleConfigChange = (key: string, value: any) => {
     const nextConfig = { ...node.data.config, [key]: value };
@@ -238,6 +245,34 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                   config={node.data.config}
                   onChange={handleConfigChange}
                 />
+                
+                {node.data.type === 'webhook_trigger' && (
+                  <div className="mt-10 space-y-8 animate-in fade-in slide-in-from-bottom-4">
+                    <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 flex flex-col gap-4">
+                      <div>
+                        <h3 className="text-sm font-black text-slate-800">Webhook URL</h3>
+                        <p className="text-xs text-slate-500">Send an HTTP {node.data.config?.method || 'POST'} request to this endpoint to trigger the workflow.</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-600 break-all select-all">
+                          {webhookUrl || 'Save the workflow to generate the Webhook URL.'}
+                        </div>
+                        <button 
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(webhookUrl);
+                            toast.success('Copied to clipboard');
+                          }}
+                          disabled={!webhookUrl}
+                          className="px-4 py-3 bg-white border border-slate-200 rounded-2xl text-slate-500 hover:text-slate-800 transition-colors disabled:opacity-50 font-bold text-xs"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    </section>
+                  </div>
+                )}
+
                 {node.data.type === 'form_trigger' && (
                   <div className="mt-10 space-y-8">
                     <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6">
@@ -247,8 +282,20 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                           <p className="text-xs text-slate-500">Use this authenticated endpoint to submit test form data into the workflow.</p>
                         </div>
                       </div>
-                      <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-600 break-all">
-                        {testUrl || 'Save the workflow to generate the test URL.'}
+                      <div className="mt-4 flex items-center gap-2">
+                        <div className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-600 break-all select-all">
+                          {testUrl || 'Save the workflow to generate the test URL.'}
+                        </div>
+                        <button 
+                          className="px-4 py-3 bg-white border border-slate-200 rounded-2xl text-slate-500 hover:text-slate-800 transition-colors disabled:opacity-50 font-bold text-xs"
+                          disabled={!testUrl}
+                          onClick={() => {
+                            navigator.clipboard.writeText(testUrl);
+                            toast.success('Copied test URL');
+                          }}
+                        >
+                          Copy
+                        </button>
                       </div>
                     </section>
 
