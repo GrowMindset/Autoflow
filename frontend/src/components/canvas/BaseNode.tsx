@@ -44,21 +44,29 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
 
   return (
     <div
-      className={`px-3 py-2.5 rounded-xl border-2 transition-all shadow-none min-w-[150px] max-w-[150px] bg-white dark:bg-slate-900 group/node relative 
+      className={`px-3 py-2.5 rounded-xl border-2 transition-all shadow-none min-w-[150px] max-w-[150px] group/node relative 
         ${selected ? 'ring-2 ring-blue-500/10 border-blue-500' : 'border-slate-200 dark:border-slate-800'}
-        ${data.status === 'RUNNING' ? 'border-emerald-600 ring-4 ring-emerald-400/30 bg-emerald-50 dark:bg-emerald-900/20 animate-pulse' : ''}
-        ${data.status === 'SUCCEEDED' ? 'border-emerald-500 ring-4 ring-emerald-500/10 dark:bg-emerald-900/10' : ''}
-        ${data.status === 'FAILED' ? 'border-rose-500 ring-4 ring-rose-500/10 dark:bg-rose-900/10' : ''}
+        ${data.status === 'RUNNING' ? 'border-emerald-600 ring-[6px] ring-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-900/10 animate-pulse' : ''}
+        ${data.status === 'SUCCEEDED' ? 'bg-emerald-50/30 dark:bg-emerald-500/5 border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)] ring-[6px] ring-emerald-500/30' : 'bg-white dark:bg-slate-900'}
+        ${data.status === 'FAILED' ? 'bg-rose-50/30 dark:bg-rose-500/5 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.2)] ring-[6px] ring-rose-500/30' : ''}
       `}
-      style={{ borderTop: `px solid ${data.status === 'RUNNING' ? '#045e41' : accentColor}` }}
+      style={{ borderTop: `px solid ${
+        data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '#10b981' : 
+        data.status === 'FAILED' ? '#f43f5e' : 
+        accentColor
+      }` }}
       title={hasIncomplete ? 'This node is missing required configuration' : ''}
     >
       {/* Execution Status Icon */}
       {data.status && (
-        <div className="absolute -top-3 -right-3 p-1 rounded-full bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 shadow-md z-20">
+        <div className={`absolute -top-3 -right-3 p-1 rounded-full border shadow-md z-20 transition-all duration-300 ${
+          data.status === 'SUCCEEDED' ? 'bg-emerald-500 border-emerald-400' :
+          data.status === 'FAILED' ? 'bg-rose-500 border-rose-400' :
+          'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700'
+        }`}>
           {data.status === 'RUNNING' && <Loader2 size={12} className="text-emerald-600 dark:text-emerald-400 animate-spin" />}
-          {data.status === 'SUCCEEDED' && <Check size={12} className="text-emerald-500 dark:text-emerald-400" strokeWidth={3} />}
-          {data.status === 'FAILED' && <AlertCircle size={12} className="text-rose-500 dark:text-rose-400" />}
+          {data.status === 'SUCCEEDED' && <Check size={12} className="text-white" strokeWidth={4} />}
+          {data.status === 'FAILED' && <AlertCircle size={12} className="text-white" />}
         </div>
       )}
 
@@ -85,23 +93,48 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       <Handle
         type="target"
         position={Position.Left}
-        className={`!w-1.5 !h-1.5 border border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-200 dark:!bg-slate-700'}`}
+        className={`!w-1.5 !h-1.5 border border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${
+          data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '!bg-emerald-500' : 
+          data.status === 'FAILED' ? '!bg-rose-500' : 
+          '!bg-slate-200 dark:!bg-slate-700'
+        }`}
         style={{ left: -4 }}
       />
 
       <div className="flex flex-col gap-1 mt-0.5">
         <div className="flex items-center justify-between gap-3">
-          <span className={`text-[8px] font-black uppercase tracking-widest`} style={{ color: data.status === 'RUNNING' ? '#059669' : accentColor }}>
+          <span className={`text-[8px] font-black uppercase tracking-widest`} style={{ 
+            color: data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '#059669' : 
+                   data.status === 'FAILED' ? '#e11d48' : 
+                   accentColor 
+          }}>
             {data.category}
           </span>
           {data.is_dummy && <NodeBadge variant="neutral">Soon</NodeBadge>}
         </div>
 
-        <h3 className={`text-xs font-bold leading-tight truncate ${data.status === 'RUNNING' ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-800 dark:text-slate-100'}`}>{data.label}</h3>
+        <h3 className={`text-xs font-bold leading-tight truncate ${
+          data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'text-emerald-900 dark:text-emerald-100' : 
+          data.status === 'FAILED' ? 'text-rose-900 dark:text-rose-100' : 
+          'text-slate-800 dark:text-slate-100'
+        }`}>{data.label}</h3>
 
-        <div className={`mt-1.5 flex items-center justify-between border-t ${data.status === 'RUNNING' ? 'border-emerald-200 dark:border-emerald-900/50' : 'border-slate-50 dark:border-slate-800/50'} pt-1.5 text-[8px] font-bold uppercase tracking-tighter ${data.status === 'RUNNING' ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>
+        <div className={`mt-1.5 flex items-center justify-between border-t ${
+          data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'border-emerald-200 dark:border-emerald-900/50' : 
+          data.status === 'FAILED' ? 'border-rose-200 dark:border-rose-900/50' : 
+          'border-slate-50 dark:border-slate-800/50'
+        } pt-1.5 text-[8px] font-bold uppercase tracking-tighter ${
+          data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'text-emerald-600 dark:text-emerald-400' : 
+          data.status === 'FAILED' ? 'text-rose-600 dark:text-rose-400' : 
+          'text-slate-400 dark:text-slate-500'
+        }`}>
           <span className="truncate max-w-[100px]">{data.type.replace('_', ' ')}</span>
-          <div className={`w-1 h-1 rounded-full ${data.status === 'RUNNING' ? 'bg-emerald-500 animate-pulse' : data.is_dummy ? 'bg-slate-200 dark:bg-slate-700' : 'bg-green-400'}`} />
+          <div className={`w-1 h-1 rounded-full ${
+            data.status === 'RUNNING' ? 'bg-emerald-500 animate-pulse' : 
+            data.status === 'SUCCEEDED' ? 'bg-emerald-500' : 
+            data.status === 'FAILED' ? 'bg-rose-500' : 
+            data.is_dummy ? 'bg-slate-200 dark:bg-slate-700' : 'bg-green-400'
+          }`} />
         </div>
       </div>
 

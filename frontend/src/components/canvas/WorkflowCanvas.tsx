@@ -132,15 +132,44 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setIsAligned(!misaligned);
   }, [nodes]);
 
-  // Update edges to show green when source node is running
+  // Update edges to show status animations path-aware
   useEffect(() => {
     setEdges((eds) =>
       eds.map((edge) => {
         const sourceNode = nodes.find(n => n.id === edge.source);
-        const isRunning = sourceNode?.data.status === 'RUNNING';
+        const status = sourceNode?.data.status;
+        const result = sourceNode?.data.last_execution_result;
+        
+        let shouldAnimate = false;
+        let isActivePath = false;
+
+        if (status === 'RUNNING') {
+          shouldAnimate = true;
+          isActivePath = true;
+        } else if (status === 'SUCCEEDED') {
+          // For successful nodes, we check if this specific edge was part of the path
+          const output = result?.output_data;
+          const chosenBranch = output?._branch;
+
+          const isBranchingNode = ['if_else', 'switch'].includes(sourceNode?.data.type || '');
+
+          if (!isBranchingNode) {
+            // Linear flow: success means path was taken
+            shouldAnimate = true;
+            isActivePath = true;
+          } else if (chosenBranch !== undefined) {
+            // Branching flow: only animate the edge that matches the chosen branch
+            if (String(edge.sourceHandle) === String(chosenBranch)) {
+              shouldAnimate = true;
+              isActivePath = true;
+            }
+          }
+        }
+
         return {
           ...edge,
-          data: { isRunning },
+          animated: shouldAnimate,
+          data: { ...edge.data, isActivePath },
         } as any;
       })
     );
@@ -457,7 +486,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       branch: params.sourceHandle ?? undefined,
       id: `e_${params.source}_${params.target}_${params.sourceHandle || 'def'}_${Date.now()}`,
       type: 'deletable',
-      animated: true,
+      animated: false,
       style: { stroke: '#94a3b8', strokeWidth: 2 },
       markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' }
     };
@@ -618,7 +647,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       type: 'deletable',
       sourceHandle: e.sourceHandle || e.branch || null,
       targetHandle: e.targetHandle || null,
-      animated: true,
+      animated: false,
       style: { stroke: '#94a3b8', strokeWidth: 2 },
       markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
     }));
