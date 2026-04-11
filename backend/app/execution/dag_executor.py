@@ -5,7 +5,7 @@ from app.execution.context import ExecutionContext
 from app.execution.registry import RunnerRegistry
 
 
-TRIGGER_NODE_TYPES = {"manual_trigger", "form_trigger", "webhook_trigger"}
+TRIGGER_NODE_TYPES = {"manual_trigger", "form_trigger", "webhook_trigger", "workflow_trigger"}
 BRANCHING_NODE_TYPES = {"if_else", "switch"}
 UNSUPPORTED_RUNTIME_NODE_TYPES = set()
 

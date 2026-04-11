@@ -16,6 +16,7 @@ interface Workflow {
 const MainLayout: React.FC = () => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [currentWorkflowId, setCurrentWorkflowId] = useState<string>('');
+  const [newWorkflowDraftName, setNewWorkflowDraftName] = useState<string>('Untitled Workflow');
   const [isLoading, setIsLoading] = useState(true);
   const [isLeftSidebarCollapsed, setIsLeftSidebarCollapsed] = useState(false);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
@@ -23,6 +24,15 @@ const MainLayout: React.FC = () => {
   // Save Status State
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [currentDescription, setCurrentDescription] = useState<string>('');
+
+  // Execution State
+  const [executionState, setExecutionState] = useState<string>('idle');
+  const [lastExecutionDuration, setLastExecutionDuration] = useState<number | undefined>(undefined);
+
+  const handleExecutionUpdate = useCallback((status: string, durationMs?: number) => {
+    setExecutionState(status);
+    if (durationMs !== undefined) setLastExecutionDuration(durationMs);
+  }, []);
 
   // Initial fetch
   useEffect(() => {
@@ -43,12 +53,16 @@ const MainLayout: React.FC = () => {
     fetchWorkflows();
   }, []);
 
-  const currentWorkflow = workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };
+  const currentWorkflow = currentWorkflowId === 'new'
+    ? { id: 'new', name: newWorkflowDraftName, is_published: false }
+    : workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };
+    
   const isPublished = currentWorkflow.is_published || false;
 
   const onNewWorkflow = useCallback(() => {
     // They will get an ID once saved to the backend.
     setCurrentWorkflowId('new');
+    setNewWorkflowDraftName('Untitled Workflow');
     setCurrentDescription('');
     if ((window as any).loadCanvasWorkflowData) {
       (window as any).loadCanvasWorkflowData({ nodes: [], edges: [] });
@@ -57,7 +71,11 @@ const MainLayout: React.FC = () => {
   }, []);
 
   const onRenameWorkflow = useCallback((id: string, newName: string) => {
-    setWorkflows(prev => prev.map(w => w.id === id ? { ...w, name: newName } : w));
+    if (id === 'new') {
+      setNewWorkflowDraftName(newName);
+    } else {
+      setWorkflows(prev => prev.map(w => w.id === id ? { ...w, name: newName } : w));
+    }
     toast.success(`Workflow renamed to "${newName}"`);
   }, []);
 
@@ -69,8 +87,7 @@ const MainLayout: React.FC = () => {
 
     // Update current workflow in list or create a "new" draft if current is 'new'
     if (currentWorkflowId === 'new') {
-      // Just update the temporary visual state
-      setWorkflows(prev => prev.map(w => w.id === 'new' ? { ...w, name: data.name || 'Imported Workflow' } : w));
+      setNewWorkflowDraftName(data.name || 'Imported Workflow');
     } else {
       setWorkflows(prev => prev.map(w => w.id === currentWorkflowId ? { ...w, name: data.name || w.name } : w));
     }
@@ -227,7 +244,7 @@ const MainLayout: React.FC = () => {
       />
 
       <div className="flex-1 flex flex-col min-w-0 relative">
-        {/* Topbar with Editable Title */}
+
         <Topbar
           workflowName={currentWorkflow.name}
           workflowDescription={currentDescription}
@@ -243,12 +260,18 @@ const MainLayout: React.FC = () => {
           onTogglePublish={handleTogglePublish}
           saveStatus={saveStatus}
           onImport={handleImportWorkflow}
+          executionState={executionState}
+          lastExecutionTime={lastExecutionDuration}
         />
 
         <div className="flex-1 flex overflow-hidden">
           {/* Main Canvas Area */}
           <main className="flex-1 overflow-hidden relative">
-            <WorkflowCanvas key={currentWorkflowId} workflowId={currentWorkflowId} />
+            <WorkflowCanvas 
+              key={currentWorkflowId} 
+              workflowId={currentWorkflowId} 
+              onExecutionUpdate={handleExecutionUpdate}
+            />
           </main>
 
           {/* Node Palette (Right Sidebar) - Now a push-sidebar */}

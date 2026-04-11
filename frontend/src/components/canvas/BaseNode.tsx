@@ -3,6 +3,7 @@ import { Handle, Position, NodeProps, useUpdateNodeInternals, useReactFlow } fro
 import { WorkflowNodeData } from '../../types/workflow';
 import { CATEGORY_ACCENTS } from '../../constants/nodeLibrary';
 import NodeBadge from '../sidebar/NodeBadge';
+import { Loader2, X } from 'lucide-react';
 
 const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected }) => {
   const accentColor = CATEGORY_ACCENTS[data.category] || '#cbd5e1';
@@ -20,18 +21,28 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
     updateNodeInternals(id);
   }, [id, caseIds, updateNodeInternals]);
 
+  let statusRingClass = '';
+  if (data.executionStatus === 'SUCCEEDED') statusRingClass = 'ring-[3px] ring-emerald-500/50 border-emerald-500 bg-emerald-50/10';
+  if (data.executionStatus === 'FAILED') statusRingClass = 'ring-[3px] ring-rose-500/50 border-rose-500 bg-rose-50/10';
+
   return (
     <div
-      className={`px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 transition-all shadow-sm min-w-[150px] max-w-[150px] bg-white dark:bg-slate-900 group/node transition-colors duration-300 ${selected ? 'ring-2 ring-blue-500/10 border-blue-500 dark:border-blue-400' : ''} ${
-        data.executionStatus === 'SUCCEEDED' ? 'ring-2 ring-emerald-500/20 !border-emerald-500' :
-        data.executionStatus === 'FAILED' ? 'ring-2 ring-rose-500/20 !border-rose-500' : ''
-      }`}
+      className={`relative px-3 py-2.5 rounded-xl border transition-all shadow-sm min-w-[150px] max-w-[150px] bg-white group/node 
+        ${selected && !statusRingClass ? 'ring-2 ring-blue-500/20 border-blue-500' : 'border-slate-200'}
+        ${statusRingClass}
+      `}
       style={{ borderTop: `4px solid ${accentColor}` }}
     >
-      {/* Execution Spinner Overlay */}
+      {/* Execution Overlay */}
       {data.executionStatus === 'RUNNING' && (
-        <div className="absolute inset-0 z-20 bg-white/60 dark:bg-slate-900/60 backdrop-blur-[1px] rounded-xl flex items-center justify-center animate-in fade-in duration-300">
-           <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] rounded-xl flex items-center justify-center z-[100] animate-in fade-in">
+          <Loader2 size={24} className="text-blue-600 animate-spin" />
+        </div>
+      )}
+      
+      {data.executionStatus === 'FAILED' && (
+        <div className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-rose-500 text-white flex items-center justify-center shadow-sm z-50">
+          <X size={12} strokeWidth={4} />
         </div>
       )}
 
