@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import Topbar from './Topbar';
 import NodeSidebar from '../sidebar/NodeSidebar';
@@ -29,7 +29,42 @@ const MainLayout: React.FC = () => {
   // Logs Panel State
   const [logsVisible, setLogsVisible] = useState(false);
   const [executionLogs, setExecutionLogs] = useState<any[]>([]);
-  const [logsPanelHeight] = useState(240);
+  const [logsPanelHeight, setLogsPanelHeight] = useState(240);
+  const logsResizingRef = useRef(false);
+  const logsStartYRef = useRef(0);
+  const logsStartHeightRef = useRef(240);
+
+  // Resize log panel
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!logsResizingRef.current) return;
+      const delta = logsStartYRef.current - event.clientY;
+      const nextHeight = Math.min(480, Math.max(160, logsStartHeightRef.current + delta));
+      setLogsPanelHeight(nextHeight);
+    };
+
+    const handleMouseUp = () => {
+      if (!logsResizingRef.current) return;
+      logsResizingRef.current = false;
+      document.body.style.cursor = '';
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+    };
+  }, []);
+
+  const handleLogResizeStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    logsResizingRef.current = true;
+    logsStartYRef.current = event.clientY;
+    logsStartHeightRef.current = logsPanelHeight;
+    document.body.style.cursor = 'row-resize';
+  }, [logsPanelHeight]);
 
   // Execution State
   const [executionState] = useState<string>('idle');
@@ -296,16 +331,23 @@ const MainLayout: React.FC = () => {
         <div className="flex-1 flex overflow-hidden">
           {/* Main Canvas Area */}
           <main className="flex-1 overflow-hidden relative">
-            <WorkflowCanvas key={currentWorkflowId} workflowId={currentWorkflowId} />
+            <WorkflowCanvas key={currentWorkflowId} workflowId={currentWorkflowId} logsVisible={logsVisible} logsHeight={logsPanelHeight} />
 
             {/* Logs Panel */}
             {logsVisible && (
-              <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4 overflow-hidden shadow-lg" style={{ height: logsPanelHeight, minHeight: 160, maxHeight: 480, resize: 'vertical' }}>
+              <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4 overflow-auto shadow-lg" style={{ height: logsPanelHeight, minHeight: 160, maxHeight: 480 }}>
                 <div className="sticky top-0 z-10 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 pb-3 mb-3">
+                  <div className="flex flex-col items-center gap-2 mb-3">
+                    <div
+                      className="w-10 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600 cursor-row-resize"
+                      onMouseDown={handleLogResizeStart}
+                      title="Drag to resize logs"
+                    />
+                  </div>
                   <div className="flex items-center justify-between gap-4">
                     <div>
                       <h3 className="text-sm font-bold text-slate-800">Execution Logs</h3>
-                      <p className="text-xs text-slate-400">Drag the panel edge to resize</p>
+                      <p className="text-xs text-slate-400">Drag the handle above to resize</p>
                     </div>
                     <button
                       onClick={() => setLogsVisible(false)}

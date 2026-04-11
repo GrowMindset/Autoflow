@@ -41,9 +41,11 @@ const initialEdges: WorkflowEdge[] = [];
 
 interface WorkflowCanvasProps {
   workflowId: string;
+  logsVisible?: boolean;
+  logsHeight?: number;
 }
 
-const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
+const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible = false, logsHeight = 0 }) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const connectingNode = useRef<{ nodeId: string; handleId: string | null } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -618,7 +620,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
         fitView
       >
         {/* Floating Action Buttons - Bottom Center */}
-        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[1000] flex flex-row items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-500">
+        <div
+          className="absolute left-1/2 -translate-x-1/2 z-[1000] flex flex-row items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-500"
+          style={{ bottom: logsVisible ? logsHeight + 24 : 40 }}
+        >
           {!isAligned && (
             <button
               onClick={alignNodes}
@@ -647,7 +652,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
           size={1} 
           color={isDark ? '#ffffff' : '#000000'} 
         />
-        <Controls position="bottom-right" className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg !m-4 !mr-[230px]" />
+        <Controls
+          position="bottom-right"
+          className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg !mr-[230px]"
+          style={{ bottom: logsVisible ? logsHeight + 24 : 16 }}
+        />
         <MiniMap
           className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-lg !m-4 overflow-hidden"
           nodeColor={(n) => {
