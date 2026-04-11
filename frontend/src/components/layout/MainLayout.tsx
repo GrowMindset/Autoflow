@@ -1,11 +1,12 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import Topbar from './Topbar';
+import ExecutionLogsFooter from './ExecutionLogsFooter';
 import NodeSidebar from '../sidebar/NodeSidebar';
 import WorkflowSidebar from '../sidebar/WorkflowSidebar';
 import WorkflowCanvas from '../canvas/WorkflowCanvas';
 import { workflowService } from '../../services/workflowService';
-import { executionService } from '../../services/executionService';
+import { ExecutionDetail } from '../../services/executionService';
 
 interface Workflow {
   id: string;
@@ -27,19 +28,21 @@ const MainLayout: React.FC = () => {
   const [currentDescription, setCurrentDescription] = useState<string>('');
 
   // Logs Panel State
-  const [logsVisible, setLogsVisible] = useState(false);
-  const [executionLogs, setExecutionLogs] = useState<any[]>([]);
-  const [logsPanelHeight, setLogsPanelHeight] = useState(240);
+  const [logsExpanded, setLogsExpanded] = useState(false);
+  const [logsPanelHeight, setLogsPanelHeight] = useState(320);
+  const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(null);
+  const [currentExecutionDetail, setCurrentExecutionDetail] = useState<ExecutionDetail | null>(null);
   const logsResizingRef = useRef(false);
   const logsStartYRef = useRef(0);
-  const logsStartHeightRef = useRef(240);
+  const logsStartHeightRef = useRef(320);
+  const FOOTER_COLLAPSED_HEIGHT = 52;
 
   // Resize log panel
   useEffect(() => {
     const handleMouseMove = (event: MouseEvent) => {
       if (!logsResizingRef.current) return;
       const delta = logsStartYRef.current - event.clientY;
-      const nextHeight = Math.min(480, Math.max(160, logsStartHeightRef.current + delta));
+      const nextHeight = Math.min(560, Math.max(220, logsStartHeightRef.current + delta));
       setLogsPanelHeight(nextHeight);
     };
 
@@ -67,8 +70,8 @@ const MainLayout: React.FC = () => {
   }, [logsPanelHeight]);
 
   // Execution State
-  const [executionState] = useState<string>('idle');
-  const [lastExecutionDuration] = useState<number | undefined>(undefined);
+  const [executionState, setExecutionState] = useState<string>('idle');
+  const [lastExecutionDuration, setLastExecutionDuration] = useState<number | undefined>(undefined);
 
   // Initial fetch
   useEffect(() => {
@@ -94,29 +97,7 @@ const MainLayout: React.FC = () => {
     : workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };
     
   const isPublished = currentWorkflow.is_published || false;
-
-  const loadExecutionLogs = useCallback(async () => {
-    if (currentWorkflowId === 'new') {
-      toast.error('Please save the workflow first');
-      return;
-    }
-    try {
-      const executionDetail = await executionService.getLatestExecution(currentWorkflowId);
-      const logs = executionDetail.node_results.map((node: any) => ({
-        node_id: node.node_id,
-        node_type: node.node_type,
-        status: node.status,
-        error_message: node.error_message,
-        started_at: node.started_at,
-        finished_at: node.finished_at,
-        branch: node.output_data?._branch ?? node.input_data?._branch ?? null,
-      }));
-      setExecutionLogs(logs);
-    } catch (error) {
-      console.error('Failed to load execution logs', error);
-      toast.error('Failed to load execution logs');
-    }
-  }, [currentWorkflowId]);
+  const footerOffset = logsExpanded ? logsPanelHeight : FOOTER_COLLAPSED_HEIGHT;
 
   const onNewWorkflow = useCallback(() => {
     // They will get an ID once saved to the backend.
@@ -126,6 +107,10 @@ const MainLayout: React.FC = () => {
     if ((window as any).loadCanvasWorkflowData) {
       (window as any).loadCanvasWorkflowData({ nodes: [], edges: [] });
     }
+    setCurrentExecutionId(null);
+    setCurrentExecutionDetail(null);
+    setExecutionState('idle');
+    setLastExecutionDuration(undefined);
     toast.success('Started a fresh workflow draft');
   }, []);
 
@@ -168,6 +153,10 @@ const MainLayout: React.FC = () => {
     }
 
     setCurrentWorkflowId(id);
+    setCurrentExecutionId(null);
+    setCurrentExecutionDetail(null);
+    setExecutionState('idle');
+    setLastExecutionDuration(undefined);
     setIsLoading(true);
     try {
       const fullWorkflow = await workflowService.getWorkflow(id);
@@ -321,82 +310,36 @@ const MainLayout: React.FC = () => {
           onImport={handleImportWorkflow}
           executionState={executionState}
           lastExecutionTime={lastExecutionDuration}
-          onToggleLogs={() => {
-            setLogsVisible(!logsVisible);
-            if (!logsVisible) loadExecutionLogs();
-          }}
-          logsVisible={logsVisible}
         />
 
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex overflow-hidden relative">
           {/* Main Canvas Area */}
           <main className="flex-1 overflow-hidden relative">
-            <WorkflowCanvas key={currentWorkflowId} workflowId={currentWorkflowId} logsVisible={logsVisible} logsHeight={logsPanelHeight} />
+            <WorkflowCanvas
+              key={currentWorkflowId}
+              workflowId={currentWorkflowId}
+              footerOffset={footerOffset}
+              onExecutionStart={(executionId) => {
+                setCurrentExecutionId(executionId);
+                setCurrentExecutionDetail(null);
+                setExecutionState('RUNNING');
+                setLastExecutionDuration(undefined);
+              }}
+              onExecutionUpdate={(detail) => {
+                setCurrentExecutionDetail(detail);
+                setExecutionState(
+                  detail.status === 'PENDING' ? 'RUNNING' : detail.status
+                );
 
-            {/* Logs Panel */}
-            {logsVisible && (
-              <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4 overflow-auto shadow-lg" style={{ height: logsPanelHeight, minHeight: 160, maxHeight: 480 }}>
-                <div className="sticky top-0 z-10 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 pb-3 mb-3">
-                  <div className="flex flex-col items-center gap-2 mb-3">
-                    <div
-                      className="w-10 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600 cursor-row-resize"
-                      onMouseDown={handleLogResizeStart}
-                      title="Drag to resize logs"
-                    />
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-800">Execution Logs</h3>
-                      <p className="text-xs text-slate-400">Drag the handle above to resize</p>
-                    </div>
-                    <button
-                      onClick={() => setLogsVisible(false)}
-                      className="text-slate-400 hover:text-slate-600"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18"/>
-                        <line x1="6" y1="6" x2="18" y2="18"/>
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-                <div className="h-[calc(100%-64px)] overflow-y-auto pr-1 custom-scrollbar">
-                  {executionLogs.length === 0 ? (
-                    <p className="text-sm text-slate-500">No execution logs available. Run the workflow to see logs.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {executionLogs.map((log, index) => (
-                        <div key={index} className="flex flex-col gap-2 p-2 bg-slate-50 rounded text-xs">
-                          <div className="flex items-center gap-2">
-                            <div className={`w-2 h-2 rounded-full ${log.status === 'SUCCEEDED' ? 'bg-green-500' : log.status === 'FAILED' ? 'bg-red-500' : 'bg-yellow-500'}`} />
-                            <span className="font-mono text-slate-600 truncate">{log.node_id}</span>
-                            <span className="text-slate-400">({log.node_type})</span>
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${log.status === 'SUCCEEDED' ? 'bg-green-100 text-green-700' : log.status === 'FAILED' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                              {log.status}
-                            </span>
-                          </div>
-                          {log.error_message && (
-                            <div className="text-red-600 bg-red-50 p-2 rounded text-[11px]">
-                              {log.error_message}
-                            </div>
-                          )}
-                          {log.branch && (
-                            <div className="text-slate-600 text-[11px]">
-                              Branch: <span className="font-semibold">{log.branch}</span>
-                            </div>
-                          )}
-                          {log.started_at && log.finished_at && (
-                            <div className="text-slate-400 text-[10px]">
-                              {new Date(log.started_at).toLocaleTimeString()} - {new Date(log.finished_at).toLocaleTimeString()}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+                if (detail.started_at && detail.finished_at) {
+                  setLastExecutionDuration(
+                    new Date(detail.finished_at).getTime() - new Date(detail.started_at).getTime()
+                  );
+                } else if (detail.status === 'RUNNING' || detail.status === 'PENDING') {
+                  setLastExecutionDuration(undefined);
+                }
+              }}
+            />
           </main>
 
           {/* Node Palette (Right Sidebar) - Now a push-sidebar */}
@@ -408,6 +351,15 @@ const MainLayout: React.FC = () => {
               <NodeSidebar onClose={() => setIsRightSidebarOpen(false)} />
             </div>
           </div>
+
+          <ExecutionLogsFooter
+            executionId={currentExecutionId}
+            executionDetail={currentExecutionDetail}
+            isExpanded={logsExpanded}
+            panelHeight={logsPanelHeight}
+            onToggle={() => setLogsExpanded((prev) => !prev)}
+            onResizeStart={handleLogResizeStart}
+          />
         </div>
       </div>
     </div>

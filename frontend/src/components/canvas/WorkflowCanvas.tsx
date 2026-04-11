@@ -20,7 +20,7 @@ import DeletableEdge from './DeletableEdge';
 import { NODE_LIBRARY } from '../../constants/nodeLibrary';
 import { createNode } from '../../utils/nodeFactory';
 import ConfigPanel from '../config/ConfigPanel';
-import { executionService } from '../../services/executionService';
+import { executionService, ExecutionDetail } from '../../services/executionService';
 import toast from 'react-hot-toast';
 import { useTheme } from '../../context/ThemeContext';
 import { Play, LayoutGrid } from 'lucide-react';
@@ -41,11 +41,17 @@ const initialEdges: WorkflowEdge[] = [];
 
 interface WorkflowCanvasProps {
   workflowId: string;
-  logsVisible?: boolean;
-  logsHeight?: number;
+  footerOffset?: number;
+  onExecutionStart?: (executionId: string) => void;
+  onExecutionUpdate?: (detail: ExecutionDetail) => void;
 }
 
-const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible = false, logsHeight = 0 }) => {
+const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
+  workflowId,
+  footerOffset = 0,
+  onExecutionStart,
+  onExecutionUpdate,
+}) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const connectingNode = useRef<{ nodeId: string; handleId: string | null } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -65,6 +71,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
 
   // Execution State
   const pollingIntervalRef = useRef<number | null>(null);
+  const activeExecutionIdRef = useRef<string | null>(null);
 
   // Trigger Form Modal State
   const [showTriggerForm, setShowTriggerForm] = useState(false);
@@ -206,17 +213,21 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
   }, []);
 
   const pollExecution = useCallback(async (executionId: string) => {
+    if (activeExecutionIdRef.current !== executionId) {
+      return;
+    }
+
     try {
       const detail = await executionService.getExecution(executionId);
-      console.log('Polling response:', detail);
-      console.log('Node results:', detail.node_results);
+      if (activeExecutionIdRef.current !== executionId) {
+        return;
+      }
       
       // Update nodes with their execution status and results
       setNodes((nds) =>
         nds.map((node) => {
-          const result = detail.node_results.find((r: any) => r.node_id === node.id);
+          const result = detail.node_results.find((r) => r.node_id === node.id);
           if (result) {
-            console.log(`Updating node ${node.id} with status: ${result.status}`);
             return {
               ...node,
               data: {
@@ -229,9 +240,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
           return node;
         })
       );
+      onExecutionUpdate?.(detail);
 
       if (detail.status === 'SUCCEEDED' || detail.status === 'FAILED') {
         stopPolling();
+        activeExecutionIdRef.current = null;
         if (detail.status === 'SUCCEEDED') {
           toast.success('Workflow finished successfully');
         } else {
@@ -242,7 +255,17 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
       console.error('Polling failed:', error);
       stopPolling();
     }
-  }, [setNodes, stopPolling]);
+  }, [onExecutionUpdate, setNodes, stopPolling]);
+
+  const beginExecutionTracking = useCallback((executionId: string) => {
+    stopPolling();
+    activeExecutionIdRef.current = executionId;
+    onExecutionStart?.(executionId);
+    void pollExecution(executionId);
+    pollingIntervalRef.current = window.setInterval(() => {
+      void pollExecution(executionId);
+    }, 2000);
+  }, [onExecutionStart, pollExecution, stopPolling]);
 
   const handleRunWorkflow = useCallback(async () => {
     if (workflowId === 'new') {
@@ -256,17 +279,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
     });
     const rootTriggers = triggerCandidates.filter(node => !edges.some(edge => edge.target === node.id));
 
-    console.groupCollapsed('Workflow execution debug');
-    console.log('triggerTypes', triggerTypes);
-    console.log('nodes', nodes.map(node => ({ id: node.id, type: node.type, dataType: node.data.type, category: node.data.category })));
-    console.log('edges', edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle, targetHandle: edge.targetHandle })));
-    console.log('triggerCandidates', triggerCandidates.map(node => ({ id: node.id, type: node.type, dataType: node.data.type })));
-    console.log('rootTriggers', rootTriggers.map(node => ({ id: node.id, type: node.type, dataType: node.data.type })));
-    console.groupEnd();
-
     if (rootTriggers.length === 0) {
       if (triggerCandidates.length === 0) {
-        console.warn('No trigger candidates found', { nodes, edges });
         toast.error('No trigger nodes found in workflow. Please add a Manual Trigger, Form Trigger, Webhook Trigger, or Workflow Trigger node.');
         return;
       }
@@ -283,15 +297,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
         );
 
         try {
-          console.log('Attempting to call executionService.runWorkflow', { workflowId, triggerType: trigger.data.type });
           if (trigger.data.type === 'manual_trigger') {
             const enqueue = await executionService.runWorkflow(workflowId);
-            console.log('runWorkflow response', enqueue);
             toast.success('Workflow execution started!');
-
-            pollingIntervalRef.current = setInterval(() => {
-              pollExecution(enqueue.execution_id);
-            }, 2000);
+            beginExecutionTracking(enqueue.execution_id);
           } else if (trigger.data.type === 'form_trigger') {
             setTriggerNode(trigger);
             setShowTriggerForm(true);
@@ -327,16 +336,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
     );
 
     try {
-      console.log('Attempting to call executionService.runWorkflow', { workflowId, triggerType: trigger.data.type });
       if (trigger.data.type === 'manual_trigger') {
         const enqueue = await executionService.runWorkflow(workflowId);
-        console.log('runWorkflow response', enqueue);
         toast.success('Workflow execution started!');
-        
-        // Start polling
-        pollingIntervalRef.current = setInterval(() => {
-          pollExecution(enqueue.execution_id);
-        }, 2000);
+        beginExecutionTracking(enqueue.execution_id);
       } else if (trigger.data.type === 'form_trigger') {
         // Show form modal for form trigger
         setTriggerNode(trigger);
@@ -351,7 +354,16 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
       console.error('Execution failed:', error);
       toast.error('Workflow execution failed. Check console for details.');
     }
-  }, [workflowId, nodes, edges, pollExecution]);
+  }, [workflowId, nodes, edges, beginExecutionTracking]);
+
+  useEffect(() => {
+    stopPolling();
+    activeExecutionIdRef.current = null;
+    return () => {
+      stopPolling();
+      activeExecutionIdRef.current = null;
+    };
+  }, [workflowId, stopPolling]);
 
   const isValidConnection = useCallback((connection: Connection) => {
     // Only allow one connection per source handle
@@ -622,7 +634,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
         {/* Floating Action Buttons - Bottom Center */}
         <div
           className="absolute left-1/2 -translate-x-1/2 z-[1000] flex flex-row items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-500"
-          style={{ bottom: logsVisible ? logsHeight + 24 : 40 }}
+          style={{ bottom: footerOffset + 24 }}
         >
           {!isAligned && (
             <button
@@ -655,7 +667,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
         <Controls
           position="bottom-right"
           className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg !mr-[230px]"
-          style={{ bottom: logsVisible ? logsHeight + 24 : 16 }}
+          style={{ bottom: footerOffset + 16 }}
         />
         <MiniMap
           className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-lg !m-4 overflow-hidden"
@@ -755,11 +767,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId, logsVisible
                       setShowTriggerForm(false);
                       setTriggerFormData({});
                       setTriggerNode(null);
-
-                      // Start polling
-                      pollingIntervalRef.current = setInterval(() => {
-                        pollExecution(enqueue.execution_id);
-                      }, 2000);
+                      beginExecutionTracking(enqueue.execution_id);
                     } catch (error) {
                       console.error('Form submission failed:', error);
                       toast.error('Failed to start workflow execution');

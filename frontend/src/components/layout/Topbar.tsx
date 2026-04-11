@@ -18,8 +18,6 @@ interface TopbarProps {
   isPublished?: boolean;
   onTogglePublish?: () => void;
   saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
-  onToggleLogs?: () => void;
-  logsVisible?: boolean;
   executionState?: string;
   lastExecutionTime?: number;
 }
@@ -36,8 +34,6 @@ const Topbar: React.FC<TopbarProps> = ({
   isPublished = false,
   onTogglePublish,
   saveStatus = 'idle',
-  onToggleLogs,
-  logsVisible = false,
   executionState = 'idle',
   lastExecutionTime,
 }) => {
@@ -252,23 +248,6 @@ const Topbar: React.FC<TopbarProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 mr-4 border-r border-slate-100 pr-4">
-          {onToggleLogs && (
-            <button
-              onClick={onToggleLogs}
-              className={`p-1.5 rounded-lg transition-all group relative ${logsVisible ? 'text-blue-600 bg-blue-50' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'}`}
-              title="Execution Logs"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
-                <polyline points="14,2 14,8 20,8"/>
-                <line x1="16" y1="13" x2="8" y2="13"/>
-                <line x1="16" y1="17" x2="8" y2="17"/>
-                <polyline points="10,9 9,9 8,9"/>
-              </svg>
-              <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-slate-900 text-white text-[9px] font-black uppercase tracking-widest rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 shadow-xl">Logs</span>
-            </button>
-          )}
-
           <button
             onClick={() => setIsImportModalOpen(true)}
             className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-all group relative"

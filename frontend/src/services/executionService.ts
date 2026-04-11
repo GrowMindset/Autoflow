@@ -1,7 +1,30 @@
 import api from './api';
 
 export interface RunFormPayload {
-  form_data: Record<string, string>;
+  form_data: Record<string, any>;
+}
+
+export interface NodeExecutionResult {
+  node_id: string;
+  node_type: string;
+  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
+  input_data: Record<string, any> | any[] | null;
+  output_data: Record<string, any> | any[] | null;
+  error_message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface ExecutionDetail {
+  id: string;
+  workflow_id: string;
+  user_id: string;
+  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
+  triggered_by: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error_message: string | null;
+  node_results: NodeExecutionResult[];
 }
 
 export const executionService = {
@@ -15,12 +38,12 @@ export const executionService = {
     return response.data;
   },
 
-  getExecution: async (executionId: string): Promise<any> => {
+  getExecution: async (executionId: string): Promise<ExecutionDetail> => {
     const response = await api.get(`/executions/${executionId}`);
     return response.data;
   },
 
-  getLatestExecution: async (workflowId: string): Promise<any> => {
+  getLatestExecution: async (workflowId: string): Promise<ExecutionDetail> => {
     const response = await api.get(`/workflows/${workflowId}/executions/latest`);
     return response.data;
   },
