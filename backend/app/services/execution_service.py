@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
+from typing import Any
 from uuid import UUID
 from typing import Any
 
@@ -50,7 +51,7 @@ class ExecutionService:
         *,
         workflow_id: UUID,
         user: User,
-        form_data: dict[str, str],
+        form_data: dict[str, Any],
     ) -> Execution:
         workflow = await self._get_owned_workflow(workflow_id=workflow_id, user_id=user.id)
         if workflow is None:
