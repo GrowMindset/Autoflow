@@ -17,6 +17,7 @@ const DeletableEdge: React.FC<EdgeProps> = ({
   targetPosition,
   style,
   markerEnd,
+  data,
 }) => {
   const { deleteElements } = useReactFlow();
 
@@ -34,9 +35,19 @@ const DeletableEdge: React.FC<EdgeProps> = ({
     deleteElements({ edges: [{ id }] });
   };
 
+  // Apply green color when edge is active/running
+  const edgeStyle = {
+    ...style,
+    ...(data?.isRunning && {
+      stroke: '#10b981',
+      strokeWidth: 3,
+      opacity: 1,
+    }),
+  };
+
   return (
     <>
-      <BaseEdge path={edgePath} markerEnd={markerEnd} style={style} />
+      <BaseEdge path={edgePath} markerEnd={markerEnd} style={edgeStyle} />
 
       <EdgeLabelRenderer>
         <div

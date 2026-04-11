@@ -76,6 +76,20 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
     setIsAligned(!misaligned);
   }, [nodes]);
 
+  // Update edges to show green when source node is running
+  useEffect(() => {
+    setEdges((eds) =>
+      eds.map((edge) => {
+        const sourceNode = nodes.find(n => n.id === edge.source);
+        const isRunning = sourceNode?.data.status === 'RUNNING';
+        return {
+          ...edge,
+          data: { isRunning },
+        } as any;
+      })
+    );
+  }, [nodes, setEdges]);
+
   const alignNodes = useCallback(() => {
     // 1. Build adjacency list and find roots
     const adj: Record<string, string[]> = {};
@@ -192,12 +206,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
   const pollExecution = useCallback(async (executionId: string) => {
     try {
       const detail = await executionService.getExecution(executionId);
+      console.log('Polling response:', detail);
+      console.log('Node results:', detail.node_results);
       
       // Update nodes with their execution status and results
       setNodes((nds) =>
         nds.map((node) => {
           const result = detail.node_results.find((r: any) => r.node_id === node.id);
           if (result) {
+            console.log(`Updating node ${node.id} with status: ${result.status}`);
             return {
               ...node,
               data: {
@@ -231,23 +248,73 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       return;
     }
 
-    // Find the trigger node (node with no incoming edges)
-    const triggerNodes = nodes.filter(node => {
-      const hasIncoming = edges.some(edge => edge.target === node.id);
-      return !hasIncoming && ['manual_trigger', 'form_trigger', 'webhook_trigger'].includes(node.data.type);
+    const triggerTypes = ['manual_trigger', 'form_trigger', 'webhook_trigger', 'workflow_trigger'];
+    const triggerCandidates = nodes.filter(node => {
+      return triggerTypes.includes(node.data.type) || node.type === 'trigger';
     });
+    const rootTriggers = triggerCandidates.filter(node => !edges.some(edge => edge.target === node.id));
 
-    if (triggerNodes.length === 0) {
-      toast.error('No trigger node found in workflow');
+    console.groupCollapsed('Workflow execution debug');
+    console.log('triggerTypes', triggerTypes);
+    console.log('nodes', nodes.map(node => ({ id: node.id, type: node.type, dataType: node.data.type, category: node.data.category })));
+    console.log('edges', edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle, targetHandle: edge.targetHandle })));
+    console.log('triggerCandidates', triggerCandidates.map(node => ({ id: node.id, type: node.type, dataType: node.data.type })));
+    console.log('rootTriggers', rootTriggers.map(node => ({ id: node.id, type: node.type, dataType: node.data.type })));
+    console.groupEnd();
+
+    if (rootTriggers.length === 0) {
+      if (triggerCandidates.length === 0) {
+        console.warn('No trigger candidates found', { nodes, edges });
+        toast.error('No trigger nodes found in workflow. Please add a Manual Trigger, Form Trigger, Webhook Trigger, or Workflow Trigger node.');
+        return;
+      }
+
+      if (triggerCandidates.length === 1) {
+        toast('Trigger node has incoming connections, but execution will continue using the single available trigger. Make sure trigger nodes have no incoming edges.', { icon: '⚠️' });
+        const trigger = triggerCandidates[0];
+        // Reset status of all nodes before starting
+        setNodes((nds) =>
+          nds.map((node) => ({
+            ...node,
+            data: { ...node.data, status: 'PENDING', last_execution_result: null }
+          }))
+        );
+
+        try {
+          console.log('Attempting to call executionService.runWorkflow', { workflowId, triggerType: trigger.data.type });
+          if (trigger.data.type === 'manual_trigger') {
+            const enqueue = await executionService.runWorkflow(workflowId);
+            console.log('runWorkflow response', enqueue);
+            toast.success('Workflow execution started!');
+
+            pollingIntervalRef.current = setInterval(() => {
+              pollExecution(enqueue.execution_id);
+            }, 2000);
+          } else if (trigger.data.type === 'form_trigger') {
+            setTriggerNode(trigger);
+            setShowTriggerForm(true);
+          } else if (trigger.data.type === 'webhook_trigger') {
+            toast.success('Webhook trigger: Use HTTP POST to the webhook endpoint to trigger this workflow', { duration: 5000 });
+          } else {
+            toast.error(`Unsupported trigger type: ${trigger.data.type}`);
+          }
+        } catch (error) {
+          console.error('Execution failed:', error);
+          toast.error('Workflow execution failed. Check console for details.');
+        }
+        return;
+      }
+
+      toast.error('All trigger nodes have incoming connections. Trigger nodes should not have any incoming edges.');
       return;
     }
 
-    if (triggerNodes.length > 1) {
+    if (rootTriggers.length > 1) {
       toast.error('Multiple trigger nodes found. Please ensure only one trigger node exists.');
       return;
     }
 
-    const trigger = triggerNodes[0];
+    const trigger = rootTriggers[0];
 
     // Reset status of all nodes before starting
     setNodes((nds) =>
@@ -258,8 +325,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
     );
 
     try {
+      console.log('Attempting to call executionService.runWorkflow', { workflowId, triggerType: trigger.data.type });
       if (trigger.data.type === 'manual_trigger') {
         const enqueue = await executionService.runWorkflow(workflowId);
+        console.log('runWorkflow response', enqueue);
         toast.success('Workflow execution started!');
         
         // Start polling
@@ -278,8 +347,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       }
     } catch (error) {
       console.error('Execution failed:', error);
+      toast.error('Workflow execution failed. Check console for details.');
     }
-  }, [workflowId]);
+  }, [workflowId, nodes, edges, pollExecution]);
 
   const isValidConnection = useCallback((connection: Connection) => {
     // Only allow one connection per source handle
@@ -304,7 +374,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       animated: true,
       style: { stroke: '#94a3b8', strokeWidth: 2 },
       markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' }
-    };
+    }; 
     setEdges((eds) => addEdge(newEdge as any, eds));
     connectingNode.current = null; // Clear connection state after successful connection
     toast.success('Nodes connected');

@@ -29,15 +29,11 @@ const MainLayout: React.FC = () => {
   // Logs Panel State
   const [logsVisible, setLogsVisible] = useState(false);
   const [executionLogs, setExecutionLogs] = useState<any[]>([]);
+  const [logsPanelHeight] = useState(240);
 
   // Execution State
-  const [executionState, setExecutionState] = useState<string>('idle');
-  const [lastExecutionDuration, setLastExecutionDuration] = useState<number | undefined>(undefined);
-
-  const handleExecutionUpdate = useCallback((status: string, durationMs?: number) => {
-    setExecutionState(status);
-    if (durationMs !== undefined) setLastExecutionDuration(durationMs);
-  }, []);
+  const [executionState] = useState<string>('idle');
+  const [lastExecutionDuration] = useState<number | undefined>(undefined);
 
   // Initial fetch
   useEffect(() => {
@@ -304,28 +300,33 @@ const MainLayout: React.FC = () => {
 
             {/* Logs Panel */}
             {logsVisible && (
-              <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4 max-h-64 overflow-y-auto shadow-lg">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-bold text-slate-800">Execution Logs</h3>
-                  <button
-                    onClick={() => setLogsVisible(false)}
-                    className="text-slate-400 hover:text-slate-600"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="18" y1="6" x2="6" y2="18"/>
-                      <line x1="6" y1="6" x2="18" y2="18"/>
-                    </svg>
-                  </button>
+              <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4 overflow-hidden shadow-lg" style={{ height: logsPanelHeight, minHeight: 160, maxHeight: 480, resize: 'vertical' }}>
+                <div className="sticky top-0 z-10 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 pb-3 mb-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-800">Execution Logs</h3>
+                      <p className="text-xs text-slate-400">Drag the panel edge to resize</p>
+                    </div>
+                    <button
+                      onClick={() => setLogsVisible(false)}
+                      className="text-slate-400 hover:text-slate-600"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
-                {executionLogs.length === 0 ? (
-                  <p className="text-sm text-slate-500">No execution logs available. Run the workflow to see logs.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {executionLogs.map((log, index) => (
-                      <div key={index} className="flex items-start gap-3 p-2 bg-slate-50 rounded text-xs">
-                        <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${log.status === 'SUCCEEDED' ? 'bg-green-500' : log.status === 'FAILED' ? 'bg-red-500' : 'bg-yellow-500'}`} />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
+                <div className="h-[calc(100%-64px)] overflow-y-auto pr-1 custom-scrollbar">
+                  {executionLogs.length === 0 ? (
+                    <p className="text-sm text-slate-500">No execution logs available. Run the workflow to see logs.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {executionLogs.map((log, index) => (
+                        <div key={index} className="flex flex-col gap-2 p-2 bg-slate-50 rounded text-xs">
+                          <div className="flex items-center gap-2">
+                            <div className={`w-2 h-2 rounded-full ${log.status === 'SUCCEEDED' ? 'bg-green-500' : log.status === 'FAILED' ? 'bg-red-500' : 'bg-yellow-500'}`} />
                             <span className="font-mono text-slate-600 truncate">{log.node_id}</span>
                             <span className="text-slate-400">({log.node_type})</span>
                             <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${log.status === 'SUCCEEDED' ? 'bg-green-100 text-green-700' : log.status === 'FAILED' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
@@ -333,25 +334,25 @@ const MainLayout: React.FC = () => {
                             </span>
                           </div>
                           {log.error_message && (
-                            <div className="text-red-600 bg-red-50 p-2 rounded text-[11px] mt-1">
+                            <div className="text-red-600 bg-red-50 p-2 rounded text-[11px]">
                               {log.error_message}
                             </div>
                           )}
                           {log.branch && (
-                            <div className="text-slate-600 text-[11px] mt-1">
+                            <div className="text-slate-600 text-[11px]">
                               Branch: <span className="font-semibold">{log.branch}</span>
                             </div>
                           )}
                           {log.started_at && log.finished_at && (
-                            <div className="text-slate-400 text-[10px] mt-1">
+                            <div className="text-slate-400 text-[10px]">
                               {new Date(log.started_at).toLocaleTimeString()} - {new Date(log.finished_at).toLocaleTimeString()}
                             </div>
                           )}
                         </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </main>
@@ -362,7 +363,7 @@ const MainLayout: React.FC = () => {
               }`}
           >
             <div className="w-[320px] h-full overflow-hidden">
-              <NodeSidebar />
+              <NodeSidebar onClose={() => setIsRightSidebarOpen(false)} />
             </div>
           </div>
         </div>
