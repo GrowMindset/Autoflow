@@ -799,6 +799,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             />
             <MiniMap
               className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-lg !m-4 overflow-hidden"
+              style={{ bottom: footerOffset + 16 }}
               nodeColor={(n) => {
                 const data = n.data as WorkflowNodeData;
                 if (data.category === 'trigger') return '#10b981';

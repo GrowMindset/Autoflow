@@ -50,7 +50,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
         ${data.status === 'SUCCEEDED' ? 'bg-emerald-50/30 dark:bg-emerald-500/5 border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)] ring-[6px] ring-emerald-500/30' : 'bg-white dark:bg-slate-900'}
         ${data.status === 'FAILED' ? 'bg-rose-50/30 dark:bg-rose-500/5 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.2)] ring-[6px] ring-rose-500/30' : ''}
       `}
-      style={{ borderTop: `px solid ${
+      style={{ borderTop: `6px solid ${
         data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '#10b981' : 
         data.status === 'FAILED' ? '#f43f5e' : 
         accentColor

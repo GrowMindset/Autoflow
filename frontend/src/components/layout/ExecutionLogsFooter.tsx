@@ -151,26 +151,7 @@ const ExecutionLogsFooter: React.FC<ExecutionLogsFooterProps> = ({
           </div>
         </div>
 
-        <div
-          className={`pointer-events-none absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 rounded-full border px-4 py-1.5 shadow-sm ${
-            isDark
-              ? 'border-slate-700 bg-slate-900/95'
-              : 'border-slate-200 bg-white/95'
-          }`}
-        >
-          {isExpanded ? (
-            <ChevronDown size={22} className={isDark ? 'text-slate-200' : 'text-slate-700'} />
-          ) : (
-            <ChevronUp size={22} className={isDark ? 'text-slate-200' : 'text-slate-700'} />
-          )}
-          <span
-            className={`text-[11px] font-black uppercase tracking-[0.28em] ${
-              isDark ? 'text-slate-200' : 'text-slate-700'
-            }`}
-          >
-            Logs
-          </span>
-        </div>
+
 
         <div className="flex items-center gap-3 text-[10px] font-mono">
           {executionDetail ? (
