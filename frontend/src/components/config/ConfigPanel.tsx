@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { WorkflowNode } from '../../types/workflow';
 import JsonTree from './JsonTree';
 import ConfigForm from './ConfigForm';
+import LogSection from './LogSection';
 import { executionService } from '../../services/executionService';
 import api from '../../services/api';
 
@@ -15,17 +16,7 @@ interface ConfigPanelProps {
   onUpdate: (id: string, config: Record<string, any>, output?: any) => void;
 }
 
-const LogSection: React.FC<{ title: string; data: any; icon?: React.ReactNode }> = ({ title, data, icon }) => (
-  <div className="flex flex-col gap-2">
-    <div className="flex items-center gap-2 px-1">
-      {icon}
-      <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{title}</span>
-    </div>
-    <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-2">
-      {data ? <JsonTree data={data} /> : <span className="text-[10px] text-slate-300 italic px-2">No data recorded</span>}
-    </div>
-  </div>
-);
+
 
 const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamData, onClose, onUpdate }) => {
   const [output, setOutput] = useState<any>(node.data.last_output || null);
@@ -84,7 +75,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
     setIsExecuting(true);
     try {
       // If it's a form trigger, we should use the test form values as the input data
-      const testInput = node.data.type === 'form_trigger' ? formValues : upstreamData;
+      const testInput = node.data.type === 'form_trigger' ? formValues : upstreamData; 
       const enqueue = await executionService.executeNode(workflowId, node.id, testInput);
 
       let executionDetail = null;
@@ -190,7 +181,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
               <div className="flex items-center gap-3">
                 <h2 className="text-base font-black text-slate-800 dark:text-slate-100 tracking-tight">{node.data.label}</h2>
                 {node.data.status && (
-                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-full text-white uppercase tracking-widest
+                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-full text-white uppercase tracking-widest shadow-sm
                     ${node.data.status === 'SUCCEEDED' ? 'bg-emerald-500' :
                       node.data.status === 'FAILED' ? 'bg-rose-500' :
                         node.data.status === 'RUNNING' ? 'bg-blue-500 animate-pulse' : 'bg-slate-300'}
@@ -200,7 +191,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">{node.data.type}</span>
+                <span className="text-[10px] font-black text-slate-400 dark:text-slate-400 uppercase tracking-widest bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">{node.data.type}</span>
                 <span className="text-[10px] text-slate-300 dark:text-slate-600 font-mono">ID: {node.id.split('_').slice(0, 2).join('_')}</span>
               </div>
             </div>
@@ -237,7 +228,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
             <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900 group select-none">
               {isLeftVisible ? (
                 <>
-                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-400">
                     {node.data.last_execution_result ? 'EXECUTION LOGS' : 'INPUT DATA'}
                   </span>
                   <button onClick={() => setIsLeftVisible(false)} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-300 dark:text-slate-700 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
@@ -254,21 +245,21 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
               <div className="flex-1 overflow-auto custom-scrollbar p-4 animate-in slide-in-from-left-4 duration-300">
                 {node.data.last_execution_result ? (
                   <div className="space-y-6">
-                    <div className="flex flex-col gap-1.5 p-3 rounded-2xl bg-slate-50 border border-slate-100">
+                    <div className="flex flex-col gap-1.5 p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
                       <div className="flex items-center justify-between">
-                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Status</span>
+                        <span className="text-[8px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">Status</span>
                         <span className={`text-[8px] font-black uppercase tracking-widest ${node.data.last_execution_result.status === 'SUCCEEDED' ? 'text-emerald-500' : 'text-rose-500'}`}>
                           {node.data.last_execution_result.status}
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Started At</span>
-                        <span className="text-[8px] font-mono text-slate-500">{new Date(node.data.last_execution_result.started_at).toLocaleTimeString()}</span>
+                        <span className="text-[8px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">Started At</span>
+                        <span className="text-[8px] font-mono text-slate-500 dark:text-slate-400">{new Date(node.data.last_execution_result.started_at).toLocaleTimeString()}</span>
                       </div>
                       {node.data.last_execution_result.finished_at && (
                         <div className="flex items-center justify-between">
-                          <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Finished At</span>
-                          <span className="text-[8px] font-mono text-slate-500">{new Date(node.data.last_execution_result.finished_at).toLocaleTimeString()}</span>
+                          <span className="text-[8px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">Finished At</span>
+                          <span className="text-[8px] font-mono text-slate-500 dark:text-slate-400">{new Date(node.data.last_execution_result.finished_at).toLocaleTimeString()}</span>
                         </div>
                       )}
                     </div>
@@ -278,7 +269,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                     {node.data.last_execution_result.error_message && (
                       <div className="space-y-2">
                         <span className="text-[10px] font-black uppercase tracking-widest text-rose-500">Error Message</span>
-                        <div className="p-3 rounded-2xl bg-rose-50 border border-rose-100 text-[10px] text-rose-600 font-mono leading-relaxed">
+                        <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-900/20 border border-rose-100 dark:border-rose-900/30 text-[10px] text-rose-600 dark:text-rose-400 font-mono leading-relaxed">
                           {node.data.last_execution_result.error_message}
                         </div>
                       </div>
@@ -301,7 +292,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
           {/* Column 2: Parameters Form */}
           <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-slate-900 z-10 shadow-[0_0_50px_rgba(0,0,0,0.02)]">
             <div className="h-12 px-8 flex items-center border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900">
-              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500">PARAMETERS</span>
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-400">PARAMETERS</span>
             </div>
             <div className="flex-1 overflow-auto p-10 custom-scrollbar">
               <div className="max-w-2xl mx-auto pb-20">
@@ -315,8 +306,8 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                   <div className="mt-10 space-y-8 animate-in fade-in slide-in-from-bottom-4">
                     <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 flex flex-col gap-4">
                       <div>
-                        <h3 className="text-sm font-black text-slate-800">Webhook URL</h3>
-                        <p className="text-xs text-slate-500">Send an HTTP {node.data.config?.method || 'POST'} request to this endpoint to trigger the workflow.</p>
+                        <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Webhook URL</h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-500">Send an HTTP {node.data.config?.method || 'POST'} request to this endpoint to trigger the workflow.</p>
                       </div>
                       <div className="flex items-center gap-2">
                         <div className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-600 break-all select-all">
@@ -440,7 +431,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                   <button onClick={() => setIsRightVisible(false)} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-300 dark:text-slate-700 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                   </button>
-                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-400">
                     {node.data.last_execution_result ? 'EXECUTION OUTPUT' : 'OUTPUT DATA'}
                   </span>
                 </>
