@@ -134,7 +134,7 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
           {!isCollapsed && (
             <div className="overflow-hidden">
               <h1 className="text-base font-bold text-slate-800 dark:text-slate-100 tracking-tight">Autoflow</h1>
-              <p className="text-[9px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-widest leading-none mt-0.5">Automation Engine</p>
+              <p className="text-[9px] text-slate-400 dark:text-slate-400 font-bold uppercase tracking-widest leading-none mt-0.5">Automation Engine</p>
             </div>
           )}
         </div>
@@ -146,7 +146,7 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
           <div className="flex flex-col gap-2">
             {!isCollapsed && (
               <div className="flex items-center justify-between px-2 mb-1">
-                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">My Workflows</span>
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-400 uppercase tracking-widest">My Workflows</span>
                 <button
                   onClick={onNewWorkflow}
                   title="Create new workflow"
@@ -248,7 +248,7 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
                 <path d="m15 18-6-6 6-6" />
               </svg>
             </div>
-            {!isCollapsed && <span className="text-sm font-semibold tracking-tight">Collapse Sidebar</span>}
+            {!isCollapsed && <span className="text-sm font-semibold tracking-tight text-slate-400 dark:text-slate-400">Collapse Sidebar</span>}
           </button>
         </div>
       </aside>

@@ -34,7 +34,7 @@ const CategorySection: React.FC<CategorySectionProps> = ({ title, category, node
       >
         <div className="flex items-center gap-3">
             <div className={`w-1.5 h-1.5 rounded-full ${getCategoryColor(category)}`} />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">{title}</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-200">{title}</span>
         </div>
         <svg
           xmlns="http://www.w3.org/2000/svg"

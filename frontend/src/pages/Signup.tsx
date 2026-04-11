@@ -41,7 +41,7 @@ const Signup: React.FC = () => {
     <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 px-4 transition-colors duration-300">
       <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-8 transition-colors">
         <div className="flex flex-col items-center mb-10 text-center">
-          <div className="w-12 h-12 bg-emerald-600 rounded-xl flex items-center justify-center text-white mb-4 shadow-md shadow-emerald-200 dark:shadow-emerald-900/20">
+          <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center text-white mb-4 shadow-md shadow-blue-200 dark:shadow-blue-900/20">
             <LogIn size={24} className="rotate-180" />
           </div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 transition-colors">Create Account</h1>
@@ -59,7 +59,7 @@ const Signup: React.FC = () => {
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 pl-10 pr-4 py-2.5 rounded-lg outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 dark:focus:ring-emerald-900/20 transition-all text-sm"
+                className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 pl-10 pr-4 py-2.5 rounded-lg outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-900/20 transition-all text-sm"
                 placeholder="johndoe"
                 required
               />
@@ -76,7 +76,7 @@ const Signup: React.FC = () => {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 pl-10 pr-4 py-2.5 rounded-lg outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 dark:focus:ring-emerald-900/20 transition-all text-sm"
+                className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 pl-10 pr-4 py-2.5 rounded-lg outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-900/20 transition-all text-sm"
                 placeholder="name@example.com"
                 required
               />
@@ -93,7 +93,7 @@ const Signup: React.FC = () => {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 pl-10 pr-4 py-2.5 rounded-lg outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 dark:focus:ring-emerald-900/20 transition-all text-sm"
+                className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 pl-10 pr-4 py-2.5 rounded-lg outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-900/20 transition-all text-sm"
                 placeholder="••••••••"
                 required
               />
@@ -103,7 +103,7 @@ const Signup: React.FC = () => {
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-lg shadow-sm active:scale-[0.98] transition-all disabled:opacity-70 disabled:active:scale-100 mt-2"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow-sm active:scale-[0.98] transition-all disabled:opacity-70 disabled:active:scale-100 mt-2"
           >
             {isLoading ? "Creating account..." : "Create Account"}
           </button>
@@ -111,7 +111,7 @@ const Signup: React.FC = () => {
 
         <div className="mt-8 pt-6 border-t border-slate-100 dark:border-slate-800 text-center transition-colors">
           <p className="text-sm text-slate-600 dark:text-slate-400">
-            Already have an account? <Link to="/login" className="text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 font-bold ml-1 transition-colors">Sign in</Link>
+            Already have an account? <Link to="/login" className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-bold ml-1 transition-colors">Sign in</Link>
           </p>
         </div>
       </div>

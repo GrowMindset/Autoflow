@@ -12,7 +12,7 @@ const NodeSidebar: React.FC<NodeSidebarProps> = ({ onClose }) => {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-          <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">Node Palette</h2>
+          <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400 dark:text-slate-400">Node Palette</h2>
         </div>
         {onClose && (
           <button
