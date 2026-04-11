@@ -41,7 +41,6 @@ const Topbar: React.FC<TopbarProps> = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const descRef = useRef<HTMLInputElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const user = useAuthStore((state) => state.user);
   const clearAuth = useAuthStore((state) => state.clearAuth);
@@ -150,7 +149,7 @@ const Topbar: React.FC<TopbarProps> = ({
             onClick={() => setIsEditing(true)}
           >
             <h2 className="text-sm font-bold text-slate-800 tracking-tight leading-none">{workflowName}</h2>
-            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-300 group-hover:text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-300 group-hover:text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
           </div>
         )}
 
@@ -172,12 +171,11 @@ const Topbar: React.FC<TopbarProps> = ({
             onClick={() => setIsEditingDesc(true)}
             title="Click to edit description"
           >
-            <span className={`text-[10px] leading-tight truncate max-w-[280px] ${
-              workflowDescription ? 'text-slate-400' : 'text-slate-300 italic'
-            }`}>
+            <span className={`text-[10px] leading-tight truncate max-w-[280px] ${workflowDescription ? 'text-slate-400' : 'text-slate-300 italic'
+              }`}>
               {workflowDescription || 'Add a description...'}
             </span>
-            <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-slate-300 opacity-0 group-hover/desc:opacity-100 transition-opacity flex-shrink-0"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-slate-300 opacity-0 group-hover/desc:opacity-100 transition-opacity flex-shrink-0"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
           </div>
         )}
       </div>
@@ -185,11 +183,10 @@ const Topbar: React.FC<TopbarProps> = ({
       <div className="flex items-center gap-2 mr-6 border-r border-slate-100 pr-6">
         <button
           onClick={onToggleNodePalette}
-          className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all border ${
-            isNodePaletteOpen
+          className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all border ${isNodePaletteOpen
               ? 'bg-slate-900 text-white border-slate-900 shadow-lg shadow-slate-200'
               : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-          }`}
+            }`}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -203,7 +200,7 @@ const Topbar: React.FC<TopbarProps> = ({
             strokeLinejoin="round"
             className={`transition-transform duration-300 ${isNodePaletteOpen ? 'rotate-45 text-red-400' : ''}`}
           >
-            <path d="M12 5v14"/><path d="M5 12h14"/>
+            <path d="M12 5v14" /><path d="M5 12h14" />
           </svg>
           {isNodePaletteOpen ? 'Close Nodes' : 'Add Node'}
         </button>
@@ -217,13 +214,13 @@ const Topbar: React.FC<TopbarProps> = ({
           )}
           {saveStatus === 'saved' && (
             <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-50/50">
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="M20 6 9 17l-5-5"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="M20 6 9 17l-5-5" /></svg>
               <span className="text-[9px] font-black uppercase tracking-widest text-emerald-500">Saved</span>
             </div>
           )}
           {saveStatus === 'error' && (
             <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-50/50">
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-red-500"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-red-500"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
               <span className="text-[9px] font-black uppercase tracking-widest text-red-500">Error</span>
             </div>
           )}
@@ -250,29 +247,27 @@ const Topbar: React.FC<TopbarProps> = ({
         </div>
 
         {isImportModalOpen && (
-          <ImportModal 
-            onClose={() => setIsImportModalOpen(false)} 
-            onImport={onImport} 
+          <ImportModal
+            onClose={() => setIsImportModalOpen(false)}
+            onImport={onImport}
           />
         )}
 
         <button
           onClick={onSave}
           disabled={saveStatus === 'saving'}
-          className={`${
-            saveStatus === 'saving' ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed shadow-none' : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-500/20'
-          } px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all active:scale-95`}
+          className={`${saveStatus === 'saving' ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed shadow-none' : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-500/20'
+            } px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all active:scale-95`}
         >
           {saveStatus === 'saving' ? 'Saving...' : 'Save Changes'}
         </button>
 
         <button
           onClick={onTogglePublish}
-          className={`px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all active:scale-95 flex items-center gap-2 ${
-            isPublished
+          className={`px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all active:scale-95 flex items-center gap-2 ${isPublished
               ? 'bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200'
               : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/20'
-          }`}
+            }`}
         >
           <div className={`w-2 h-2 rounded-full ${isPublished ? 'bg-emerald-500 animate-pulse' : 'bg-white/50'}`} />
           {isPublished ? 'Unpublish' : 'Publish'}
@@ -286,9 +281,8 @@ const Topbar: React.FC<TopbarProps> = ({
 
         <button
           onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
-          className={`flex items-center gap-2 p-1 rounded-xl transition-all border ${
-            isUserMenuOpen ? 'bg-slate-50 border-slate-200' : 'bg-transparent border-transparent hover:bg-slate-50'
-          }`}
+          className={`flex items-center gap-2 p-1 rounded-xl transition-all border ${isUserMenuOpen ? 'bg-slate-50 border-slate-200' : 'bg-transparent border-transparent hover:bg-slate-50'
+            }`}
         >
           <div className="w-8 h-8 bg-gradient-to-tr from-blue-500 to-purple-600 rounded-lg flex items-center justify-center text-white text-sm font-black shadow-md">
             {user?.username?.substring(0, 1).toUpperCase() || <User size={16} />}

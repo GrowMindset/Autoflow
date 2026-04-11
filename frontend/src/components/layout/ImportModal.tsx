@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { X, FileJson, LucideIcon, Upload, AlertCircle } from 'lucide-react';
+import { X, FileJson, Upload, AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 interface ImportModalProps {

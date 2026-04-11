@@ -70,12 +70,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
     // 1. Build adjacency list and find roots
     const adj: Record<string, string[]> = {};
     const inDegree: Record<string, number> = {};
-    
+
     nodes.forEach(n => {
       adj[n.id] = [];
       inDegree[n.id] = 0;
     });
-    
+
     edges.forEach(e => {
       if (adj[e.source]) adj[e.source].push(e.target);
       if (inDegree[e.target] !== undefined) inDegree[e.target]++;
@@ -112,22 +112,22 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
     // First pass: Assign X based on levels
     nodes.forEach(node => {
       const level = levels[node.id] || 0;
-      newPositions[node.id] = { 
-        x: level * HORIZONTAL_SPACING, 
-        y: 0 
+      newPositions[node.id] = {
+        x: level * HORIZONTAL_SPACING,
+        y: 0
       };
     });
 
     // Second pass: Assign Y to achieve "straight lines" and structured branching
     const processedY = new Set<string>();
-    
+
     const assignY = (nodeId: string, currentY: number) => {
       if (processedY.has(nodeId)) return;
       processedY.add(nodeId);
-      
+
       newPositions[nodeId].y = currentY;
       const children = adj[nodeId] || [];
-      
+
       if (children.length === 1) {
         // Straight line
         assignY(children[0], currentY);
@@ -155,15 +155,22 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ workflowId }) => {
       }
     });
 
-    // 4. Update nodes
     setNodes((nds) =>
       nds.map((node) => ({
         ...node,
         position: newPositions[node.id] || node.position,
       }))
     );
+
+    // 5. Center and focus the workflow
+    if (reactFlowInstance) {
+      setTimeout(() => {
+        reactFlowInstance.fitView({ duration: 800, padding: 0.2 });
+      }, 50);
+    }
+
     toast.success('Workflow perfectly aligned');
-  }, [nodes, edges, setNodes]);
+  }, [nodes, edges, setNodes, reactFlowInstance]);
 
   const handleRunWorkflow = useCallback(async () => {
     if (workflowId === 'new') {
