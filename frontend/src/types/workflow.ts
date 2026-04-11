@@ -7,6 +7,7 @@ export interface WorkflowNodeData {
   config: Record<string, any>;
   is_dummy?: boolean;
   last_output?: any;
+  executionStatus?: string;
 }
 
 export type WorkflowNode = Node<WorkflowNodeData>;

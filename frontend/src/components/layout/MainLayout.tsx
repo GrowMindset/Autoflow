@@ -205,12 +205,12 @@ const MainLayout: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-white font-sans antialiased text-slate-900">
+    <div className="flex h-screen overflow-hidden bg-white dark:bg-slate-950 font-sans antialiased text-slate-900 dark:text-slate-100 transition-colors duration-300">
       {isLoading && (
-        <div className="absolute inset-0 z-[9999] bg-white/50 backdrop-blur-sm flex items-center justify-center">
+        <div className="absolute inset-0 z-[9999] bg-white/50 dark:bg-slate-950/50 backdrop-blur-sm flex items-center justify-center">
           <div className="flex flex-col items-center gap-4">
             <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm font-bold text-slate-500 animate-pulse uppercase tracking-widest">Loading Workflow...</p>
+            <p className="text-sm font-bold text-slate-500 dark:text-slate-400 animate-pulse uppercase tracking-widest">Loading Workflow...</p>
           </div>
         </div>
       )}
@@ -253,7 +253,7 @@ const MainLayout: React.FC = () => {
 
           {/* Node Palette (Right Sidebar) - Now a push-sidebar */}
           <div
-            className={`h-full border-l border-slate-200 bg-white transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 ${isRightSidebarOpen ? 'w-[320px] opacity-100' : 'w-0 opacity-0 border-none'
+            className={`h-full border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 ${isRightSidebarOpen ? 'w-[320px] opacity-100' : 'w-0 opacity-0 border-none'
               }`}
           >
             <div className="w-[320px] h-full overflow-hidden">
