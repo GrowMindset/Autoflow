@@ -41,6 +41,118 @@ def _valid_definition() -> dict:
     }
 
 
+def _definition_for_prompt_kind(kind: str) -> dict:
+    if kind == "webhook_telegram":
+        return {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "webhook_trigger",
+                    "label": "Webhook Trigger",
+                    "position": {"x": 100, "y": 150},
+                    "config": {},
+                },
+                {
+                    "id": "n2",
+                    "type": "telegram",
+                    "label": "Send Telegram Message",
+                    "position": {"x": 360, "y": 150},
+                    "config": {"chat_id": "", "message": ""},
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "target": "n2",
+                    "sourceHandle": None,
+                    "targetHandle": None,
+                    "branch": None,
+                }
+            ],
+        }
+    if kind == "manual_if_else_telegram":
+        return {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "manual_trigger",
+                    "label": "Manual Trigger",
+                    "position": {"x": 100, "y": 150},
+                    "config": {},
+                },
+                {
+                    "id": "n2",
+                    "type": "if_else",
+                    "label": "Check Status",
+                    "position": {"x": 360, "y": 150},
+                    "config": {
+                        "field": "status",
+                        "operator": "equals",
+                        "value": "active",
+                    },
+                },
+                {
+                    "id": "n3",
+                    "type": "telegram",
+                    "label": "Send Telegram Message",
+                    "position": {"x": 620, "y": 150},
+                    "config": {"chat_id": "", "message": ""},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3", "branch": "true"},
+            ],
+        }
+    if kind == "form_filter":
+        return {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "form_trigger",
+                    "label": "Form Trigger",
+                    "position": {"x": 100, "y": 150},
+                    "config": {
+                        "form_title": "Contact Form",
+                        "form_description": "",
+                        "fields": [
+                            {
+                                "name": "email",
+                                "label": "Email",
+                                "type": "email",
+                                "required": True,
+                            }
+                        ],
+                    },
+                },
+                {
+                    "id": "n2",
+                    "type": "filter",
+                    "label": "Filter Items",
+                    "position": {"x": 360, "y": 150},
+                    "config": {
+                        "input_key": "items",
+                        "field": "status",
+                        "operator": "equals",
+                        "value": "active",
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "target": "n2",
+                    "sourceHandle": None,
+                    "targetHandle": None,
+                    "branch": None,
+                }
+            ],
+        }
+    raise ValueError(f"Unknown prompt kind: {kind}")
+
+
 class _FakeCompletions:
     def __init__(self, responses: list[str]) -> None:
         self.responses = list(responses)
@@ -178,3 +290,36 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
             fake_client.completions.calls[0]["response_format"],
             {"type": "json_object"},
         )
+
+    async def test_known_prompts_produce_expected_node_types(self) -> None:
+        cases = [
+            (
+                "Send a Telegram message whenever a webhook is received",
+                "webhook_telegram",
+                {"webhook_trigger", "telegram"},
+            ),
+            (
+                "When I run the workflow manually, check if status is active and then notify on Telegram",
+                "manual_if_else_telegram",
+                {"manual_trigger", "if_else", "telegram"},
+            ),
+            (
+                "Create a form-based workflow that filters active items",
+                "form_filter",
+                {"form_trigger", "filter"},
+            ),
+        ]
+
+        for prompt, definition_kind, expected_node_types in cases:
+            fake_client = _FakeClient(
+                responses=[json.dumps({"definition": _definition_for_prompt_kind(definition_kind)})]
+            )
+            service = LLMService(client=fake_client, model="test-model")
+
+            definition = await service.generate_workflow_definition(prompt)
+
+            actual_node_types = {node.type for node in definition.nodes}
+            self.assertTrue(
+                expected_node_types.issubset(actual_node_types),
+                msg=f"Prompt {prompt!r} produced node types {actual_node_types}, expected at least {expected_node_types}",
+            )
