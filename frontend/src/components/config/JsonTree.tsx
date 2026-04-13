@@ -35,12 +35,12 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
         <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
           {/* drag icon */}
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-400 dark:text-blue-500">
-            <circle cx="9" cy="5" r="1.5" fill="currentColor" stroke="none"/>
-            <circle cx="15" cy="5" r="1.5" fill="currentColor" stroke="none"/>
-            <circle cx="9" cy="12" r="1.5" fill="currentColor" stroke="none"/>
-            <circle cx="15" cy="12" r="1.5" fill="currentColor" stroke="none"/>
-            <circle cx="9" cy="19" r="1.5" fill="currentColor" stroke="none"/>
-            <circle cx="15" cy="19" r="1.5" fill="currentColor" stroke="none"/>
+            <circle cx="9" cy="5" r="1.5" fill="currentColor" stroke="none" />
+            <circle cx="15" cy="5" r="1.5" fill="currentColor" stroke="none" />
+            <circle cx="9" cy="12" r="1.5" fill="currentColor" stroke="none" />
+            <circle cx="15" cy="12" r="1.5" fill="currentColor" stroke="none" />
+            <circle cx="9" cy="19" r="1.5" fill="currentColor" stroke="none" />
+            <circle cx="15" cy="19" r="1.5" fill="currentColor" stroke="none" />
           </svg>
           <span className="text-[9px] bg-blue-500 text-white px-1.5 py-0.5 rounded font-mono leading-none">
             {placeholder}
@@ -82,11 +82,10 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
                     draggable={childIsLeaf}
                     onDragStart={(e) => onDragStart(e, currentPath)}
                     title={childIsLeaf ? `Drag to insert {{${currentPath}}}` : undefined}
-                    className={`text-amber-700 dark:text-amber-500 font-bold whitespace-nowrap px-1 rounded transition-colors ${
-                      childIsLeaf
-                        ? 'cursor-grab active:cursor-grabbing hover:bg-amber-50 dark:hover:bg-amber-900/20 hover:text-amber-900 dark:hover:text-amber-300'
-                        : 'cursor-default'
-                    }`}
+                    className={`text-amber-700 dark:text-amber-500 font-bold whitespace-nowrap px-1 rounded transition-colors ${childIsLeaf
+                      ? 'cursor-grab active:cursor-grabbing hover:bg-amber-50 dark:hover:bg-amber-900/20 hover:text-amber-900 dark:hover:text-amber-300'
+                      : 'cursor-default'
+                      }`}
                   >
                     {key}:
                   </span>
