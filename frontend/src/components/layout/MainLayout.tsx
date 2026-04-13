@@ -7,6 +7,8 @@ import WorkflowSidebar from '../sidebar/WorkflowSidebar';
 import WorkflowCanvas from '../canvas/WorkflowCanvas';
 import { workflowService } from '../../services/workflowService';
 import { ExecutionDetail } from '../../services/executionService';
+import AIWorkflowChatPanel from '../chat/AIWorkflowChatPanel';
+import { aiService, Message } from '../../services/aiService';
 
 interface Workflow {
   id: string;
@@ -22,6 +24,15 @@ const MainLayout: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isLeftSidebarCollapsed, setIsLeftSidebarCollapsed] = useState(false);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
+  const [isAiAssistantOpen, setIsAiAssistantOpen] = useState(false);
+
+  // AI Chat & Resize State
+  const [chatMessages, setChatMessages] = useState<Message[]>([]);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [chatPanelWidth, setChatPanelWidth] = useState(400);
+  const chatResizingRef = useRef(false);
+  const chatStartXRef = useRef(0);
+  const chatStartWidthRef = useRef(400);
 
   // Save Status State
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -50,6 +61,33 @@ const MainLayout: React.FC = () => {
       if (!logsResizingRef.current) return;
       logsResizingRef.current = false;
       document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+    };
+  }, []);
+
+  // AI Chat Resizing logic
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!chatResizingRef.current) return;
+      const delta = event.clientX - chatStartXRef.current;
+      const nextWidth = Math.min(700, Math.max(300, chatStartWidthRef.current + delta));
+      setChatPanelWidth(nextWidth);
+    };
+
+    const handleMouseUp = () => {
+      if (!chatResizingRef.current) return;
+      chatResizingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -67,7 +105,16 @@ const MainLayout: React.FC = () => {
     logsStartYRef.current = event.clientY;
     logsStartHeightRef.current = logsPanelHeight;
     document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
   }, [logsPanelHeight]);
+
+  const handleChatResizeStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    chatResizingRef.current = true;
+    chatStartXRef.current = event.clientX;
+    chatStartWidthRef.current = chatPanelWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, [chatPanelWidth]);
 
   // Execution State
   const [executionState, setExecutionState] = useState<string>('idle');
@@ -95,7 +142,7 @@ const MainLayout: React.FC = () => {
   const currentWorkflow = currentWorkflowId === 'new'
     ? { id: 'new', name: newWorkflowDraftName, is_published: false }
     : workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };
-    
+
   const isPublished = currentWorkflow.is_published || false;
   const footerOffset = logsExpanded ? logsPanelHeight : FOOTER_COLLAPSED_HEIGHT;
 
@@ -137,12 +184,12 @@ const MainLayout: React.FC = () => {
     }
 
     setCurrentDescription(data.definition.description || '');
-    
+
     // Load into canvas
     if ((window as any).loadCanvasWorkflowData) {
       (window as any).loadCanvasWorkflowData(data.definition);
     }
-    
+
     toast.success('Workflow data loaded. Click "Save Changes" to persist.');
   }, [currentWorkflowId, setWorkflows]);
 
@@ -269,13 +316,60 @@ const MainLayout: React.FC = () => {
     }
   };
 
+  const handleSendMessage = useCallback(async (content: string) => {
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content,
+      timestamp: new Date().toISOString(),
+    };
+
+    setChatMessages(prev => [...prev, userMsg]);
+    setIsAiLoading(true);
+
+    try {
+      // Get current workflow state to provide context to the AI
+      const currentWorkflowData = (window as any).getCanvasWorkflowData?.(currentWorkflow.name);
+      const workflowContext = currentWorkflowData?.definition;
+
+      const response = await aiService.generateWorkflow(content, workflowContext);
+      const assistantMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: response.message,
+        timestamp: new Date().toISOString(),
+        ...(response.workflow ? { workflow: response.workflow } : {})
+      } as any;
+      setChatMessages(prev => [...prev, assistantMsg]);
+    } catch (error) {
+      toast.error('AI Architect is currently unavailable');
+    } finally {
+      setIsAiLoading(false);
+    }
+  }, []);
+
+  const handleApplyAiWorkflow = useCallback((workflow: any) => {
+    const isDirty = (window as any).isCanvasDirty?.();
+
+    if (isDirty) {
+      if (!window.confirm('You have unsaved changes. Applying this AI-generated workflow will replace your current work. Continue?')) {
+        return;
+      }
+    }
+
+    if ((window as any).applyAiWorkflow) {
+      (window as any).applyAiWorkflow(workflow);
+      toast.success('AI Workflow applied! Review and save your changes.');
+    }
+  }, []);
+
   return (
     <div className="flex h-screen overflow-hidden bg-white dark:bg-slate-950 font-sans antialiased text-slate-900 dark:text-slate-100 transition-colors duration-300">
       {isLoading && (
-        <div className="absolute inset-0 z-[9999] bg-white/50 dark:bg-slate-950/50 backdrop-blur-sm flex items-center justify-center">
+        <div className="absolute inset-0 z-[9999] bg-white dark:bg-slate-900 flex items-center justify-center">
           <div className="flex flex-col items-center gap-4">
-            <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm font-bold text-slate-500 dark:text-slate-400 animate-pulse uppercase tracking-widest">Loading Workflow...</p>
+            <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+            <p className="text-sm font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Loading...</p>
           </div>
         </div>
       )}
@@ -319,6 +413,8 @@ const MainLayout: React.FC = () => {
               key={currentWorkflowId}
               workflowId={currentWorkflowId}
               footerOffset={footerOffset}
+              onToggleAiAssistant={() => setIsAiAssistantOpen(!isAiAssistantOpen)}
+              isAiAssistantOpen={isAiAssistantOpen}
               onExecutionStart={(executionId) => {
                 setCurrentExecutionId(executionId);
                 setCurrentExecutionDetail(null);
@@ -346,6 +442,7 @@ const MainLayout: React.FC = () => {
           <div
             className={`h-full border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 ${isRightSidebarOpen ? 'w-[320px] opacity-100' : 'w-0 opacity-0 border-none'
               }`}
+            style={{ paddingBottom: `${footerOffset}px` }}
           >
             <div className="w-[320px] h-full overflow-hidden">
               <NodeSidebar onClose={() => setIsRightSidebarOpen(false)} />
@@ -359,6 +456,18 @@ const MainLayout: React.FC = () => {
             panelHeight={logsPanelHeight}
             onToggle={() => setLogsExpanded((prev) => !prev)}
             onResizeStart={handleLogResizeStart}
+          />
+
+          <AIWorkflowChatPanel
+            isOpen={isAiAssistantOpen}
+            onClose={() => setIsAiAssistantOpen(false)}
+            messages={chatMessages}
+            onSendMessage={handleSendMessage}
+            onApplyWorkflow={handleApplyAiWorkflow}
+            isLoading={isAiLoading}
+            width={chatPanelWidth}
+            onResizeStart={handleChatResizeStart}
+            style={{ paddingBottom: `${footerOffset}px` }}
           />
         </div>
       </div>

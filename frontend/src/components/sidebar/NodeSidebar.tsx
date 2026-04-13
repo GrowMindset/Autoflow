@@ -33,13 +33,11 @@ const NodeSidebar: React.FC<NodeSidebarProps> = ({ onClose }) => {
           title="Triggers"
           category="trigger"
           nodes={NODE_LIBRARY.trigger}
-          isOpenDefault
         />
         <CategorySection
           title="Actions"
           category="action"
           nodes={NODE_LIBRARY.action}
-          isOpenDefault
         />
         <CategorySection
           title="Data Transform"

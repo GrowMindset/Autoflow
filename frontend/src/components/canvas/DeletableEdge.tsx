@@ -18,7 +18,6 @@ const DeletableEdge: React.FC<EdgeProps> = ({
   style,
   markerEnd,
   data,
-  animated,
 }) => {
   const { deleteElements } = useReactFlow();
 
@@ -49,17 +48,17 @@ const DeletableEdge: React.FC<EdgeProps> = ({
   // Prepare markerEnd based on its type (string or object)
   const markerEndConfig = typeof markerEnd === 'object' && markerEnd !== null
     ? {
-        ...markerEnd,
-        color: isActive ? '#10b981' : (markerEnd.color || '#94a3b8'),
-      }
+      ...markerEnd,
+      color: isActive ? '#10b981' : ((markerEnd as any).color || '#94a3b8'),
+    }
     : markerEnd;
 
   return (
     <>
-      <BaseEdge 
-        path={edgePath} 
-        markerEnd={markerEndConfig} 
-        style={edgeStyle} 
+      <BaseEdge
+        path={edgePath}
+        markerEnd={markerEndConfig}
+        style={edgeStyle}
         interactionWidth={20}
       />
 

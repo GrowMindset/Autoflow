@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState, useEffect } from 'react';
+import React, { useCallback, useRef, useState, useEffect, useMemo } from 'react';
 import ReactFlow, {
   addEdge,
   Background,
@@ -12,6 +12,7 @@ import ReactFlow, {
   ReactFlowInstance,
   XYPosition,
 } from 'reactflow';
+import dagre from 'dagre';
 
 import 'reactflow/dist/style.css';
 import { WorkflowNode, WorkflowEdge, WorkflowNodeData } from '../../types/workflow';
@@ -23,7 +24,7 @@ import ConfigPanel from '../config/ConfigPanel';
 import { executionService, ExecutionDetail } from '../../services/executionService';
 import toast from 'react-hot-toast';
 import { useTheme } from '../../context/ThemeContext';
-import { Play, LayoutGrid } from 'lucide-react';
+import { Play, LayoutGrid, Sparkles } from 'lucide-react';
 
 const nodeTypes = {
   trigger: BaseNode,
@@ -52,6 +53,8 @@ interface WorkflowCanvasProps {
   footerOffset?: number;
   onExecutionStart?: (executionId: string) => void;
   onExecutionUpdate?: (detail: ExecutionDetail) => void;
+  onToggleAiAssistant?: () => void;
+  isAiAssistantOpen?: boolean;
 }
 
 const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
@@ -59,6 +62,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   footerOffset = 0,
   onExecutionStart,
   onExecutionUpdate,
+  onToggleAiAssistant,
+  isAiAssistantOpen,
 }) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const connectingNode = useRef<{ nodeId: string; handleId: string | null } | null>(null);
@@ -175,103 +180,45 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     );
   }, [nodes, setEdges]);
 
-  const alignNodes = useCallback(() => {
-    // 1. Build adjacency list and find roots
-    const adj: Record<string, string[]> = {};
-    const inDegree: Record<string, number> = {};
-
-    nodes.forEach(n => {
-      adj[n.id] = [];
-      inDegree[n.id] = 0;
+  const autoLayout = useCallback((nodesToLayout: any[], edgesToLayout: any[]) => {
+    const dagreGraph = new dagre.graphlib.Graph();
+    dagreGraph.setDefaultEdgeLabel(() => ({}));
+    
+    // Config layout: Left to Right
+    dagreGraph.setGraph({ 
+      rankdir: 'LR', 
+      nodesep: 80, 
+      ranksep: 150,
+      marginx: 50,
+      marginy: 50
     });
 
-    edges.forEach(e => {
-      if (adj[e.source]) adj[e.source].push(e.target);
-      if (inDegree[e.target] !== undefined) inDegree[e.target]++;
+    nodesToLayout.forEach((node) => {
+      dagreGraph.setNode(node.id, { width: 250, height: 100 });
     });
 
-    const roots = nodes.filter(n => inDegree[n.id] === 0);
-    if (roots.length === 0 && nodes.length > 0) roots.push(nodes[0]); // Fallback for cycles
+    edgesToLayout.forEach((edge) => {
+      dagreGraph.setEdge(edge.source, edge.target);
+    });
 
-    // 2. BFS to determine levels and vertical ordering
-    const levels: Record<string, number> = {};
-    const levelNodes: Record<number, string[]> = {};
-    const queue: [string, number][] = roots.map(r => [r.id, 0]);
-    const visited = new Set<string>();
+    dagre.layout(dagreGraph);
 
-    while (queue.length > 0) {
-      const [id, level] = queue.shift()!;
-      if (visited.has(id)) continue;
-      visited.add(id);
-
-      levels[id] = Math.max(levels[id] || 0, level);
-      if (!levelNodes[level]) levelNodes[level] = [];
-      if (!levelNodes[level].includes(id)) levelNodes[level].push(id);
-
-      (adj[id] || []).forEach(childId => {
-        queue.push([childId, level + 1]);
-      });
-    }
-
-    // 3. Calculate positions
-    const HORIZONTAL_SPACING = 300;
-    const VERTICAL_SPACING = 150;
-    const newPositions: Record<string, XYPosition> = {};
-
-    // First pass: Assign X based on levels
-    nodes.forEach(node => {
-      const level = levels[node.id] || 0;
-      newPositions[node.id] = {
-        x: level * HORIZONTAL_SPACING,
-        y: 0
+    return nodesToLayout.map((node) => {
+      const nodeWithPosition = dagreGraph.node(node.id);
+      return {
+        ...node,
+        position: {
+          x: nodeWithPosition.x - 125, // Center adjustment
+          y: nodeWithPosition.y - 50,
+        },
       };
     });
+  }, []);
 
-    // Second pass: Assign Y to achieve "straight lines" and structured branching
-    const processedY = new Set<string>();
+  const alignNodes = useCallback(() => {
+    const positionedNodes = autoLayout(nodes, edges);
+    setNodes(positionedNodes);
 
-    const assignY = (nodeId: string, currentY: number) => {
-      if (processedY.has(nodeId)) return;
-      processedY.add(nodeId);
-
-      newPositions[nodeId].y = currentY;
-      const children = adj[nodeId] || [];
-
-      if (children.length === 1) {
-        // Straight line
-        assignY(children[0], currentY);
-      } else if (children.length > 1) {
-        // Symmetrical branching
-        const totalHeight = (children.length - 1) * VERTICAL_SPACING;
-        let startY = currentY - totalHeight / 2;
-        children.forEach(childId => {
-          assignY(childId, startY);
-          startY += VERTICAL_SPACING;
-        });
-      }
-    };
-
-    let rootY = 0;
-    roots.forEach(r => {
-      assignY(r.id, rootY);
-      rootY += VERTICAL_SPACING * 2; // Space out different disconnected trees
-    });
-
-    // Carry over any nodes not reached by roots (extra safety)
-    nodes.forEach(node => {
-      if (!processedY.has(node.id)) {
-        newPositions[node.id].y = 0;
-      }
-    });
-
-    setNodes((nds) =>
-      nds.map((node) => ({
-        ...node,
-        position: newPositions[node.id] || node.position,
-      }))
-    );
-
-    // 5. Center and focus the workflow
     if (reactFlowInstance) {
       setTimeout(() => {
         reactFlowInstance.fitView({ duration: 800, padding: 0.2 });
@@ -279,7 +226,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
 
     toast.success('Workflow perfectly aligned');
-  }, [nodes, edges, setNodes]);
+  }, [nodes, edges, setNodes, autoLayout, reactFlowInstance]);
 
   const stopPolling = useCallback(() => {
     if (pollingIntervalRef.current !== null) {
@@ -655,15 +602,86 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setEdges(rfEdges);
   }, [setNodes, setEdges]);
 
+  // Unsaved changes tracking
+  const [initialData, setInitialData] = useState<string>('');
+  
+  useEffect(() => {
+    // When a workflow is loaded, capture its initial state
+    if (nodes.length > 0 || edges.length > 0) {
+      if (!initialData) {
+        setInitialData(JSON.stringify({ nodes, edges }));
+      }
+    }
+  }, [workflowId, nodes.length, edges.length]);
+
+  const isDirty = useMemo(() => {
+    if (!initialData && (nodes.length > 0 || edges.length > 0)) return true;
+    if (!initialData) return false;
+    return initialData !== JSON.stringify({ nodes, edges });
+  }, [nodes, edges, initialData]);
+
   // Expose serialization helpers
   useEffect(() => {
     (window as any).getCanvasWorkflowData = getWorkflowData;
-    (window as any).loadCanvasWorkflowData = loadWorkflowData;
+    (window as any).loadCanvasWorkflowData = (definition: any) => {
+      loadWorkflowData(definition);
+      // Reset dirty state on load
+      setInitialData(JSON.stringify({ 
+        nodes: definition.nodes.map((n: any) => ({ ...n, position: n.position })), 
+        edges: definition.edges 
+      }));
+    };
+    (window as any).applyAiWorkflow = (definition: any) => {
+      // Map AI nodes to our internal node structures first
+      const rawNodes = (definition.nodes || []).map((n: any) => {
+        const category = NODE_LIBRARY.trigger.some(ref => ref.type === n.type) ? 'trigger' :
+                         NODE_LIBRARY.action.some(ref => ref.type === n.type) ? 'action' :
+                         NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' : 'ai';
+        return {
+          ...n,
+          data: {
+            label: n.label || n.type,
+            config: n.config || {},
+            type: n.type,
+            category: category
+          }
+        };
+      });
+
+      // Calculate layout
+      const positionedNodes = autoLayout(rawNodes, definition.edges || []);
+
+      // Convert to final React Flow nodes
+      const rfNodes = positionedNodes.map((n: any) => ({
+        id: n.id,
+        type: n.data.category,
+        position: n.position,
+        data: n.data
+      }));
+
+      setNodes(rfNodes);
+      setEdges((definition.edges || []).map((e: any) => ({
+        ...e,
+        id: e.id || `e_${e.source}_${e.target}_${Date.now()}`,
+        type: 'deletable',
+        animated: false,
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
+        style: { stroke: '#94a3b8', strokeWidth: 2 }
+      })));
+
+      setTimeout(() => {
+        reactFlowInstance?.fitView({ duration: 800, padding: 0.2 });
+      }, 100);
+    };
+    (window as any).isCanvasDirty = () => isDirty;
+
     return () => {
       delete (window as any).getCanvasWorkflowData;
       delete (window as any).loadCanvasWorkflowData;
+      delete (window as any).applyAiWorkflow;
+      delete (window as any).isCanvasDirty;
     };
-  }, [getWorkflowData, loadWorkflowData]);
+  }, [getWorkflowData, loadWorkflowData, autoLayout, isDirty, reactFlowInstance]);
 
   const updateNodeConfig = useCallback((id: string, config: Record<string, any>, output?: any) => {
     setNodes((nds) =>
@@ -714,7 +732,18 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   return (
     <div className="flex-1 flex flex-col relative h-full bg-slate-50 dark:bg-slate-950 overflow-hidden">
       <div className="absolute left-1/2 top-5 z-20 -translate-x-1/2">
-        <div className="flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 px-3 py-2 shadow-xl backdrop-blur-sm">
+        <div className="flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 shadow-lg">
+          <button
+            onClick={onToggleAiAssistant}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition ${isAiAssistantOpen
+              ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
+              : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+              }`}
+          >
+            <Sparkles size={16} className={`${isAiAssistantOpen ? 'animate-pulse' : ''}`} />
+            <span className="hidden sm:inline">{isAiAssistantOpen ? 'Close AI' : 'AI'}</span>
+          </button>
+          <div className="w-px h-6 bg-slate-200 dark:bg-slate-700 mx-1" />
           <button
             onClick={() => setActiveTab('editor')}
             className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${activeTab === 'editor'

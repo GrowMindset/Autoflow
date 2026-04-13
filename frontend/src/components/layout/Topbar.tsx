@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, LogOut, ChevronDown, Settings, CreditCard, Shield, Download, Upload, Sun, Moon } from 'lucide-react';
+import { User, LogOut, ChevronDown, Settings, CreditCard, Shield, Download, Upload, Sun, Moon, Sparkles } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useTheme } from '../../context/ThemeContext';
 import { useNavigate } from 'react-router-dom';
@@ -312,7 +312,7 @@ const Topbar: React.FC<TopbarProps> = ({
           className={`flex items-center gap-2 p-1 rounded-xl transition-all border ${isUserMenuOpen ? 'bg-slate-50 border-slate-200' : 'bg-transparent border-transparent hover:bg-slate-50'
             }`}
         >
-          <div className="w-8 h-8 bg-gradient-to-tr from-blue-500 to-purple-600 rounded-lg flex items-center justify-center text-white text-sm font-black shadow-md">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white text-sm font-black shadow-sm">
             {user?.username?.substring(0, 1).toUpperCase() || <User size={16} />}
           </div>
           <ChevronDown size={14} className={`text-slate-400 transition-transform duration-300 ${isUserMenuOpen ? 'rotate-180' : ''}`} />
