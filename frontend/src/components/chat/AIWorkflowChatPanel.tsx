@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Send, Sparkles, User, Bot, Loader2, Check, ArrowRight } from 'lucide-react';
-import { Message, AIResponse } from '../../services/aiService';
+import { Message } from '../../services/aiService';
 
 interface AIWorkflowChatPanelProps {
   isOpen: boolean;

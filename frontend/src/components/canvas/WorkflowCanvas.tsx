@@ -11,6 +11,7 @@ import ReactFlow, {
   BackgroundVariant,
   ReactFlowInstance,
   XYPosition,
+  ReactFlowProvider,
 } from 'reactflow';
 import dagre from 'dagre';
 
@@ -24,7 +25,7 @@ import ConfigPanel from '../config/ConfigPanel';
 import { executionService, ExecutionDetail } from '../../services/executionService';
 import toast from 'react-hot-toast';
 import { useTheme } from '../../context/ThemeContext';
-import { Play, LayoutGrid, Sparkles } from 'lucide-react';
+import { Play, LayoutGrid, Sparkles, Search } from 'lucide-react';
 
 const nodeTypes = {
   trigger: BaseNode,
@@ -114,6 +115,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   // Quick Add State
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState<XYPosition | null>(null);
+  const [menuSearchTerm, setMenuSearchTerm] = useState('');
+  const menuSearchRef = useRef<HTMLInputElement>(null);
 
   // Config Panel State
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -125,7 +128,37 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const pollingIntervalRef = useRef<number | null>(null);
   const activeExecutionIdRef = useRef<string | null>(null);
 
-  // Trigger Form Modal State
+  useEffect(() => {
+    const handleQuickAdd = (e: any) => {
+      const { nodeId, handleId } = e.detail;
+      const node = nodes.find(n => n.id === nodeId);
+      if (!node || !reactFlowInstance) return;
+
+      const position = {
+        x: node.position.x + 250,
+        y: node.position.y
+      };
+
+      connectingNode.current = { nodeId, handleId };
+      setMenuPosition(position);
+      setMenuVisible(true);
+    };
+
+    window.addEventListener('rf-quick-add', handleQuickAdd);
+    return () => {
+      window.removeEventListener('rf-quick-add', handleQuickAdd);
+      setMenuSearchTerm('');
+    };
+  }, [nodes, reactFlowInstance]);
+
+  useEffect(() => {
+    if (menuVisible && menuSearchRef.current) {
+      setTimeout(() => menuSearchRef.current?.focus(), 50);
+    } else if (!menuVisible) {
+      setMenuSearchTerm('');
+    }
+  }, [menuVisible]);
+
   const [showTriggerForm, setShowTriggerForm] = useState(false);
   const [triggerFormData, setTriggerFormData] = useState<Record<string, string>>({});
   const [triggerNode, setTriggerNode] = useState<WorkflowNode | null>(null);
@@ -675,6 +708,28 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     };
     (window as any).isCanvasDirty = () => isDirty;
 
+    (window as any).addNodeAtCenter = (type: string) => {
+      if (!reactFlowInstance) return;
+      
+      let position: XYPosition;
+      
+      if (connectingNode.current) {
+        const sourceNode = nodes.find(n => n.id === connectingNode.current?.nodeId);
+        position = {
+          x: (sourceNode?.position.x || 0) + 250,
+          y: (sourceNode?.position.y || 0)
+        };
+      } else {
+        reactFlowInstance.getViewport();
+        position = reactFlowInstance.screenToFlowPosition({
+          x: window.innerWidth / 2,
+          y: window.innerHeight / 2,
+        });
+      }
+      
+      addNodeAtPosition(type, position);
+    };
+
     return () => {
       delete (window as any).getCanvasWorkflowData;
       delete (window as any).loadCanvasWorkflowData;
@@ -768,7 +823,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         </div>
       </div>
       {activeTab === 'editor' ? (
-        <div className="flex-1 relative pt-16" ref={reactFlowWrapper}>
+        <ReactFlowProvider>
+          <div className="flex-1 relative pt-16" ref={reactFlowWrapper}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -864,30 +920,68 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                   </button>
                 </div>
 
+                {/* Quick Add Search */}
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                  <input
+                    ref={menuSearchRef}
+                    type="text"
+                    placeholder="Search nodes..."
+                    value={menuSearchTerm}
+                    onChange={(e) => setMenuSearchTerm(e.target.value)}
+                    className="w-full pl-9 pr-4 py-1.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-slate-700 dark:text-slate-200"
+                  />
+                </div>
+
                 <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1 custom-scrollbar">
-                  {Object.entries(NODE_LIBRARY).map(([category, nodes]) => (
-                    <div key={category} className="mb-2 last:mb-0">
-                      <div className="text-[10px] font-bold uppercase text-slate-300 dark:text-slate-600 mb-2 ml-1 tracking-widest">{category}</div>
-                      <div className="grid grid-cols-1 gap-1">
-                        {nodes.map(node => (
-                          <button
-                            key={node.type}
-                            onClick={() => menuPosition && addNodeAtPosition(node.type, menuPosition)}
-                            className="flex flex-col gap-0.5 p-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 border border-transparent hover:border-slate-100 dark:hover:border-slate-700 transition-all text-left group"
-                          >
-                            <div className="flex items-center gap-2">
-                              <div className={`w-2 h-2 rounded-full ring-4 ring-white dark:ring-slate-900 shadow-sm ${category === 'trigger' ? 'bg-emerald-400' :
-                                category === 'action' ? 'bg-blue-400' :
-                                  category === 'transform' ? 'bg-amber-400' : 'bg-purple-400'
-                                }`} />
-                              <span className="text-sm font-bold text-slate-700 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400">{node.label}</span>
-                            </div>
-                            <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-4 line-clamp-1">{node.description}</span>
-                          </button>
-                        ))}
+                  {Object.entries(NODE_LIBRARY).map(([category, nodes]) => {
+                    const filteredNodes = nodes.filter(node => 
+                      node.label.toLowerCase().includes(menuSearchTerm.toLowerCase()) || 
+                      node.description.toLowerCase().includes(menuSearchTerm.toLowerCase())
+                    );
+                    
+                    if (filteredNodes.length === 0) return null;
+
+                    return (
+                      <div key={category} className="mb-2 last:mb-0">
+                        <div className="text-[10px] font-bold uppercase text-slate-300 dark:text-slate-600 mb-2 ml-1 tracking-widest">{category}</div>
+                        <div className="grid grid-cols-1 gap-1">
+                          {filteredNodes.map(node => (
+                            <button
+                              key={node.type}
+                              onClick={() => {
+                                if (menuPosition) {
+                                  addNodeAtPosition(node.type, menuPosition);
+                                  setMenuVisible(false);
+                                }
+                              }}
+                              className="flex flex-col gap-0.5 p-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 border border-transparent hover:border-slate-100 dark:hover:border-slate-700 transition-all text-left group"
+                            >
+                              <div className="flex items-center gap-2">
+                                <div className={`w-2 h-2 rounded-full ring-4 ring-white dark:ring-slate-900 shadow-sm ${category === 'trigger' ? 'bg-emerald-400' :
+                                  category === 'action' ? 'bg-blue-400' :
+                                    category === 'transform' ? 'bg-amber-400' : 'bg-purple-400'
+                                  }`} />
+                                <span className="text-sm font-bold text-slate-700 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400">{node.label}</span>
+                              </div>
+                              <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-4 line-clamp-1">{node.description}</span>
+                            </button>
+                          ))}
+                        </div>
                       </div>
+                    );
+                  })}
+                  
+                  {menuSearchTerm && Object.values(NODE_LIBRARY).every(nodes => 
+                    nodes.filter(node => 
+                      node.label.toLowerCase().includes(menuSearchTerm.toLowerCase()) || 
+                      node.description.toLowerCase().includes(menuSearchTerm.toLowerCase())
+                    ).length === 0
+                  ) && (
+                    <div className="flex flex-col items-center justify-center py-4 text-center">
+                      <p className="text-[10px] font-medium text-slate-400">No nodes matching "{menuSearchTerm}"</p>
                     </div>
-                  ))}
+                  )}
                 </div>
               </div>
             )}
@@ -1009,6 +1103,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             )}
           </ReactFlow>
         </div>
+      </ReactFlowProvider>
       ) : (
         <div className="flex-1 overflow-y-auto p-6 pt-20">
           <div className="max-w-4xl mx-auto space-y-6">

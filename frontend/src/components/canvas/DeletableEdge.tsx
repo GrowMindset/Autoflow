@@ -41,14 +41,13 @@ const DeletableEdge: React.FC<EdgeProps> = ({
     ...style,
     stroke: isActive ? '#10b981' : (style?.stroke || '#94a3b8'),
     strokeWidth: isActive ? 4 : (style?.strokeWidth || 2),
-    transition: 'all 0.3s ease',
     opacity: isActive ? 1 : 0.6,
   };
 
   // Prepare markerEnd based on its type (string or object)
   const markerEndConfig = typeof markerEnd === 'object' && markerEnd !== null
     ? {
-      ...markerEnd,
+      ...(markerEnd as any),
       color: isActive ? '#10b981' : ((markerEnd as any).color || '#94a3b8'),
     }
     : markerEnd;

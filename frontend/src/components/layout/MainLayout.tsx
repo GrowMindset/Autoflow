@@ -23,8 +23,8 @@ const MainLayout: React.FC = () => {
   const [newWorkflowDraftName, setNewWorkflowDraftName] = useState<string>('Untitled Workflow');
   const [isLoading, setIsLoading] = useState(true);
   const [isLeftSidebarCollapsed, setIsLeftSidebarCollapsed] = useState(false);
-  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
   const [isAiAssistantOpen, setIsAiAssistantOpen] = useState(false);
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
 
   // AI Chat & Resize State
   const [chatMessages, setChatMessages] = useState<Message[]>([]);
@@ -137,6 +137,13 @@ const MainLayout: React.FC = () => {
       }
     };
     fetchWorkflows();
+  }, []);
+
+  useEffect(() => {
+    (window as any).openNodePalette = () => setIsRightSidebarOpen(true);
+    return () => {
+      delete (window as any).openNodePalette;
+    };
   }, []);
 
   const currentWorkflow = currentWorkflowId === 'new'
@@ -438,17 +445,6 @@ const MainLayout: React.FC = () => {
             />
           </main>
 
-          {/* Node Palette (Right Sidebar) - Now a push-sidebar */}
-          <div
-            className={`h-full border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 ${isRightSidebarOpen ? 'w-[320px] opacity-100' : 'w-0 opacity-0 border-none'
-              }`}
-            style={{ paddingBottom: `${footerOffset}px` }}
-          >
-            <div className="w-[320px] h-full overflow-hidden">
-              <NodeSidebar onClose={() => setIsRightSidebarOpen(false)} />
-            </div>
-          </div>
-
           <ExecutionLogsFooter
             executionId={currentExecutionId}
             executionDetail={currentExecutionDetail}
@@ -468,6 +464,24 @@ const MainLayout: React.FC = () => {
             width={chatPanelWidth}
             onResizeStart={handleChatResizeStart}
             style={{ paddingBottom: `${footerOffset}px` }}
+          />
+        </div>
+      </div>
+
+      {/* Node Sidebar (Right) - Now a top-level sibling */}
+      <div
+        className={`h-screen border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 z-[40] ${
+          isRightSidebarOpen ? 'w-80 opacity-100' : 'w-0 opacity-0 border-none'
+        }`}
+      >
+        <div className="w-80 h-full overflow-hidden">
+          <NodeSidebar 
+            onClose={() => setIsRightSidebarOpen(false)} 
+            onSelect={(type) => {
+              if ((window as any).addNodeAtCenter) {
+                (window as any).addNodeAtCenter(type);
+              }
+            }}
           />
         </div>
       </div>

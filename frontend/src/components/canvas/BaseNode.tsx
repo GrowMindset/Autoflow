@@ -1,11 +1,9 @@
 import React, { memo, useEffect } from 'react';
-import { Handle, Position, NodeProps, useUpdateNodeInternals, useReactFlow } from 'reactflow';
-import { Check, Loader2, AlertCircle, AlertTriangle } from 'lucide-react';
+import { Handle, Position, NodeProps, useUpdateNodeInternals, useReactFlow, useEdges } from 'reactflow';
+import { Check, Loader2, AlertCircle, AlertTriangle, Plus } from 'lucide-react';
 import { WorkflowNodeData } from '../../types/workflow';
 import { CATEGORY_ACCENTS } from '../../constants/nodeLibrary';
 import NodeBadge from '../sidebar/NodeBadge';
-
-import { useEdges } from 'reactflow';
 
 const getMissingRequirements = (type: string, config: Record<string, any>, isChatModelConnected: boolean): string[] => {
   const missing: string[] = [];
@@ -63,10 +61,42 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
   useEffect(() => {
     updateNodeInternals(id);
   }, [id, caseIds, updateNodeInternals]);
+  
+  const isHandleConnected = (handleId: string | null) => {
+    return edges.some(edge => edge.source === id && edge.sourceHandle === handleId);
+  };
+
+  const handlePlusClick = (e: React.MouseEvent, handleId: string | null) => {
+    e.stopPropagation();
+    
+    // Trigger the quick add menu in WorkflowCanvas via a custom event
+    const event = new CustomEvent('rf-quick-add', {
+        detail: {
+            nodeId: id,
+            handleId: handleId,
+            position: { x: 0, y: 0 } // Position will be calculated relative to the node
+        }
+    });
+    window.dispatchEvent(event);
+  };
+
+  const PlusButton = ({ handleId, className = "" }: { handleId: string | null, className?: string }) => {
+    if (isHandleConnected(handleId)) return null;
+    
+    return (
+      <button
+        onClick={(e) => handlePlusClick(e, handleId)}
+        className={`nodrag absolute z-[100] w-4 h-4 bg-slate-800 dark:bg-slate-800 text-slate-400 border border-slate-700 rounded-md flex items-center justify-center shadow-lg hover:bg-slate-700 hover:text-white active:scale-95 transition-all ${className}`}
+        title="Add node here"
+      >
+        <Plus size={10} strokeWidth={4} />
+      </button>
+    );
+  };
 
   return (
     <div
-      className={`px-3 py-2.5 rounded-xl border-2 transition-all shadow-none min-w-[150px] max-w-[150px] group/node relative 
+      className={`px-3 py-2.5 rounded-xl border-2 transition-colors duration-200 shadow-none min-w-[150px] max-w-[150px] group/node relative 
         ${selected ? 'ring-2 ring-blue-500/10 border-blue-500' : 'border-slate-200 dark:border-slate-800'}
         ${data.status === 'RUNNING' ? 'border-emerald-600 ring-[6px] ring-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-900/10 animate-pulse' : ''}
         ${data.status === 'SUCCEEDED' ? 'bg-emerald-50/30 dark:bg-emerald-500/5 border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)] ring-[6px] ring-emerald-500/30' : 'bg-white dark:bg-slate-900'}
@@ -164,10 +194,12 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           <div className="absolute -right-1 top-[25%] flex items-center justify-end w-20 pointer-events-none">
             <span className="text-[7px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm mr-2 pointer-events-auto">True</span>
             <Handle type="source" position={Position.Right} id="true" className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-emerald-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-emerald-400'}`} />
+            <PlusButton handleId="true" className="-right-10" />
           </div>
           <div className="absolute -right-1 top-[75%] flex items-center justify-end w-20 pointer-events-none">
             <span className="text-[7px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm mr-2 pointer-events-auto">False</span>
             <Handle type="source" position={Position.Right} id="false" className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-rose-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-rose-400'}`} />
+            <PlusButton handleId="false" className="-right-10" />
           </div>
         </>
       ) : data.type === 'switch' ? (
@@ -178,11 +210,13 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
                 {c.label || `Case ${i + 1}`}
               </span>
               <Handle type="source" position={Position.Right} id={c.id || c.label || `case_${i}`} className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-blue-400'}`} />
+              <PlusButton handleId={c.id || c.label || `case_${i}`} className="-right-10" />
             </div>
           ))}
           <div className="flex items-center justify-end w-32 translate-x-1">
             <span className="text-[6px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm mr-2 pointer-events-auto">Default</span>
             <Handle type="source" position={Position.Right} id="default" className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-slate-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-400'}`} />
+            <PlusButton handleId="default" className="-right-10" />
           </div>
         </div>
       ) : data.type === 'ai_agent' ? (
@@ -195,7 +229,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           />
           {/* Bottom handles for AI Agent sub-nodes */}
           <div className="absolute -bottom-4 left-0 right-0 flex justify-around px-2 pointer-events-none">
-            <div className="flex flex-col items-center gap-0.5">
+            <div className="flex flex-col items-center gap-0.5 relative group/h">
               <Handle
                 type="target"
                 id="chat_model"
@@ -204,8 +238,9 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
                 className="!w-2 !h-2 !rounded-none border border-white dark:border-slate-900 !bg-purple-500 hover:!bg-purple-400 pointer-events-auto"
               />
               <span className="text-[6px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-tighter">Chat Model*</span>
+              <PlusButton handleId="chat_model" className="-bottom-5" />
             </div>
-            <div className="flex flex-col items-center gap-0.5">
+            <div className="flex flex-col items-center gap-0.5 relative group/h">
               <Handle
                 type="target"
                 id="memory"
@@ -214,8 +249,9 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
                 className="!w-2 !h-2 !rounded-none border border-white dark:border-slate-900 !bg-amber-500 hover:!bg-amber-400 pointer-events-auto"
               />
               <span className="text-[6px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-tighter">Memory</span>
+              <PlusButton handleId="memory" className="-bottom-5" />
             </div>
-            <div className="flex flex-col items-center gap-0.5">
+            <div className="flex flex-col items-center gap-0.5 relative group/h">
               <Handle
                 type="target"
                 id="tool"
@@ -224,6 +260,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
                 className="!w-2 !h-2 !rounded-none border border-white dark:border-slate-900 !bg-emerald-500 hover:!bg-emerald-400 pointer-events-auto"
               />
               <span className="text-[6px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-tighter">Tool</span>
+              <PlusButton handleId="tool" className="-bottom-5" />
             </div>
           </div>
         </>
@@ -249,14 +286,18 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
             className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
             style={{ right: -4 }}
           />
+          <PlusButton handleId={null} className="-right-3 top-1/2 -translate-y-1/2" />
         </>
       ) : (
-        <Handle
-          type="source"
-          position={Position.Right}
-          className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
-          style={{ right: -4 }}
-        />
+        <>
+          <Handle
+            type="source"
+            position={Position.Right}
+            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
+            style={{ right: -4 }}
+          />
+          <PlusButton handleId={null} className="-right-8 top-1/2 -translate-y-1/2" />
+        </>
       )}
     </div>
   );

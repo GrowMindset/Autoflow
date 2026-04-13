@@ -1,4 +1,3 @@
-import axios from 'axios';
 
 export interface Message {
   id: string;
@@ -18,7 +17,6 @@ export interface AIResponse {
 }
 
 class AIService {
-  private messages: Message[] = [];
 
   async generateWorkflow(prompt: string, currentWorkflow?: WorkflowDefinition): Promise<AIResponse> {
     // Simulate API delay

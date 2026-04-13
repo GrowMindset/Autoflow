@@ -4,9 +4,10 @@ import NodeBadge from './NodeBadge';
 
 interface NodeItemProps {
   node: NodeDefinition;
+  onSelect?: (type: string) => void;
 }
 
-const NodeItem: React.FC<NodeItemProps> = ({ node }) => {
+const NodeItem: React.FC<NodeItemProps> = ({ node, onSelect }) => {
   const onDragStart = (event: React.DragEvent) => {
     event.dataTransfer.setData('application/reactflow', node.type);
     event.dataTransfer.effectAllowed = 'move';
@@ -14,7 +15,8 @@ const NodeItem: React.FC<NodeItemProps> = ({ node }) => {
 
   return (
     <div
-      className={`p-2 rounded-lg border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-800/50 hover:border-blue-200 dark:hover:border-blue-500/50 transition-all cursor-grab active:cursor-grabbing group ${
+      onClick={() => onSelect?.(node.type)}
+      className={`p-2 rounded-lg border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-800/50 hover:border-blue-200 dark:hover:border-blue-500/50 transition-all cursor-pointer active:cursor-grabbing group ${
         node.is_dummy ? 'opacity-60 grayscale-[0.2]' : ''
       }`}
       draggable

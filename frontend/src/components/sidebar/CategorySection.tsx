@@ -7,9 +7,10 @@ interface CategorySectionProps {
   category: string;
   nodes: NodeDefinition[];
   isOpenDefault?: boolean;
+  onSelect?: (type: string) => void;
 }
 
-const CategorySection: React.FC<CategorySectionProps> = ({ title, category, nodes, isOpenDefault = false }) => {
+const CategorySection: React.FC<CategorySectionProps> = ({ title, category, nodes, isOpenDefault = false, onSelect }) => {
   const [isOpen, setIsOpen] = useState(isOpenDefault);
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -55,7 +56,7 @@ const CategorySection: React.FC<CategorySectionProps> = ({ title, category, node
       {isOpen && (
         <div className="flex flex-col gap-1.5 pl-4 py-1 animate-in slide-in-from-top-1 duration-200">
           {displayedNodes.map((node) => (
-            <NodeItem key={node.type} node={node} />
+            <NodeItem key={node.type} node={node} onSelect={onSelect} />
           ))}
           
           {hasMore && (
