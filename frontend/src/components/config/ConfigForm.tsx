@@ -107,7 +107,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       key: 'model',
       label: 'Model',
       type: 'select',
-      options: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo']
+      options: ['gpt-5-mini', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo']
     },
     { key: 'temperature', label: 'Temperature', type: 'text', placeholder: '0.7' }
   ],
@@ -168,21 +168,59 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
     e.stopPropagation();
     setDragOverField(null);
 
-    // Try custom MIME type first; fall back to text/plain ("{{body.message}}")
-    let path = e.dataTransfer.getData('application/json-path');
-    if (!path) {
-      const plain = e.dataTransfer.getData('text/plain') || '';
-      const m = plain.match(/^\{\{(.+)\}\}$/);
-      path = m ? m[1] : plain;
-    }
-    if (!path) return;
+    let textToInsert = '';
 
-    const placeholder = `{{${path}}}`;
+    // Check if dragging a literal value first
+    const literalValue = e.dataTransfer.getData('application/json-value');
+    if (literalValue) {
+      textToInsert = literalValue;
+    } else {
+      const path = e.dataTransfer.getData('application/json-path');
+      if (path) {
+        textToInsert = `{{${path}}}`;
+      } else {
+        // Fallback for external drops
+        textToInsert = e.dataTransfer.getData('text/plain') || '';
+      }
+    }
+
+    if (!textToInsert) return;
+
     const el = e.currentTarget as HTMLInputElement | HTMLTextAreaElement;
     const current = String(config[fieldKey] || '');
     const start = el.selectionStart ?? current.length;
-    const end   = el.selectionEnd   ?? start;
-    onChange(fieldKey, current.slice(0, start) + placeholder + current.slice(end));
+    const end = el.selectionEnd ?? start;
+    onChange(fieldKey, current.slice(0, start) + textToInsert + current.slice(end));
+  };
+
+  const handleArrayDrop = (e: React.DragEvent, fieldKey: string, arrayRef: any[], index: number, itemKey: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverField(null);
+
+    let textToInsert = '';
+    const literalValue = e.dataTransfer.getData('application/json-value');
+    if (literalValue) {
+      textToInsert = literalValue;
+    } else {
+      const path = e.dataTransfer.getData('application/json-path');
+      if (path) {
+        textToInsert = `{{${path}}}`;
+      } else {
+        textToInsert = e.dataTransfer.getData('text/plain') || '';
+      }
+    }
+
+    if (!textToInsert) return;
+
+    const el = e.currentTarget as HTMLInputElement;
+    const current = String(arrayRef[index][itemKey] || '');
+    const start = el.selectionStart ?? current.length;
+    const end = el.selectionEnd ?? start;
+    
+    const next = [...arrayRef];
+    next[index] = { ...next[index], [itemKey]: current.slice(0, start) + textToInsert + current.slice(end) };
+    onChange(fieldKey, next);
   };
 
   useEffect(() => {
@@ -296,17 +334,32 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                     <option value="contains">contains</option>
                   </select>
                 </div>
-                <input
-                  type="text"
-                  placeholder="Value"
-                  value={c.value || ''}
-                  onChange={(e) => {
-                    const next = [...casesWithIds];
-                    next[idx] = { ...c, value: e.target.value };
-                    onChange(field.key, next);
-                  }}
-                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder={dragOverField === `${field.key}_${idx}` ? 'Drop to insert…' : 'Value'}
+                    value={c.value || ''}
+                    onChange={(e) => {
+                      const next = [...casesWithIds];
+                      next[idx] = { ...c, value: e.target.value };
+                      onChange(field.key, next);
+                    }}
+                    onDragOver={(e) => handleDragOver(e, `${field.key}_${idx}`)}
+                    onDragLeave={(e) => handleDragLeave(e)}
+                    onDrop={(e) => handleArrayDrop(e, field.key, casesWithIds, idx, 'value')}
+                    className={`w-full bg-white dark:bg-slate-900 border rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === `${field.key}_${idx}`
+                          ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                          : 'border-slate-200 dark:border-slate-700 focus:border-blue-500 dark:focus:border-blue-400'
+                      }`}
+                  />
+                  {dragOverField === `${field.key}_${idx}` && (
+                    <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none">
+                      <span className="inline-flex items-center gap-1 bg-blue-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12l7 7 7-7" /></svg> Drop
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
             <button
@@ -467,17 +520,16 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
               onDragLeave={(e) => handleDragLeave(e)}
               onDrop={(e) => handleDrop(e, field.key)}
               rows={4}
-              className={`w-full bg-slate-50 dark:bg-slate-800 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 shadow-sm resize-y ${
-                dragOverField === field.key
+              className={`w-full bg-slate-50 dark:bg-slate-800 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 shadow-sm resize-y ${dragOverField === field.key
                   ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
                   : 'border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
-              }`}
+                }`}
             />
             {dragOverField === field.key && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none rounded-lg">
                 <span className="inline-flex items-center gap-1.5 bg-blue-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path d="M12 5v14M5 12l7 7 7-7"/>
+                    <path d="M12 5v14M5 12l7 7 7-7" />
                   </svg>
                   Drop to insert
                 </span>
@@ -498,17 +550,16 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
               onDragOver={(e) => handleDragOver(e, field.key)}
               onDragLeave={(e) => handleDragLeave(e)}
               onDrop={(e) => handleDrop(e, field.key)}
-              className={`w-full bg-slate-50 dark:bg-slate-800 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 shadow-sm ${
-                dragOverField === field.key
+              className={`w-full bg-slate-50 dark:bg-slate-800 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 shadow-sm ${dragOverField === field.key
                   ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
                   : 'border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
-              }`}
+                }`}
             />
             {dragOverField === field.key && (
               <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none">
                 <span className="inline-flex items-center gap-1 bg-blue-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow">
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path d="M12 5v14M5 12l7 7 7-7"/>
+                    <path d="M12 5v14M5 12l7 7 7-7" />
                   </svg>
                   Drop
                 </span>

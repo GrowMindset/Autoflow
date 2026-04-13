@@ -6,44 +6,59 @@ interface JsonTreeProps {
   isRoot?: boolean;
 }
 
+// Grip icon (six dots)
+const GripIcon = ({ className }: { className?: string }) => (
+  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className={className}>
+    <circle cx="9" cy="5"  r="1.5" fill="currentColor" />
+    <circle cx="15" cy="5" r="1.5" fill="currentColor" />
+    <circle cx="9"  cy="12" r="1.5" fill="currentColor" />
+    <circle cx="15" cy="12" r="1.5" fill="currentColor" />
+    <circle cx="9"  cy="19" r="1.5" fill="currentColor" />
+    <circle cx="15" cy="19" r="1.5" fill="currentColor" />
+  </svg>
+);
+
 const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) => {
   const [isExpanded, setIsExpanded] = useState(true);
 
-  if (data === null) return <span className="text-slate-400 dark:text-slate-600 italic text-xs">null</span>;
+  if (data === null)      return <span className="text-slate-400 dark:text-slate-600 italic text-xs">null</span>;
   if (data === undefined) return <span className="text-slate-400 dark:text-slate-600 italic text-xs">undefined</span>;
 
-  const placeholder = `{{${path}}}`;
-
-  const onDragStart = (e: React.DragEvent, fieldPath: string) => {
+  // ── Drag: KEY label → insert {{path}} placeholder ────────────────────────
+  const onKeyDragStart = (e: React.DragEvent, fieldPath: string) => {
+    e.stopPropagation();
     const ph = `{{${fieldPath}}}`;
     e.dataTransfer.setData('application/json-path', fieldPath);
     e.dataTransfer.setData('text/plain', ph);
     e.dataTransfer.effectAllowed = 'copy';
   };
 
+  // ── Drag: VALUE chip → insert the raw value literally ────────────────────
+  const onValueDragStart = (e: React.DragEvent, rawValue: any) => {
+    e.stopPropagation();
+    const str = typeof rawValue === 'string' ? rawValue : JSON.stringify(rawValue);
+    e.dataTransfer.setData('application/json-value', str);
+    e.dataTransfer.setData('text/plain', str);
+    e.dataTransfer.effectAllowed = 'copy';
+  };
+
+  // ── Leaf primitive value ──────────────────────────────────────────────────
   if (typeof data !== 'object') {
+    const displayStr = typeof data === 'string' ? `"${data}"` : String(data);
+    const ph = `{{${path}}}`;
+
     return (
       <div
         draggable
-        onDragStart={(e) => onDragStart(e, path)}
-        title={`Drag to insert ${placeholder}`}
-        className="inline-flex items-center gap-2 group cursor-grab active:cursor-grabbing hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded px-1 transition-colors"
+        onDragStart={(e) => onValueDragStart(e, data)}
+        title={`Drag to copy literal value`}
+        className="inline-flex items-center gap-1.5 group cursor-grab active:cursor-grabbing hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded px-1 transition-colors"
       >
-        <span className="text-blue-600 dark:text-blue-400 font-mono text-xs">
-          {typeof data === 'string' ? `"${data}"` : String(data)}
-        </span>
+        <span className="text-emerald-600 dark:text-emerald-400 font-mono text-xs">{displayStr}</span>
         <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
-          {/* drag icon */}
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-400 dark:text-blue-500">
-            <circle cx="9" cy="5" r="1.5" fill="currentColor" stroke="none" />
-            <circle cx="15" cy="5" r="1.5" fill="currentColor" stroke="none" />
-            <circle cx="9" cy="12" r="1.5" fill="currentColor" stroke="none" />
-            <circle cx="15" cy="12" r="1.5" fill="currentColor" stroke="none" />
-            <circle cx="9" cy="19" r="1.5" fill="currentColor" stroke="none" />
-            <circle cx="15" cy="19" r="1.5" fill="currentColor" stroke="none" />
-          </svg>
-          <span className="text-[9px] bg-blue-500 text-white px-1.5 py-0.5 rounded font-mono leading-none">
-            {placeholder}
+          <GripIcon className="text-emerald-400" />
+          <span className="text-[9px] bg-emerald-500 text-white px-1.5 py-0.5 rounded font-mono leading-none max-w-[80px] truncate">
+            {displayStr}
           </span>
         </span>
       </div>
@@ -75,20 +90,28 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
           {keys.map((key) => {
             const currentPath = path ? `${path}.${key}` : key;
             const childIsLeaf = typeof data[key] !== 'object' || data[key] === null;
+            const ph = `{{${currentPath}}}`;
+
             return (
               <div key={key} className="flex flex-col gap-0.5">
                 <div className="flex items-start gap-1 group/row">
+                  {/* KEY label — drags {{path}} placeholder */}
                   <span
-                    draggable={childIsLeaf}
-                    onDragStart={(e) => onDragStart(e, currentPath)}
-                    title={childIsLeaf ? `Drag to insert {{${currentPath}}}` : undefined}
-                    className={`text-amber-700 dark:text-amber-500 font-bold whitespace-nowrap px-1 rounded transition-colors ${childIsLeaf
-                      ? 'cursor-grab active:cursor-grabbing hover:bg-amber-50 dark:hover:bg-amber-900/20 hover:text-amber-900 dark:hover:text-amber-300'
-                      : 'cursor-default'
-                      }`}
+                    draggable
+                    onDragStart={(e) => onKeyDragStart(e, currentPath)}
+                    title={`Drag key → insert ${ph}`}
+                    className="inline-flex items-center gap-1 group/key cursor-grab active:cursor-grabbing hover:bg-amber-50 dark:hover:bg-amber-900/20 px-1 rounded transition-colors"
                   >
-                    {key}:
+                    <GripIcon className="text-amber-400 opacity-0 group-hover/key:opacity-100 transition-opacity" />
+                    <span className="text-amber-700 dark:text-amber-500 font-bold whitespace-nowrap">
+                      {key}:
+                    </span>
+                    {/* Tooltip badge showing what will be inserted */}
+                    <span className="opacity-0 group-hover/key:opacity-100 transition-opacity text-[9px] bg-amber-500 text-white px-1.5 py-0.5 rounded font-mono leading-none">
+                      {ph}
+                    </span>
                   </span>
+
                   <JsonTree data={data[key]} path={currentPath} isRoot={false} />
                 </div>
               </div>

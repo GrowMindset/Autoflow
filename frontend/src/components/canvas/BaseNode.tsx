@@ -5,24 +5,46 @@ import { WorkflowNodeData } from '../../types/workflow';
 import { CATEGORY_ACCENTS } from '../../constants/nodeLibrary';
 import NodeBadge from '../sidebar/NodeBadge';
 
-const hasIncompleteConfig = (type: string, config: Record<string, any>): boolean => {
+import { useEdges } from 'reactflow';
+
+const getMissingRequirements = (type: string, config: Record<string, any>, isChatModelConnected: boolean): string[] => {
+  const missing: string[] = [];
+
   const requiredFields: Record<string, string[]> = {
     'if_else': ['field', 'operator', 'value'],
     'switch': ['field'],
     'filter': ['condition'],
+    'ai_agent': ['command'],
+    'chat_model_openai': ['credential_id', 'model'],
+    'chat_model_groq': ['credential_id', 'model'],
   };
-  
-  const required = requiredFields[type];
-  if (!required) return false;
-  
-  return required.some(field => !config[field]);
+
+  const fields = requiredFields[type] || [];
+  for (const field of fields) {
+    if (!config[field]) {
+      missing.push(`Required field '${field}' is missing`);
+    }
+  }
+
+  if (type === 'ai_agent' && !isChatModelConnected) {
+    missing.push('Requires a Chat Model node connected to its bottom handle');
+  }
+
+  return missing;
 };
 
 const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected }) => {
   const accentColor = CATEGORY_ACCENTS[data.category] || '#cbd5e1';
   const updateNodeInternals = useUpdateNodeInternals();
   const { deleteElements } = useReactFlow();
-  const hasIncomplete = hasIncompleteConfig(data.type, data.config);
+  const edges = useEdges();
+
+  const isChatModelConnected = edges.some(
+    (e) => e.target === id && e.targetHandle === 'chat_model'
+  );
+
+  const missingReqs = getMissingRequirements(data.type, data.config, isChatModelConnected);
+  const hasIncomplete = missingReqs.length > 0;
 
   // Debug log whenever data changes
   useEffect(() => {
@@ -50,20 +72,20 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
         ${data.status === 'SUCCEEDED' ? 'bg-emerald-50/30 dark:bg-emerald-500/5 border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)] ring-[6px] ring-emerald-500/30' : 'bg-white dark:bg-slate-900'}
         ${data.status === 'FAILED' ? 'bg-rose-50/30 dark:bg-rose-500/5 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.2)] ring-[6px] ring-rose-500/30' : ''}
       `}
-      style={{ borderTop: `6px solid ${
-        data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '#10b981' : 
-        data.status === 'FAILED' ? '#f43f5e' : 
-        accentColor
-      }` }}
+      style={{
+        borderTop: `6px solid ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '#10b981' :
+            data.status === 'FAILED' ? '#f43f5e' :
+              accentColor
+          }`
+      }}
       title={hasIncomplete ? 'This node is missing required configuration' : ''}
     >
       {/* Execution Status Icon */}
       {data.status && (
-        <div className={`absolute -top-3 -right-3 p-1 rounded-full border shadow-md z-20 transition-all duration-300 ${
-          data.status === 'SUCCEEDED' ? 'bg-emerald-500 border-emerald-400' :
-          data.status === 'FAILED' ? 'bg-rose-500 border-rose-400' :
-          'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700'
-        }`}>
+        <div className={`absolute -top-3 -right-3 p-1 rounded-full border shadow-md z-20 transition-all duration-300 ${data.status === 'SUCCEEDED' ? 'bg-emerald-500 border-emerald-400' :
+            data.status === 'FAILED' ? 'bg-rose-500 border-rose-400' :
+              'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700'
+          }`}>
           {data.status === 'RUNNING' && <Loader2 size={12} className="text-emerald-600 dark:text-emerald-400 animate-spin" />}
           {data.status === 'SUCCEEDED' && <Check size={12} className="text-white" strokeWidth={4} />}
           {data.status === 'FAILED' && <AlertCircle size={12} className="text-white" />}
@@ -72,7 +94,10 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
 
       {/* Config Incomplete Warning */}
       {hasIncomplete && !data.status && (
-        <div className="absolute -top-3 -left-3 p-1 rounded-full bg-amber-100 dark:bg-amber-900 border border-amber-300 dark:border-amber-700 shadow-md z-20" title="Missing configuration">
+        <div
+          className="absolute -top-3 -left-3 p-1 rounded-full bg-amber-100 dark:bg-amber-900 border border-amber-300 dark:border-amber-700 shadow-md z-20 cursor-help"
+          title={`INCOMPLETE CONFIGURATION:\n• ${missingReqs.join('\n• ')}`}
+        >
           <AlertTriangle size={12} className="text-amber-600 dark:text-amber-400" />
         </div>
       )}
@@ -93,48 +118,43 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       <Handle
         type="target"
         position={Position.Left}
-        className={`!w-1.5 !h-1.5 border border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${
-          data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '!bg-emerald-500' : 
-          data.status === 'FAILED' ? '!bg-rose-500' : 
-          '!bg-slate-200 dark:!bg-slate-700'
-        }`}
+        className={`!w-1.5 !h-1.5 border border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '!bg-emerald-500' :
+            data.status === 'FAILED' ? '!bg-rose-500' :
+              '!bg-slate-200 dark:!bg-slate-700'
+          }`}
         style={{ left: -4 }}
       />
 
       <div className="flex flex-col gap-1 mt-0.5">
         <div className="flex items-center justify-between gap-3">
-          <span className={`text-[8px] font-black uppercase tracking-widest`} style={{ 
-            color: data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '#059669' : 
-                   data.status === 'FAILED' ? '#e11d48' : 
-                   accentColor 
+          <span className={`text-[8px] font-black uppercase tracking-widest`} style={{
+            color: data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '#059669' :
+              data.status === 'FAILED' ? '#e11d48' :
+                accentColor
           }}>
             {data.category}
           </span>
           {data.is_dummy && <NodeBadge variant="neutral">Soon</NodeBadge>}
         </div>
 
-        <h3 className={`text-xs font-bold leading-tight truncate ${
-          data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'text-emerald-900 dark:text-emerald-100' : 
-          data.status === 'FAILED' ? 'text-rose-900 dark:text-rose-100' : 
-          'text-slate-800 dark:text-slate-100'
-        }`}>{data.label}</h3>
+        <h3 className={`text-xs font-bold leading-tight truncate ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'text-emerald-900 dark:text-emerald-100' :
+            data.status === 'FAILED' ? 'text-rose-900 dark:text-rose-100' :
+              'text-slate-800 dark:text-slate-100'
+          }`}>{data.label}</h3>
 
-        <div className={`mt-1.5 flex items-center justify-between border-t ${
-          data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'border-emerald-200 dark:border-emerald-900/50' : 
-          data.status === 'FAILED' ? 'border-rose-200 dark:border-rose-900/50' : 
-          'border-slate-50 dark:border-slate-800/50'
-        } pt-1.5 text-[8px] font-bold uppercase tracking-tighter ${
-          data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'text-emerald-600 dark:text-emerald-400' : 
-          data.status === 'FAILED' ? 'text-rose-600 dark:text-rose-400' : 
-          'text-slate-400 dark:text-slate-500'
-        }`}>
+        <div className={`mt-1.5 flex items-center justify-between border-t ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'border-emerald-200 dark:border-emerald-900/50' :
+            data.status === 'FAILED' ? 'border-rose-200 dark:border-rose-900/50' :
+              'border-slate-50 dark:border-slate-800/50'
+          } pt-1.5 text-[8px] font-bold uppercase tracking-tighter ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'text-emerald-600 dark:text-emerald-400' :
+            data.status === 'FAILED' ? 'text-rose-600 dark:text-rose-400' :
+              'text-slate-400 dark:text-slate-500'
+          }`}>
           <span className="truncate max-w-[100px]">{data.type.replace('_', ' ')}</span>
-          <div className={`w-1 h-1 rounded-full ${
-            data.status === 'RUNNING' ? 'bg-emerald-500 animate-pulse' : 
-            data.status === 'SUCCEEDED' ? 'bg-emerald-500' : 
-            data.status === 'FAILED' ? 'bg-rose-500' : 
-            data.is_dummy ? 'bg-slate-200 dark:bg-slate-700' : 'bg-green-400'
-          }`} />
+          <div className={`w-1 h-1 rounded-full ${data.status === 'RUNNING' ? 'bg-emerald-500 animate-pulse' :
+              data.status === 'SUCCEEDED' ? 'bg-emerald-500' :
+                data.status === 'FAILED' ? 'bg-rose-500' :
+                  data.is_dummy ? 'bg-slate-200 dark:bg-slate-700' : 'bg-green-400'
+            }`} />
         </div>
       </div>
 
