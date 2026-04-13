@@ -32,4 +32,6 @@ python-multipart
 pytest
 pytest-asyncio
 
+openai
+
 # Redis via Docker: docker run -d -p 6379:6379 redis

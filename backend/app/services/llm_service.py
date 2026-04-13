@@ -1,0 +1,407 @@
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Mapping
+from textwrap import dedent
+from typing import Any
+
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
+from pydantic import ValidationError
+
+from app.execution.dag_executor import TRIGGER_NODE_TYPES
+from app.schemas.workflows import NODE_CONFIG_DEFAULTS, WorkflowDefinition
+
+load_dotenv()
+
+SHARED_OPERATORS = (
+    "equals",
+    "not_equals",
+    "greater_than",
+    "less_than",
+    "contains",
+    "not_contains",
+)
+
+NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
+    "manual_trigger": {
+        "category": "trigger",
+        "description": "Starts a workflow manually. Must have empty config.",
+    },
+    "form_trigger": {
+        "category": "trigger",
+        "description": "Starts from a form submission. Include form_title, form_description, and a non-empty fields array.",
+        "rules": [
+            "Each field object should include name, label, type, and required.",
+        ],
+    },
+    "webhook_trigger": {
+        "category": "trigger",
+        "description": "Starts from an incoming webhook. Keep config as {} unless a path is explicitly needed later.",
+    },
+    "workflow_trigger": {
+        "category": "trigger",
+        "description": "Placeholder trigger type for future workflow-to-workflow starts.",
+    },
+    "get_gmail_message": {
+        "category": "action",
+        "description": "Dummy action node for Gmail fetch. Use empty strings for unresolved user-specific values.",
+    },
+    "send_gmail_message": {
+        "category": "action",
+        "description": "Dummy action node for Gmail send. Use empty strings for to, subject, and body when the prompt does not supply exact values.",
+    },
+    "create_google_sheets": {
+        "category": "action",
+        "description": "Dummy action node for creating a spreadsheet.",
+    },
+    "search_update_google_sheets": {
+        "category": "action",
+        "description": "Dummy action node for spreadsheet lookup/update operations.",
+    },
+    "telegram": {
+        "category": "action",
+        "description": "Dummy action node for Telegram send. Use config keys chat_id and message exactly.",
+    },
+    "whatsapp": {
+        "category": "action",
+        "description": "Dummy action node for WhatsApp send. Use phone_number and template_name exactly.",
+    },
+    "linkedin": {
+        "category": "action",
+        "description": "Dummy action node for LinkedIn posting. Use content and visibility exactly.",
+    },
+    "if_else": {
+        "category": "logic",
+        "description": "Conditional branch node. Output branches are true and false.",
+        "rules": [
+            f"operator must be one of: {', '.join(SHARED_OPERATORS)}.",
+            "Outgoing edges from this node must use branch values true or false.",
+        ],
+    },
+    "switch": {
+        "category": "logic",
+        "description": "Multi-branch conditional node using first-match-wins case evaluation.",
+        "rules": [
+            f"Each case object must include label, operator, and value. operator must be one of: {', '.join(SHARED_OPERATORS)}.",
+            "Every outgoing edge must set branch equal to one case label or the default_case value.",
+        ],
+    },
+    "merge": {
+        "category": "logic",
+        "description": "Merges multiple incoming branches into one output. Config must be {}.",
+    },
+    "filter": {
+        "category": "logic",
+        "description": "Filters an array at input_key by comparing field against value.",
+        "rules": [
+            f"operator must be one of: {', '.join(SHARED_OPERATORS)}.",
+        ],
+    },
+    "datetime_format": {
+        "category": "transform",
+        "description": "Parses a date string and overwrites the same field in output.",
+    },
+    "split_in": {
+        "category": "transform",
+        "description": "Splits an array into per-item loop iterations. Usually pair with split_out later in the graph.",
+    },
+    "split_out": {
+        "category": "transform",
+        "description": "Collects split loop results into one array. Usually paired with split_in.",
+    },
+    "aggregate": {
+        "category": "transform",
+        "description": "Aggregates numeric values from an array into one scalar.",
+        "rules": [
+            "operation must be one of sum, count, min, max, avg.",
+            "field is required for sum, min, max, and avg.",
+        ],
+    },
+    "ai_agent": {
+        "category": "ai",
+        "description": "AI node placeholder. Use prompt and model config keys exactly.",
+    },
+}
+
+
+class WorkflowGenerationError(ValueError):
+    """Raised when the model response cannot be converted into a valid workflow."""
+
+
+class LLMService:
+    def __init__(
+        self,
+        *,
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
+        max_retries: int = 1,
+    ) -> None:
+        self.model = model or os.getenv("OPENAI_WORKFLOW_MODEL") or "gpt-4o-mini"
+        self.max_retries = max_retries
+        self._api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")
+        self.client = client
+        self.system_prompt = self.build_workflow_generation_system_prompt()
+
+    async def generate_workflow_definition(self, prompt: str) -> WorkflowDefinition:
+        cleaned_prompt = prompt.strip()
+        if not cleaned_prompt:
+            raise WorkflowGenerationError("Prompt must not be empty.")
+
+        client = self._get_client()
+
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": cleaned_prompt},
+        ]
+
+        last_error: WorkflowGenerationError | None = None
+        for _ in range(self.max_retries + 1):
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.1,
+                response_format={"type": "json_object"},
+            )
+            raw_content = self._extract_response_text(response)
+
+            try:
+                return self.validate_generated_workflow(raw_content)
+            except WorkflowGenerationError as exc:
+                last_error = exc
+                messages.extend(
+                    [
+                        {"role": "assistant", "content": raw_content},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous response was invalid. "
+                                f"Fix these issues and return only corrected JSON: {exc}"
+                            ),
+                        },
+                    ]
+                )
+
+        raise WorkflowGenerationError(
+            "Could not generate a valid workflow from the model response."
+        ) from last_error
+
+    @classmethod
+    def build_workflow_generation_system_prompt(cls) -> str:
+        node_sections: list[str] = []
+        for node_type, default_config in NODE_CONFIG_DEFAULTS.items():
+            details = NODE_TYPE_DETAILS.get(node_type, {})
+            description = details.get("description", "Use exactly this node type and config shape.")
+            rules = details.get("rules", [])
+            rendered_rules = "\n".join(f"  - {rule}" for rule in rules)
+            node_sections.append(
+                "\n".join(
+                    part
+                    for part in (
+                        f"- {node_type}",
+                        f"  category: {details.get('category', 'unknown')}",
+                        f"  description: {description}",
+                        f"  config schema/defaults: {json.dumps(default_config, sort_keys=True)}",
+                        rendered_rules if rendered_rules else "",
+                    )
+                    if part
+                )
+            )
+
+        return dedent(
+            f"""
+            You generate Autoflow workflow definitions from user requests.
+
+            Return ONLY one valid JSON object.
+            Do not return markdown.
+            Do not wrap the JSON in code fences.
+            Do not add explanation, notes, comments, or prose.
+            The top-level object must be either:
+            1. a workflow definition object with keys "nodes" and "edges", or
+            2. an object with a single "definition" key whose value is that workflow definition.
+
+            Required workflow shape:
+            {{
+              "nodes": [
+                {{
+                  "id": "string",
+                  "type": "string",
+                  "label": "string",
+                  "position": {{"x": 0, "y": 0}},
+                  "config": {{}}
+                }}
+              ],
+              "edges": [
+                {{
+                  "id": "string",
+                  "source": "node_id",
+                  "target": "node_id",
+                  "sourceHandle": null,
+                  "targetHandle": null,
+                  "branch": null
+                }}
+              ]
+            }}
+
+            Workflow rules:
+            - Use only these node types, exactly as written.
+            - Every node id must be unique.
+            - Every edge id must be unique.
+            - Every edge source and target must reference existing node ids.
+            - The graph must be a DAG. Do not create cycles.
+            - Include exactly one start trigger node with indegree 0.
+            - Valid trigger node types are: {", ".join(sorted(TRIGGER_NODE_TYPES))}.
+            - Every workflow should be minimal but complete for the user request.
+            - Use clear human-readable labels.
+            - position.x and position.y must be numbers.
+            - Always include a config object, even when it is empty.
+            - For dummy integration nodes, keep unresolved user-specific values as empty strings instead of inventing secrets, ids, or credentials.
+            - Never invent extra config keys that are not part of the schema below.
+
+            Edge rules:
+            - Standard linear edges may omit branch or set it to null.
+            - Edges leaving if_else must set branch to "true" or "false".
+            - Edges leaving switch must set branch to a case label or the default_case value.
+            - sourceHandle and targetHandle should usually be null unless a frontend handle name is explicitly needed.
+
+            Node type list and config schemas:
+            {chr(10).join(node_sections)}
+            """
+        ).strip()
+
+    @classmethod
+    def validate_generated_workflow(cls, raw_content: str) -> WorkflowDefinition:
+        if not raw_content.strip():
+            raise WorkflowGenerationError("Model response was empty.")
+
+        try:
+            payload = json.loads(raw_content)
+        except json.JSONDecodeError as exc:
+            raise WorkflowGenerationError(f"Model returned invalid JSON: {exc.msg}") from exc
+
+        definition_payload = payload.get("definition", payload)
+        if not isinstance(definition_payload, Mapping):
+            raise WorkflowGenerationError("Workflow definition must be a JSON object.")
+
+        try:
+            definition = WorkflowDefinition.model_validate(definition_payload)
+        except ValidationError as exc:
+            raise WorkflowGenerationError(str(exc)) from exc
+
+        cls._validate_node_types(definition)
+        cls._validate_trigger_structure(definition)
+        cls._validate_branch_edges(definition)
+        return definition
+
+    def _get_client(self) -> AsyncOpenAI:
+        if self.client is not None:
+            return self.client
+
+        if not self._api_key:
+            raise WorkflowGenerationError(
+                "OPENAI_API_KEY is not set. Add it to your .env file."
+            )
+
+        self.client = AsyncOpenAI(api_key=self._api_key)
+        return self.client
+
+    @staticmethod
+    def _extract_response_text(response: Any) -> str:
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            raise WorkflowGenerationError("Model response did not include any choices.")
+
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = [
+                item.text
+                for item in content
+                if getattr(item, "type", None) == "text" and getattr(item, "text", None)
+            ]
+            if text_parts:
+                return "".join(text_parts)
+        raise WorkflowGenerationError("Model response did not include text content.")
+
+    @staticmethod
+    def _validate_node_types(definition: WorkflowDefinition) -> None:
+        allowed_node_types = set(NODE_CONFIG_DEFAULTS)
+        unknown_types = sorted(
+            {
+                node.type
+                for node in definition.nodes
+                if node.type not in allowed_node_types
+            }
+        )
+        if unknown_types:
+            raise WorkflowGenerationError(
+                "Workflow contains unsupported node types: "
+                + ", ".join(unknown_types)
+            )
+
+    @staticmethod
+    def _validate_trigger_structure(definition: WorkflowDefinition) -> None:
+        node_ids = {node.id for node in definition.nodes}
+        indegree = {node.id: 0 for node in definition.nodes}
+
+        for edge in definition.edges:
+            if edge.source not in node_ids:
+                raise WorkflowGenerationError(
+                    f"Edge '{edge.id}' has non-existent source node '{edge.source}'."
+                )
+            if edge.target not in node_ids:
+                raise WorkflowGenerationError(
+                    f"Edge '{edge.id}' targets non-existent node '{edge.target}'."
+                )
+            indegree[edge.target] += 1
+
+        start_triggers = [
+            node.id
+            for node in definition.nodes
+            if node.type in TRIGGER_NODE_TYPES and indegree[node.id] == 0
+        ]
+        if len(start_triggers) != 1:
+            raise WorkflowGenerationError(
+                "Workflow must contain exactly one trigger node with indegree 0."
+            )
+
+    @staticmethod
+    def _validate_branch_edges(definition: WorkflowDefinition) -> None:
+        nodes_by_id = {node.id: node for node in definition.nodes}
+        outgoing_edges: dict[str, list[Any]] = {node.id: [] for node in definition.nodes}
+        for edge in definition.edges:
+            outgoing_edges.setdefault(edge.source, []).append(edge)
+
+        for node_id, node in nodes_by_id.items():
+            node_edges = outgoing_edges[node_id]
+            if node.type == "if_else":
+                invalid_edges = [
+                    edge.id for edge in node_edges if edge.branch not in {"true", "false"}
+                ]
+                if invalid_edges:
+                    raise WorkflowGenerationError(
+                        "if_else edges must use branch 'true' or 'false'. "
+                        f"Invalid edge ids: {', '.join(invalid_edges)}"
+                    )
+
+            if node.type == "switch":
+                allowed_branches = {
+                    case.get("label")
+                    for case in node.config.get("cases", [])
+                    if isinstance(case, dict) and case.get("label")
+                }
+                default_case = node.config.get("default_case")
+                if default_case:
+                    allowed_branches.add(default_case)
+
+                invalid_edges = [
+                    edge.id for edge in node_edges if edge.branch not in allowed_branches
+                ]
+                if invalid_edges:
+                    raise WorkflowGenerationError(
+                        "switch edges must use a valid case label or default_case. "
+                        f"Invalid edge ids: {', '.join(invalid_edges)}"
+                    )
