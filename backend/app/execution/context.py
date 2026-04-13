@@ -10,6 +10,10 @@ class ExecutionContext:
     nodes_by_id: dict[str, dict[str, Any]]
     outgoing_edges: dict[str, list[dict[str, Any]]]
     incoming_edges: dict[str, list[dict[str, Any]]]
+    # subnode_edges: edges from config sub-nodes (chat_model_groq, chat_model_openai)
+    # that are NOT counted toward indegree — they are resolved automatically inline
+    # when the target node (e.g. ai_agent) is about to execute.
+    subnode_edges: dict[str, list[dict[str, Any]]]
     indegree: dict[str, int]
     topological_order: list[str]
     node_inputs: dict[str, Any] = field(default_factory=dict)
@@ -19,3 +23,4 @@ class ExecutionContext:
     blocked_input_counts: dict[str, int] = field(default_factory=dict)
     pending_inputs: dict[str, list[Any]] = field(default_factory=dict)
     split_buffers: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    runner_context: dict[str, Any] = field(default_factory=dict)

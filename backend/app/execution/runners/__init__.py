@@ -1,5 +1,8 @@
 from .nodes import (
     AggregateRunner,
+    AIAgentRunner,
+    ChatModelOpenAIRunner,
+    ChatModelGroqRunner,
     FilterRunner,
     IfElseRunner,
     MergeRunner,
@@ -26,6 +29,9 @@ __all__ = [
     "SplitInRunner",
     "SplitOutRunner",
     "AggregateRunner",
+    "AIAgentRunner",
+    "ChatModelOpenAIRunner",
+    "ChatModelGroqRunner",
     "ManualTriggerRunner",
     "FormTriggerRunner",
     "WebhookTriggerRunner",

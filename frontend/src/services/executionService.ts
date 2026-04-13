@@ -53,4 +53,16 @@ export const executionService = {
     const response = await api.get(`/executions`, { params });
     return response.data;
   },
+
+  executeNode: async (
+    workflowId: string,
+    nodeId: string,
+    inputData?: Record<string, any> | null,
+  ): Promise<any> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/nodes/${nodeId}/execute`,
+      { input_data: inputData ?? null },
+    );
+    return response.data;
+  },
 };

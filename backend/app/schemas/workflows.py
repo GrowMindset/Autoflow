@@ -87,8 +87,11 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "output_key": "",
     },
     "ai_agent": {
-        "prompt": "",
-        "model": "",
+        "model": "gpt-4-turbo",
+        "system_prompt": "",
+        "command": "",
+        "memory": "static_memory",
+        "tools": "static_tools",
     },
 }
 

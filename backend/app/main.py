@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers.auth import router as auth_router
 from app.routers.executions import router as executions_router
 from app.routers.workflows import router as workflows_router
+from app.routers.credentials import router as credentials_router
 
 
 def create_app() -> FastAPI:
@@ -20,6 +21,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(workflows_router)
     app.include_router(executions_router)
+    app.include_router(credentials_router)
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:

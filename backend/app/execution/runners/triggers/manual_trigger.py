@@ -16,7 +16,7 @@ class ManualTriggerRunner:
     }
     """
 
-    def run(self, config: dict, input_data: dict | None) -> dict:
+    def run(self, config: dict, input_data: dict | None, context: dict | None = None, **kwargs) -> dict:
         if input_data is None:
             payload = {}
         elif isinstance(input_data, dict):

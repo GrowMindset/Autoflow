@@ -40,7 +40,7 @@ class FilterRunner:
     }
     """
 
-    def run(self, config: dict, input_data: dict) -> dict:
+    def run(self, config: dict, input_data: dict, context: dict[str, Any] = None) -> dict:
         input_key = config.get("input_key")
         field = config.get("field")
         operator = config.get("operator")

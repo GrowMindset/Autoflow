@@ -6,6 +6,9 @@ from .split_in import SplitInRunner
 from .split_out import SplitOutRunner
 from .aggregate import AggregateRunner
 from .dummy import DummyNodeRunner
+from .ai_agent import AIAgentRunner
+from .chat_model_openai import ChatModelOpenAIRunner
+from .chat_model_groq import ChatModelGroqRunner
 
 try:
     from .datetime_format import DateTimeFormatRunner
@@ -21,6 +24,9 @@ __all__ = [
     "SplitOutRunner",
     "AggregateRunner",
     "DummyNodeRunner",
+    "AIAgentRunner",
+    "ChatModelOpenAIRunner",
+    "ChatModelGroqRunner",
 ]
 
 if DateTimeFormatRunner is not None:

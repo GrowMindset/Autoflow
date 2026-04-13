@@ -165,6 +165,71 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
             <Handle type="source" position={Position.Right} id="default" className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-slate-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-400'}`} />
           </div>
         </div>
+      ) : data.type === 'ai_agent' ? (
+        <>
+          <Handle
+            type="source"
+            position={Position.Right}
+            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
+            style={{ right: -4 }}
+          />
+          {/* Bottom handles for AI Agent sub-nodes */}
+          <div className="absolute -bottom-4 left-0 right-0 flex justify-around px-2 pointer-events-none">
+            <div className="flex flex-col items-center gap-0.5">
+              <Handle
+                type="target"
+                id="chat_model"
+                position={Position.Bottom}
+                style={{ position: 'static', rotate: '45deg' }}
+                className="!w-2 !h-2 !rounded-none border border-white dark:border-slate-900 !bg-purple-500 hover:!bg-purple-400 pointer-events-auto"
+              />
+              <span className="text-[6px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-tighter">Chat Model*</span>
+            </div>
+            <div className="flex flex-col items-center gap-0.5">
+              <Handle
+                type="target"
+                id="memory"
+                position={Position.Bottom}
+                style={{ position: 'static', rotate: '45deg' }}
+                className="!w-2 !h-2 !rounded-none border border-white dark:border-slate-900 !bg-amber-500 hover:!bg-amber-400 pointer-events-auto"
+              />
+              <span className="text-[6px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-tighter">Memory</span>
+            </div>
+            <div className="flex flex-col items-center gap-0.5">
+              <Handle
+                type="target"
+                id="tool"
+                position={Position.Bottom}
+                style={{ position: 'static', rotate: '45deg' }}
+                className="!w-2 !h-2 !rounded-none border border-white dark:border-slate-900 !bg-emerald-500 hover:!bg-emerald-400 pointer-events-auto"
+              />
+              <span className="text-[6px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-tighter">Tool</span>
+            </div>
+          </div>
+        </>
+      ) : data.type === 'chat_model_openai' || data.type === 'chat_model_groq' ? (
+        <>
+          <div className="absolute -top-1 left-0 right-0 flex justify-center pointer-events-none">
+            <Handle
+              type="source"
+              position={Position.Top}
+              style={{ position: 'static', rotate: '45deg' }}
+              className="!w-2 !h-2 !rounded-none border border-white dark:border-slate-900 !bg-purple-500 hover:!bg-purple-400 pointer-events-auto shadow-sm"
+            />
+          </div>
+          <Handle
+            type="target"
+            position={Position.Left}
+            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
+            style={{ left: -4 }}
+          />
+          <Handle
+            type="source"
+            position={Position.Right}
+            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
+            style={{ right: -4 }}
+          />
+        </>
       ) : (
         <Handle
           type="source"

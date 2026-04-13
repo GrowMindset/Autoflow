@@ -19,7 +19,7 @@ class SplitInRunner:
     ]
     """
 
-    def run(self, config: dict, input_data: dict) -> list:
+    def run(self, config: dict, input_data: dict, context: dict[str, Any] = None) -> list:
         input_key = config.get("input_key")
         if not input_key:
             raise ValueError("SplitInRunner: 'input_key' is missing in config")

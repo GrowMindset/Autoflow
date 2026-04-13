@@ -24,6 +24,85 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+async def _resolve_credentials(
+    definition: dict[str, Any],
+    db: AsyncSession,
+    user_id: Any,
+) -> dict[str, str]:
+    """
+    Scans every node config in the workflow definition for a 'credential_id',
+    fetches the AppCredential row, decrypts the API key, and returns a mapping
+    of  str(credential_id) -> decrypted_api_key.
+
+    This must be called in the async context so we can use the async DB session
+    safely. The returned plain dict is passed into runner_context so sync runners
+    can access credentials without needing their own async DB call.
+    """
+    from app.models.credential import AppCredential
+    from app.core.security import decrypt_data
+
+    resolved: dict[str, str] = {}
+    for node in definition.get("nodes", []):
+        cred_id = node.get("config", {}).get("credential_id")
+        if not cred_id or str(cred_id) in resolved:
+            continue
+        try:
+            row = await db.get(AppCredential, UUID(str(cred_id)))
+        except Exception:
+            continue
+        if row is None or str(row.user_id) != str(user_id):
+            continue
+        encrypted = row.token_data.get("api_key")
+        if encrypted:
+            try:
+                resolved[str(cred_id)] = decrypt_data(encrypted)
+            except Exception:
+                pass
+    return resolved
+
+
+def _find_chat_model_config(
+    definition: dict[str, Any],
+    ai_agent_node_id: str,
+) -> dict[str, Any] | None:
+    """
+    Looks up the chat_model node (chat_model_openai or chat_model_groq) that
+    is connected to the given ai_agent node via the 'chat_model' target handle.
+
+    Returns the runner output format that ChatModelOpenAI/GroqRunner would
+    produce, so the AIAgentRunner can find provider/model/credential_id.
+    Returns None if no connected chat_model node is found.
+    """
+    CHAT_MODEL_TYPES = {"chat_model_openai", "chat_model_groq"}
+    nodes_by_id = {n["id"]: n for n in definition.get("nodes", [])}
+
+    for edge in definition.get("edges", []):
+        if edge.get("target") != ai_agent_node_id:
+            continue
+        if edge.get("targetHandle") != "chat_model":
+            continue
+        source_id = edge.get("source")
+        source_node = nodes_by_id.get(source_id)
+        if source_node is None or source_node.get("type") not in CHAT_MODEL_TYPES:
+            continue
+
+        cfg = source_node.get("config", {})
+        node_type = source_node["type"]
+        provider = "groq" if node_type == "chat_model_groq" else "openai"
+        default_model = "llama-3.3-70b-versatile" if provider == "groq" else "gpt-4o"
+
+        return {
+            "provider": provider,
+            "model": cfg.get("model", default_model),
+            "credential_id": cfg.get("credential_id"),
+            "options": {
+                "temperature": cfg.get("temperature", 0.7),
+                "max_tokens": cfg.get("max_tokens"),
+            },
+        }
+    return None
+
+
 def _create_task_session_factory() -> async_sessionmaker[AsyncSession]:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
@@ -106,10 +185,20 @@ async def _run_execution(
             await db.commit()
 
             try:
+                resolved_credentials = await _resolve_credentials(
+                    definition=workflow.definition,
+                    db=db,
+                    user_id=execution.user_id,
+                )
+
                 result = DagExecutor().execute(
                     definition=workflow.definition,
                     initial_payload=initial_payload,
                     start_node_id=start_node_id,
+                    runner_context={
+                        "user_id": execution.user_id,
+                        "resolved_credentials": resolved_credentials,
+                    }
                 )
 
                 visited_nodes = result.get("visited_nodes", [])
@@ -248,13 +337,37 @@ async def _run_node_test(
             node_row.input_data = input_data
             await db.commit()
 
+            # Pre-resolve credentials from the whole workflow definition
+            # (so chat_model nodes' credentials are also available)
+            resolved_credentials = await _resolve_credentials(
+                definition=workflow.definition,
+                db=db,
+                user_id=execution.user_id,
+            )
+
+            # For AI agent nodes tested in isolation, inject upstream chat_model
+            # config as synthetic input so the runner can find provider/model/cred_id.
+            if node_def["type"] == "ai_agent":
+                if not isinstance(input_data, dict) or "chat_model" not in input_data:
+                    chat_model_input = _find_chat_model_config(
+                        definition=workflow.definition,
+                        ai_agent_node_id=node_id,
+                    )
+                    if chat_model_input:
+                        input_data = {**(input_data or {}), "chat_model": chat_model_input}
+
             # Execute single node
             res = DagExecutor().execute_node(
                 node_id=node_id,
                 node_type=node_def["type"],
                 config=node_def.get("config", {}),
                 input_data=input_data,
+                runner_context={
+                    "user_id": execution.user_id,
+                    "resolved_credentials": resolved_credentials,
+                }
             )
+
 
             # Update results
             node_row.status = res["status"]

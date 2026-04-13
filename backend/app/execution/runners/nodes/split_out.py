@@ -16,7 +16,7 @@ class SplitOutRunner:
     }
     """
 
-    def run(self, config: dict, input_data: list) -> dict:
+    def run(self, config: dict, input_data: list, context: dict[str, Any] = None) -> dict:
         if not isinstance(input_data, list):
             raise ValueError(
                 f"SplitOutRunner: input_data must be a list, got {type(input_data).__name__}"

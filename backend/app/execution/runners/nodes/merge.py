@@ -1,5 +1,7 @@
 
 
+from typing import Any
+
 class MergeRunner:
     """
     Collects outputs from multiple incoming branches and merges
@@ -25,7 +27,7 @@ class MergeRunner:
     }
     """
 
-    def run(self, config: dict, input_data: list) -> dict:
+    def run(self, config: dict, input_data: list, context: dict[str, Any] = None) -> dict:
 
         # --- Step 1: Validate input is a list ---
         if not isinstance(input_data, list):

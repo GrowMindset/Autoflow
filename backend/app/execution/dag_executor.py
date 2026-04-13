@@ -9,6 +9,13 @@ TRIGGER_NODE_TYPES = {"manual_trigger", "form_trigger", "webhook_trigger", "work
 BRANCHING_NODE_TYPES = {"if_else", "switch"}
 UNSUPPORTED_RUNTIME_NODE_TYPES = set()
 
+# Sub-nodes are configuration helpers (e.g. Chat Model selectors) that attach to
+# the *bottom* of a parent node via a named handle.  They are NOT part of the main
+# data-flow and must NOT be counted toward the parent node's indegree.  Instead,
+# the executor runs them automatically (inline) just before the parent executes,
+# and injects their output into the parent's input under the targetHandle key.
+SUBNODE_TYPES = {"chat_model_openai", "chat_model_groq"}
+
 
 class NodeExecutionError(Exception):
     def __init__(
@@ -37,8 +44,10 @@ class DagExecutor:
         definition: dict[str, Any],
         initial_payload: dict[str, Any] | None = None,
         start_node_id: str | None = None,
+        runner_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         context = self.build_context(definition)
+        context.runner_context = runner_context or {}
         chosen_start_node_id = start_node_id or self._resolve_start_node(context)
 
         if chosen_start_node_id not in context.nodes_by_id:
@@ -77,11 +86,13 @@ class DagExecutor:
         node_type: str,
         config: dict[str, Any],
         input_data: dict[str, Any] | None = None,
+        runner_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Executes a single node in isolation for testing."""
         runner = self.registry.get_runner(node_type)
+        resolved_config = self._resolve_templates(config, input_data or {})
         try:
-            output_data = runner.run(config=config, input_data=input_data)
+            output_data = runner.run(config=resolved_config, input_data=input_data, context=runner_context or {})
             return {
                 "node_id": node_id,
                 "node_type": node_type,
@@ -99,6 +110,64 @@ class DagExecutor:
                 "status": "FAILED",
                 "error_message": str(exc),
             }
+
+    @staticmethod
+    def _resolve_templates(
+        config: dict[str, Any],
+        input_data: Any,
+    ) -> dict[str, Any]:
+        """
+        Recursively walk every string value in *config* and replace
+        ``{{path.to.key}}`` placeholders with the matching value from
+        *input_data*.
+
+        Rules:
+        - If the entire string is one placeholder and the resolved value is
+          not a string (e.g. a number or dict), the raw Python value is
+          returned so downstream runners receive the correct type.
+        - Unresolvable paths are left as-is (the original ``{{...}}`` text).
+        - Non-string config values (numbers, booleans, lists, dicts) are
+          recursed into but scalars are not touched.
+        """
+        import re
+
+        def _get(path: str, data: Any) -> Any:
+            """Navigate dot-separated path into *data*."""
+            for part in path.strip().split('.'):
+                if isinstance(data, dict) and part in data:
+                    data = data[part]
+                elif isinstance(data, list):
+                    try:
+                        data = data[int(part)]
+                    except (ValueError, IndexError):
+                        return None
+                else:
+                    return None
+            return data
+
+        _PATTERN = re.compile(r'\{\{([^}]+)\}\}')
+
+        def _resolve(value: Any) -> Any:
+            if isinstance(value, str):
+                # Fast-path: entire value is one placeholder
+                full = _PATTERN.fullmatch(value)
+                if full:
+                    result = _get(full.group(1), input_data)
+                    return value if result is None else result
+                # Partial substitution — always returns a string
+                return _PATTERN.sub(
+                    lambda m: str(_get(m.group(1), input_data) or m.group(0)),
+                    value,
+                )
+            if isinstance(value, dict):
+                return {k: _resolve(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_resolve(item) for item in value]
+            return value
+
+        if not isinstance(input_data, dict):
+            return config  # nothing to resolve against
+        return {k: _resolve(v) for k, v in config.items()}
 
     def build_context(self, definition: dict[str, Any]) -> ExecutionContext:
         nodes = definition.get("nodes", [])
@@ -127,6 +196,8 @@ class DagExecutor:
             incoming_edges[node_id] = []
             indegree[node_id] = 0
 
+        subnode_edges: dict[str, list[dict[str, Any]]] = {node_id: [] for node_id in nodes_by_id}
+
         for edge in edges:
             source = edge.get("source")
             target = edge.get("target")
@@ -134,6 +205,12 @@ class DagExecutor:
                 raise ValueError(f"Edge source '{source}' does not exist")
             if target not in nodes_by_id:
                 raise ValueError(f"Edge target '{target}' does not exist")
+
+            source_type = nodes_by_id[source].get("type", "")
+            if source_type in SUBNODE_TYPES:
+                # Config sub-node: track separately, do NOT increment indegree
+                subnode_edges[target].append(edge)
+                continue
 
             outgoing_edges[source].append(edge)
             incoming_edges[target].append(edge)
@@ -145,6 +222,7 @@ class DagExecutor:
             nodes_by_id=nodes_by_id,
             outgoing_edges=outgoing_edges,
             incoming_edges=incoming_edges,
+            subnode_edges=subnode_edges,
             indegree=indegree,
             topological_order=topological_order,
             node_states={node_id: "pending" for node_id in nodes_by_id},
@@ -201,6 +279,7 @@ class DagExecutor:
         context: ExecutionContext,
         node_id: str,
         input_data: dict[str, Any] | None,
+        target_handle: str | None = None,
     ) -> None:
         node = context.nodes_by_id[node_id]
         node_type = node["type"]
@@ -213,34 +292,110 @@ class DagExecutor:
         if context.node_states[node_id] in {"completed", "skipped"}:
             return
 
+        # Store input data mapped by handle
+        if input_data is not None:
+            context.pending_inputs[node_id].append({
+                "handle": target_handle,
+                "data": input_data
+            })
+
+        # Check if node is ready (all non-blocked inputs received)
+        accounted_inputs = (
+            len(context.pending_inputs[node_id]) + context.blocked_input_counts[node_id]
+        )
+        if accounted_inputs < context.indegree[node_id] and context.indegree[node_id] > 0:
+            return
+
+        # Special handling for nodes that might be triggered with NO inputs (triggers)
+        # or nodes that are now ready.
+
         if node_type == "split_out":
             raise NotImplementedError(
                 "split_out can only be executed as part of a split_in loop"
             )
 
-        if node_type == "merge":
-            self._handle_merge_input(context=context, node_id=node_id, input_data=input_data)
-            return
+        # Merge and SplitIn have their own specialized logic, but we've already 
+        # collected their inputs. We'll adapt them.
 
         if node_type == "split_in":
-            self._handle_split_in(context=context, node_id=node_id, input_data=input_data)
+            # split_in expects raw input_data from the first (and usually only) input
+            raw_input = context.pending_inputs[node_id][0]["data"] if context.pending_inputs[node_id] else input_data
+            self._handle_split_in(context=context, node_id=node_id, input_data=raw_input)
             return
 
+        # Prepare aggregated input for the runner
+        # If there's only one input and no handle, pass it raw for backward compatibility.
+        # Otherwise, pass a dict of handle -> data.
+        
+        all_inputs = context.pending_inputs[node_id]
+        if not all_inputs:
+            resolved_input = input_data
+        elif len(all_inputs) == 1 and all_inputs[0]["handle"] is None:
+            resolved_input = all_inputs[0]["data"]
+        else:
+            # Multi-input or handle-specific input
+            resolved_input = {}
+            for inp in all_inputs:
+                handle = inp["handle"]
+                data = inp["data"]
+                if handle:
+                    resolved_input[handle] = data
+                else:
+                    # Merge data for default handle or if no handle exists
+                    if isinstance(data, dict):
+                        resolved_input.update(data)
+                    else:
+                        resolved_input["_default"] = data
+
+        if node_type == "merge":
+            # merge runner expects a list of inputs in context.pending_inputs
+            # Our new logic already collected them, but merge runner expects just the data list
+            merge_data_list = [inp["data"] for inp in all_inputs]
+            self._handle_merge_execution(context=context, node_id=node_id, merge_inputs=merge_data_list)
+            return
+
+        # ── Inline sub-node resolution ─────────────────────────────────────────
+        # Run any config sub-nodes (chat_model_groq / chat_model_openai) that are
+        # wired into this node via a named handle.  Their output is injected into
+        # resolved_input under the targetHandle key (e.g. "chat_model") so that
+        # the parent runner (e.g. AIAgentRunner) can find provider/model/cred_id.
+        for sub_edge in context.subnode_edges.get(node_id, []):
+            sub_source_id = sub_edge["source"]
+            sub_handle = sub_edge.get("targetHandle")  # e.g. "chat_model"
+            sub_node = context.nodes_by_id[sub_source_id]
+            sub_type = sub_node["type"]
+            sub_runner = self.registry.get_runner(sub_type)
+            sub_config = sub_node.get("config", {})
+            try:
+                sub_output = sub_runner.run(
+                    config=sub_config,
+                    input_data=None,
+                    context=context.runner_context,
+                )
+            except Exception:
+                sub_output = {}
+
+            if sub_handle:
+                if not isinstance(resolved_input, dict):
+                    resolved_input = {}
+                resolved_input[sub_handle] = sub_output
+
         runner = self.registry.get_runner(node_type)
-        config = node.get("config", {})
-        context.node_inputs[node_id] = input_data
+        config = self._resolve_templates(node.get("config", {}), resolved_input)
+        context.node_inputs[node_id] = resolved_input
         try:
-            output_data = runner.run(config=config, input_data=input_data)
+            output_data = runner.run(config=config, input_data=resolved_input, context=context.runner_context)
         except Exception as exc:
             raise NodeExecutionError(
                 node_id=node_id,
                 node_type=node_type,
-                input_data=input_data,
+                input_data=resolved_input,
                 original_exception=exc,
             ) from exc
+        
         output_data = self._preserve_internal_fields(
             node_type=node_type,
-            input_data=input_data,
+            input_data=resolved_input,
             output_data=output_data,
         )
         context.node_outputs[node_id] = output_data
@@ -259,6 +414,7 @@ class DagExecutor:
                 context=context,
                 node_id=edge["target"],
                 input_data=next_input,
+                target_handle=edge.get("targetHandle")
             )
 
         for edge in blocked_edges:
@@ -331,7 +487,7 @@ class DagExecutor:
         config = node.get("config", {})
         context.node_inputs[node_id] = input_data
         try:
-            output_data = runner.run(config=config, input_data=input_data)
+            output_data = runner.run(config=config, input_data=input_data, context=context.runner_context)
         except Exception as exc:
             raise NodeExecutionError(
                 node_id=node_id,
@@ -418,21 +574,14 @@ class DagExecutor:
         ]
         return selected_edges, blocked_edges
 
-    def _handle_merge_input(
+    def _handle_merge_execution(
         self,
         context: ExecutionContext,
         node_id: str,
-        input_data: dict[str, Any] | None,
+        merge_inputs: list[dict[str, Any]],
     ) -> None:
-        if input_data is not None:
-            context.pending_inputs[node_id].append(input_data)
-
-        if not self._is_merge_ready(context=context, node_id=node_id):
-            return
-
         runner = self.registry.get_runner("merge")
         config = context.nodes_by_id[node_id].get("config", {})
-        merge_inputs = list(context.pending_inputs[node_id])
         context.node_inputs[node_id] = merge_inputs
         try:
             output_data = runner.run(config=config, input_data=merge_inputs)
@@ -453,17 +602,10 @@ class DagExecutor:
                 context=context,
                 node_id=edge["target"],
                 input_data=next_input,
+                target_handle=edge.get("targetHandle")
             )
 
-    def _is_merge_ready(self, context: ExecutionContext, node_id: str) -> bool:
-        accounted_inputs = (
-            len(context.pending_inputs[node_id]) + context.blocked_input_counts[node_id]
-        )
-        return (
-            context.node_states[node_id] == "pending"
-            and accounted_inputs == context.indegree[node_id]
-            and len(context.pending_inputs[node_id]) > 0
-        )
+
 
     def _block_path(self, context: ExecutionContext, node_id: str) -> None:
         if context.node_states[node_id] in {"completed", "skipped"}:
@@ -473,12 +615,17 @@ class DagExecutor:
 
         node_type = context.nodes_by_id[node_id]["type"]
         if node_type == "merge":
-            if self._is_merge_ready(context=context, node_id=node_id):
-                self._handle_merge_input(context=context, node_id=node_id, input_data=None)
-            elif context.blocked_input_counts[node_id] == context.indegree[node_id]:
-                context.node_states[node_id] = "skipped"
-                for edge in context.outgoing_edges.get(node_id, []):
-                    self._block_path(context=context, node_id=edge["target"])
+            accounted_inputs = (
+                len(context.pending_inputs[node_id]) + context.blocked_input_counts[node_id]
+            )
+            if accounted_inputs == context.indegree[node_id]:
+                if len(context.pending_inputs[node_id]) > 0:
+                    merge_data_list = [inp["data"] for inp in context.pending_inputs[node_id]]
+                    self._handle_merge_execution(context=context, node_id=node_id, merge_inputs=merge_data_list)
+                else:
+                    context.node_states[node_id] = "skipped"
+                    for edge in context.outgoing_edges.get(node_id, []):
+                        self._block_path(context=context, node_id=edge["target"])
             return
 
         if context.blocked_input_counts[node_id] < context.indegree[node_id]:

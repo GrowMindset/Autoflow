@@ -38,7 +38,7 @@ class DateTimeFormatRunner:
     }
     """
 
-    def run(self, config: dict, input_data: dict) -> dict:
+    def run(self, config: dict, input_data: dict, context: dict[str, Any] = None) -> dict:
         field = config.get("field")
         output_format = config.get("output_format")
 

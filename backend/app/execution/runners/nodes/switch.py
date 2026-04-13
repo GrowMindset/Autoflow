@@ -25,7 +25,7 @@ class SwitchRunner:
     }
     """
 
-    def run(self, config: dict, input_data: dict) -> dict:
+    def run(self, config: dict, input_data: dict, context: dict[str, Any] = None) -> dict:
 
         # --- Step 1: Read config ---
         field        = config.get("field")

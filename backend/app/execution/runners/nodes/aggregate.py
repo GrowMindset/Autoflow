@@ -1,7 +1,5 @@
-from typing import Any, Dict, List
-
+from typing import Any, Dict, List, Optional
 from app.execution.utils import get_nested_value
-
 
 class AggregateRunner:
     """
@@ -23,7 +21,7 @@ class AggregateRunner:
 
     VALID_OPERATIONS = {"sum", "count", "min", "max", "avg"}
 
-    def run(self, config: dict, input_data: dict) -> dict:
+    def run(self, config: dict, input_data: dict, context: dict[str, Any] = None) -> dict:
         input_key = config.get("input_key")
         operation = config.get("operation")
         output_key = config.get("output_key", "result")

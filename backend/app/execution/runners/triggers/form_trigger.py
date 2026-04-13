@@ -21,7 +21,7 @@ class FormTriggerRunner:
     }
     """
 
-    def run(self, config: dict, input_data: dict | None) -> dict:
+    def run(self, config: dict, input_data: dict | None, context: dict | None = None, **kwargs) -> dict:
         fields = config.get("fields")
         if not fields or not isinstance(fields, list):
             raise ValueError(

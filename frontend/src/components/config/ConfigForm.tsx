@@ -1,4 +1,6 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
 
 /**
  * Schema defining the fields available for each node type.
@@ -6,33 +8,33 @@ import React from 'react';
 export const CONFIG_SCHEMA: Record<string, any[]> = {
   if_else: [
     { key: 'field', label: 'Field to evaluate', type: 'text', placeholder: 'e.g. status' },
-    { 
-      key: 'operator', 
-      label: 'Operator', 
-      type: 'select', 
-      options: ['equals', 'not_equals', 'greater_than', 'less_than', 'contains', 'not_contains'] 
+    {
+      key: 'operator',
+      label: 'Operator',
+      type: 'select',
+      options: ['equals', 'not_equals', 'greater_than', 'less_than', 'contains', 'not_contains']
     },
     { key: 'value', label: 'Value to compare', type: 'text', placeholder: 'e.g. paid' }
   ],
   filter: [
     { key: 'input_key', label: 'Input Array Key', type: 'text', placeholder: 'e.g. items' },
     { key: 'field', label: 'Filter by field', type: 'text', placeholder: 'e.g. amount' },
-    { 
-      key: 'operator', 
-      label: 'Operator', 
-      type: 'select', 
-      options: ['equals', 'not_equals', 'greater_than', 'less_than', 'contains', 'not_contains'] 
+    {
+      key: 'operator',
+      label: 'Operator',
+      type: 'select',
+      options: ['equals', 'not_equals', 'greater_than', 'less_than', 'contains', 'not_contains']
     },
     { key: 'value', label: 'Value', type: 'text', placeholder: 'e.g. 500' }
   ],
   aggregate: [
     { key: 'input_key', label: 'Input Array Key', type: 'text', placeholder: 'e.g. orders' },
     { key: 'field', label: 'Field to aggregate', type: 'text', placeholder: 'e.g. total' },
-    { 
-      key: 'operation', 
-      label: 'Operation', 
-      type: 'select', 
-      options: ['sum', 'count', 'min', 'max', 'avg'] 
+    {
+      key: 'operation',
+      label: 'Operation',
+      type: 'select',
+      options: ['sum', 'count', 'min', 'max', 'avg']
     },
     { key: 'output_key', label: 'Output Key Name', type: 'text', placeholder: 'e.g. result' }
   ],
@@ -96,8 +98,37 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     { key: 'visibility', label: 'Visibility', type: 'select', options: ['PUBLIC', 'CONNECTIONS'] }
   ],
   ai_agent: [
-    { key: 'prompt', label: 'AI Instructions', type: 'text', placeholder: 'e.g. Summarize this text in 3 bullet points.' },
-    { key: 'model', label: 'Model', type: 'select', options: ['gpt-4-turbo', 'gpt-3.5-turbo', 'claude-3-opus'] }
+    { key: 'system_prompt', label: 'System Prompt', type: 'textarea', placeholder: 'e.g. You are a helpful assistant...' },
+    { key: 'command', label: 'Command / Prompt', type: 'textarea', placeholder: 'e.g. Summarize the text.' }
+  ],
+  chat_model_openai: [
+    { key: 'credential_id', label: 'Credential', type: 'credential_selector', appName: 'openai' },
+    {
+      key: 'model',
+      label: 'Model',
+      type: 'select',
+      options: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo']
+    },
+    { key: 'temperature', label: 'Temperature', type: 'text', placeholder: '0.7' }
+  ],
+  chat_model_groq: [
+    { key: 'credential_id', label: 'Credential', type: 'credential_selector', appName: 'groq' },
+    {
+      key: 'model',
+      label: 'Model',
+      type: 'select',
+      options: [
+        // ── Production Models ──────────────────────────────
+        'llama-3.3-70b-versatile',
+        'llama-3.1-8b-instant',
+        'openai/gpt-oss-120b',
+        'openai/gpt-oss-20b',
+        // ── Preview Models ─────────────────────────────────
+        'meta-llama/llama-4-scout-17b-16e-instruct',
+        'qwen/qwen3-32b',
+      ]
+    },
+    { key: 'temperature', label: 'Temperature', type: 'text', placeholder: '0.7' }
   ]
 };
 
@@ -108,22 +139,89 @@ interface ConfigFormProps {
 }
 
 const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) => {
-  const fields = CONFIG_SCHEMA[nodeType] || [];
+  const [credentials, setCredentials] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [showCredentialForm, setShowCredentialForm] = useState(false);
+  const [newKey, setNewKey] = useState('');
+  const [dragOverField, setDragOverField] = useState<string | null>(null);
 
-  const handleDrop = (e: React.DragEvent, key: string) => {
+  // ── Drag-and-drop handlers for text/textarea fields ──────────────────────
+  const handleDragOver = (e: React.DragEvent, fieldKey: string) => {
+    // Always prevent default so the browser allows the drop.
+    // (types.includes() on DOMStringList is unreliable cross-browser.)
     e.preventDefault();
-    const path = e.dataTransfer.getData('application/json-path');
-    if (path) {
-      const expression = `{{ $json.${path} }}`;
-      const currentValue = config[key] || '';
-      onChange(key, currentValue + expression);
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    if (dragOverField !== fieldKey) setDragOverField(fieldKey);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Only clear the highlight when leaving the element entirely,
+    // not when the cursor moves to a child node inside it.
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOverField(null);
     }
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleDrop = (e: React.DragEvent, fieldKey: string) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
+    e.stopPropagation();
+    setDragOverField(null);
+
+    // Try custom MIME type first; fall back to text/plain ("{{body.message}}")
+    let path = e.dataTransfer.getData('application/json-path');
+    if (!path) {
+      const plain = e.dataTransfer.getData('text/plain') || '';
+      const m = plain.match(/^\{\{(.+)\}\}$/);
+      path = m ? m[1] : plain;
+    }
+    if (!path) return;
+
+    const placeholder = `{{${path}}}`;
+    const el = e.currentTarget as HTMLInputElement | HTMLTextAreaElement;
+    const current = String(config[fieldKey] || '');
+    const start = el.selectionStart ?? current.length;
+    const end   = el.selectionEnd   ?? start;
+    onChange(fieldKey, current.slice(0, start) + placeholder + current.slice(end));
   };
+
+  useEffect(() => {
+    fetchCredentials();
+  }, []);
+
+  const fetchCredentials = async () => {
+    try {
+      const response = await axios.get('http://localhost:8000/credentials', {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+      });
+      setCredentials(response.data.credentials);
+    } catch (err) {
+      console.error('Failed to fetch credentials', err);
+    }
+  };
+
+  const handleCreateCredential = async (appName: string) => {
+    setLoading(true);
+    try {
+      await axios.post('http://localhost:8000/credentials', {
+        app_name: appName,
+        token_data: { api_key: newKey }
+      }, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+      });
+      setNewKey('');
+      setShowCredentialForm(false);
+      await fetchCredentials();
+    } catch (err) {
+      alert('Failed to save credential');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fields = CONFIG_SCHEMA[nodeType] || [];
+
+
 
   const renderField = (field: any) => {
     const value = config[field.key] ?? '';
@@ -145,7 +243,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
 
       case 'array':
         const cases = Array.isArray(value) ? value : [];
-        
+
         // Auto-migration: Ensure every case has a stable ID
         const casesWithIds = cases.map((c: any, idx: number) => {
           if (!c.id) {
@@ -156,14 +254,14 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
 
         // Trigger update if we added missing IDs
         if (JSON.stringify(cases) !== JSON.stringify(casesWithIds)) {
-            onChange(field.key, casesWithIds);
+          onChange(field.key, casesWithIds);
         }
 
         return (
           <div className="space-y-3">
             {casesWithIds.map((c: any, idx: number) => (
               <div key={c.id || idx} className="p-3 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-xl space-y-2 relative group transition-colors">
-                <button 
+                <button
                   onClick={() => {
                     const next = [...casesWithIds];
                     next.splice(idx, 1);
@@ -171,7 +269,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                   }}
                   className="absolute top-2 right-2 text-slate-300 dark:text-slate-700 hover:text-red-500 dark:hover:text-red-400 transition-colors"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
                 </button>
                 <div className="grid grid-cols-2 gap-2">
                   <input
@@ -183,7 +281,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                       next[idx] = { ...c, label: e.target.value };
                       onChange(field.key, next);
                     }}
-                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700"
+                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
                   />
                   <select
                     value={c.operator || ''}
@@ -207,18 +305,18 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                     next[idx] = { ...c, value: e.target.value };
                     onChange(field.key, next);
                   }}
-                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700"
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
                 />
               </div>
             ))}
-              <button
-                onClick={() => {
-                  const newId = `case_${Math.random().toString(36).substring(2, 9)}`;
-                  onChange(field.key, [...casesWithIds, { id: newId, label: `Case ${casesWithIds.length + 1}`, operator: 'equals', value: '' }]);
-                }}
-                className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-600 text-xs font-bold hover:border-blue-300 dark:hover:border-blue-900 hover:text-blue-500 dark:hover:text-blue-400 transition-all flex items-center justify-center gap-2"
-              >
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            <button
+              onClick={() => {
+                const newId = `case_${Math.random().toString(36).substring(2, 9)}`;
+                onChange(field.key, [...casesWithIds, { id: newId, label: `Case ${casesWithIds.length + 1}`, operator: 'equals', value: '' }]);
+              }}
+              className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-600 text-xs font-bold hover:border-blue-300 dark:hover:border-blue-900 hover:text-blue-500 dark:hover:text-blue-400 transition-all flex items-center justify-center gap-2"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
               Add Case
             </button>
           </div>
@@ -238,7 +336,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                   }}
                   className="absolute top-2 right-2 text-slate-300 dark:text-slate-700 hover:text-red-500 dark:hover:text-red-400 transition-colors"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
                 </button>
                 <div className="grid grid-cols-2 gap-2">
                   <input
@@ -250,7 +348,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                       next[idx] = { ...fieldDef, name: e.target.value };
                       onChange(field.key, next);
                     }}
-                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700"
+                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
                   />
                   <input
                     type="text"
@@ -261,7 +359,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                       next[idx] = { ...fieldDef, label: e.target.value };
                       onChange(field.key, next);
                     }}
-                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700"
+                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -294,36 +392,129 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                 </div>
               </div>
             ))}
-              <button
-                onClick={() => onChange(field.key, [
-                  ...formFields,
-                  {
-                    name: `field_${formFields.length + 1}`,
-                    label: `Field ${formFields.length + 1}`,
-                    type: 'text',
-                    required: false,
-                  }
-                ])}
-                className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-600 text-xs font-bold hover:border-blue-300 dark:hover:border-blue-900 hover:text-blue-500 dark:hover:text-blue-400 transition-all flex items-center justify-center gap-2"
-              >
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            <button
+              onClick={() => onChange(field.key, [
+                ...formFields,
+                {
+                  name: `field_${formFields.length + 1}`,
+                  label: `Field ${formFields.length + 1}`,
+                  type: 'text',
+                  required: false,
+                }
+              ])}
+              className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-600 text-xs font-bold hover:border-blue-300 dark:hover:border-blue-900 hover:text-blue-500 dark:hover:text-blue-400 transition-all flex items-center justify-center gap-2"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
               Add Form Field
             </button>
+          </div>
+        );
+
+      case 'credential_selector':
+        const filteredCreds = credentials.filter(c => c.app_name === field.appName);
+        return (
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <select
+                value={value}
+                onChange={(e) => onChange(field.key, e.target.value)}
+                className="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
+              >
+                <option value="">Select credential...</option>
+                {filteredCreds.map((c: any) => (
+                  <option key={c.id} value={c.id}>{c.app_name} - {c.id.substring(0, 8)}...</option>
+                ))}
+              </select>
+              <button
+                onClick={() => setShowCredentialForm(!showCredentialForm)}
+                className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
+              </button>
+            </div>
+            {showCredentialForm && (
+              <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
+                <label className="text-[9px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">Add {field.appName} API Key</label>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    placeholder="sk-..."
+                    value={newKey}
+                    onChange={(e) => setNewKey(e.target.value)}
+                    className="flex-1 bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
+                  />
+                  <button
+                    disabled={loading || !newKey}
+                    onClick={() => handleCreateCredential(field.appName)}
+                    className="px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded-lg disabled:opacity-50 hover:bg-blue-700 transition-colors"
+                  >
+                    {loading ? '...' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+
+      case 'textarea':
+        return (
+          <div className="relative">
+            <textarea
+              value={value}
+              placeholder={dragOverField === field.key ? 'Drop to insert {{path}}…' : field.placeholder}
+              onChange={(e) => onChange(field.key, e.target.value)}
+              onDragOver={(e) => handleDragOver(e, field.key)}
+              onDragLeave={(e) => handleDragLeave(e)}
+              onDrop={(e) => handleDrop(e, field.key)}
+              rows={4}
+              className={`w-full bg-slate-50 dark:bg-slate-800 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 shadow-sm resize-y ${
+                dragOverField === field.key
+                  ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                  : 'border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+              }`}
+            />
+            {dragOverField === field.key && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none rounded-lg">
+                <span className="inline-flex items-center gap-1.5 bg-blue-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M12 5v14M5 12l7 7 7-7"/>
+                  </svg>
+                  Drop to insert
+                </span>
+              </div>
+            )}
           </div>
         );
 
       case 'text':
       default:
         return (
-          <input
-            type="text"
-            value={value}
-            placeholder={field.placeholder}
-            onDrop={(e) => handleDrop(e, field.key)}
-            onDragOver={handleDragOver}
-            onChange={(e) => onChange(field.key, e.target.value)}
-            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400 transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 shadow-sm"
-          />
+          <div className="relative">
+            <input
+              type="text"
+              value={value}
+              placeholder={dragOverField === field.key ? 'Drop to insert {{path}}…' : field.placeholder}
+              onChange={(e) => onChange(field.key, e.target.value)}
+              onDragOver={(e) => handleDragOver(e, field.key)}
+              onDragLeave={(e) => handleDragLeave(e)}
+              onDrop={(e) => handleDrop(e, field.key)}
+              className={`w-full bg-slate-50 dark:bg-slate-800 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 shadow-sm ${
+                dragOverField === field.key
+                  ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                  : 'border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+              }`}
+            />
+            {dragOverField === field.key && (
+              <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none">
+                <span className="inline-flex items-center gap-1 bg-blue-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M12 5v14M5 12l7 7 7-7"/>
+                  </svg>
+                  Drop
+                </span>
+              </div>
+            )}
+          </div>
         );
     }
   };
@@ -332,7 +523,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
     <div className="space-y-6">
       {fields.length === 0 ? (
         <div className="py-20 flex flex-col items-center justify-center text-slate-400 dark:text-slate-700 gap-3">
-          <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="opacity-20"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="opacity-20"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" /><polyline points="14 2 14 8 20 8" /></svg>
           <span className="text-sm font-medium">No configuration available for this node type.</span>
         </div>
       ) : (
@@ -340,7 +531,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
           <div key={field.key} className="space-y-2">
             <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-600 flex items-center justify-between">
               {field.label}
-              {field.type === 'text' && (
+              {(field.type === 'text' || field.type === 'textarea') && (
                 <span className="text-[9px] font-medium lowercase text-slate-300 dark:text-slate-700 normal-case">Supports mapping</span>
               )}
             </label>

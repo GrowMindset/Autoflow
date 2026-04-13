@@ -16,7 +16,9 @@ class RunnerRegistry:
             "aggregate": self._build_aggregate,
             "datetime_format": self._build_datetime_format,
             "split_in": self._build_split_in,
-            "split_out": self._build_split_out,
+            "ai_agent": self._build_ai_agent,
+            "chat_model_openai": self._build_chat_model_openai,
+            "chat_model_groq": self._build_chat_model_groq,
         }
         self._cache: dict[str, Any] = {}
 
@@ -112,3 +114,25 @@ class RunnerRegistry:
 
         return SplitOutRunner()
 
+
+    @staticmethod
+    def _build_ai_agent() -> Any:
+        from app.execution.runners.nodes.ai_agent import AIAgentRunner
+
+        return AIAgentRunner()
+
+    @staticmethod
+    def _build_chat_model_openai() -> Any:
+        from app.execution.runners.nodes.chat_model_openai import (
+            ChatModelOpenAIRunner,
+        )
+
+        return ChatModelOpenAIRunner()
+
+    @staticmethod
+    def _build_chat_model_groq() -> Any:
+        from app.execution.runners.nodes.chat_model_groq import (
+            ChatModelGroqRunner,
+        )
+
+        return ChatModelGroqRunner()

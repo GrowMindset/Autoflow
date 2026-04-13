@@ -9,14 +9,15 @@ interface JsonTreeProps {
 const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) => {
   const [isExpanded, setIsExpanded] = useState(true);
 
-  const toggleExpand = () => setIsExpanded(!isExpanded);
+  if (data === null) return <span className="text-slate-400 dark:text-slate-600 italic text-xs">null</span>;
+  if (data === undefined) return <span className="text-slate-400 dark:text-slate-600 italic text-xs">undefined</span>;
 
-  if (data === null) return <span className="text-slate-400 dark:text-slate-600 italic">null</span>;
-  if (data === undefined) return <span className="text-slate-400 dark:text-slate-600 italic">undefined</span>;
+  const placeholder = `{{${path}}}`;
 
   const onDragStart = (e: React.DragEvent, fieldPath: string) => {
+    const ph = `{{${fieldPath}}}`;
     e.dataTransfer.setData('application/json-path', fieldPath);
-    // Add visual feedback
+    e.dataTransfer.setData('text/plain', ph);
     e.dataTransfer.effectAllowed = 'copy';
   };
 
@@ -25,14 +26,26 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
       <div
         draggable
         onDragStart={(e) => onDragStart(e, path)}
-        className="inline-flex items-center gap-2 group cursor-grab active:cursor-grabbing hover:bg-slate-100 dark:hover:bg-slate-800 rounded px-1 transition-colors"
+        title={`Drag to insert ${placeholder}`}
+        className="inline-flex items-center gap-2 group cursor-grab active:cursor-grabbing hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded px-1 transition-colors"
       >
         <span className="text-blue-600 dark:text-blue-400 font-mono text-xs">
           {typeof data === 'string' ? `"${data}"` : String(data)}
         </span>
-        <div className="opacity-0 group-hover:opacity-100 text-[10px] bg-slate-800 dark:bg-slate-100 text-white dark:text-slate-900 px-1.5 py-0.5 rounded leading-none transition-opacity">
-          Drag to map
-        </div>
+        <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
+          {/* drag icon */}
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-400 dark:text-blue-500">
+            <circle cx="9" cy="5" r="1.5" fill="currentColor" stroke="none"/>
+            <circle cx="15" cy="5" r="1.5" fill="currentColor" stroke="none"/>
+            <circle cx="9" cy="12" r="1.5" fill="currentColor" stroke="none"/>
+            <circle cx="15" cy="12" r="1.5" fill="currentColor" stroke="none"/>
+            <circle cx="9" cy="19" r="1.5" fill="currentColor" stroke="none"/>
+            <circle cx="15" cy="19" r="1.5" fill="currentColor" stroke="none"/>
+          </svg>
+          <span className="text-[9px] bg-blue-500 text-white px-1.5 py-0.5 rounded font-mono leading-none">
+            {placeholder}
+          </span>
+        </span>
       </div>
     );
   }
@@ -46,8 +59,11 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
 
   return (
     <div className={`font-mono text-xs ${isRoot ? 'p-2' : 'ml-4'}`}>
-      <div className="flex items-center gap-1 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 rounded" onClick={toggleExpand}>
-        <span className="text-slate-400 dark:text-slate-600 w-3 inline-block">
+      <div
+        className="flex items-center gap-1 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 rounded select-none"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <span className="text-slate-400 dark:text-slate-600 w-3 inline-block text-[10px]">
           {isExpanded ? '▼' : '▶'}
         </span>
         <span className="text-slate-600 dark:text-slate-400 font-bold">{isArray ? 'Array' : 'Object'}</span>
@@ -58,10 +74,22 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
         <div className="mt-1 border-l border-slate-200 dark:border-slate-800 ml-1.5 pl-3 space-y-1">
           {keys.map((key) => {
             const currentPath = path ? `${path}.${key}` : key;
+            const childIsLeaf = typeof data[key] !== 'object' || data[key] === null;
             return (
               <div key={key} className="flex flex-col gap-0.5">
-                <div className="flex items-start gap-1">
-                  <span className="text-amber-700 dark:text-amber-500 font-bold whitespace-nowrap">{key}:</span>
+                <div className="flex items-start gap-1 group/row">
+                  <span
+                    draggable={childIsLeaf}
+                    onDragStart={(e) => onDragStart(e, currentPath)}
+                    title={childIsLeaf ? `Drag to insert {{${currentPath}}}` : undefined}
+                    className={`text-amber-700 dark:text-amber-500 font-bold whitespace-nowrap px-1 rounded transition-colors ${
+                      childIsLeaf
+                        ? 'cursor-grab active:cursor-grabbing hover:bg-amber-50 dark:hover:bg-amber-900/20 hover:text-amber-900 dark:hover:text-amber-300'
+                        : 'cursor-default'
+                    }`}
+                  >
+                    {key}:
+                  </span>
                   <JsonTree data={data[key]} path={currentPath} isRoot={false} />
                 </div>
               </div>
