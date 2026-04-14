@@ -226,10 +226,12 @@ class DagExecutor:
         subnode_configs: list[dict[str, Any]],
         runner_context: dict[str, Any],
         node_outputs: dict[str, Any] | None = None,
+        exec_context: Any = None,
     ) -> Any:
         resolved_input = input_data
 
         for subnode in subnode_configs:
+            sub_id = subnode.get("node_id")
             sub_type = subnode["node_type"]
             sub_handle = subnode.get("target_handle")
             sub_runner = self.registry.get_runner(sub_type)
@@ -247,6 +249,11 @@ class DagExecutor:
                 )
             except Exception:
                 sub_output = {}
+
+            if sub_id and exec_context is not None:
+                exec_context.node_states[sub_id] = "completed"
+                exec_context.visited_nodes.append(sub_id)
+                exec_context.node_outputs[sub_id] = sub_output
 
             if sub_handle:
                 if not isinstance(resolved_input, dict):
@@ -453,6 +460,7 @@ class DagExecutor:
             ],
             runner_context=context.runner_context,
             node_outputs=context.node_outputs,
+            exec_context=context,
         )
 
         runner = self.registry.get_runner(node_type)
