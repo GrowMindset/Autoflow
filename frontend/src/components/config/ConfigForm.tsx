@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
-
 /**
  * Schema defining the fields available for each node type.
  */
@@ -99,7 +98,13 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
   ],
   ai_agent: [
     { key: 'system_prompt', label: 'System Prompt', type: 'textarea', placeholder: 'e.g. You are a helpful assistant...' },
-    { key: 'command', label: 'Command / Prompt', type: 'textarea', placeholder: 'e.g. Summarize the text.' }
+    {
+      key: 'command',
+      label: 'User Prompt',
+      type: 'textarea',
+      placeholder: 'e.g. Summarize {{previous_output.field}} in one sentence.',
+      helperText: 'Template syntax example: {{previous_output.field}}'
+    }
   ],
   chat_model_openai: [
     { key: 'credential_id', label: 'Credential', type: 'credential_selector', appName: 'openai' },
@@ -265,7 +270,11 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
     const value = config[field.key] ?? '';
 
     switch (field.type) {
-      case 'select':
+      case 'select': {
+        const selectOptions = field.dynamicOptionsBy
+          ? (field.optionsByProvider?.[config[field.dynamicOptionsBy] || 'openai'] || [])
+          : field.options;
+
         return (
           <select
             value={value}
@@ -273,10 +282,22 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
           >
             <option value="">Select option...</option>
-            {field.options.map((opt: string) => (
+            {selectOptions.map((opt: string) => (
               <option key={opt} value={opt}>{opt}</option>
             ))}
           </select>
+        );
+      }
+
+      case 'password':
+        return (
+          <input
+            type="password"
+            value={value}
+            placeholder={field.placeholder}
+            onChange={(e) => onChange(field.key, e.target.value)}
+            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
+          />
         );
 
       case 'array':
@@ -587,6 +608,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
               )}
             </label>
             {renderField(field)}
+            {field.helperText && (
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">{field.helperText}</p>
+            )}
           </div>
         ))
       )}

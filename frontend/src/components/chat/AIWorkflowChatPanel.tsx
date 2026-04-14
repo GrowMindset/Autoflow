@@ -14,6 +14,12 @@ interface AIWorkflowChatPanelProps {
   style?: React.CSSProperties;
 }
 
+const EXAMPLE_PROMPTS = [
+  'Create a workflow that classifies support ticket sentiment and routes negative ones to Telegram.',
+  'Generate a form trigger flow that summarizes feedback with AI and logs the result.',
+  'Add AI Agent after my trigger and return a short customer reply message.',
+];
+
 const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
   isOpen,
   onClose,
@@ -27,6 +33,7 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
 }) => {
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -38,6 +45,12 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
     if (!input.trim() || isLoading) return;
     onSendMessage(input);
     setInput('');
+  };
+
+  const handleExamplePromptClick = (prompt: string) => {
+    if (isLoading) return;
+    setInput(prompt);
+    inputRef.current?.focus();
   };
 
   if (!isOpen) return null;
@@ -83,6 +96,17 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
             <p className="text-sm text-slate-600 dark:text-slate-400">
               "Create a workflow that sends a Slack message when a new user signs up."
             </p>
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
+              {EXAMPLE_PROMPTS.map((prompt) => (
+                <button
+                  key={prompt}
+                  onClick={() => handleExamplePromptClick(prompt)}
+                  className="rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-[11px] text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -143,6 +167,7 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
       <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
         <div className="relative group">
           <input
+            ref={inputRef}
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}

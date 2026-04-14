@@ -38,6 +38,23 @@ const edgeTypes = {
   deletable: DeletableEdge,
 };
 
+const AI_AGENT_CHILD_HANDLES = ['chat_model', 'memory', 'tool'] as const;
+const AI_AGENT_CHILD_X_OFFSET: Record<string, number> = {
+  chat_model: -130,
+  memory: 0,
+  tool: 130,
+};
+const AI_AGENT_CHILD_Y_OFFSET = 155;
+const AI_AGENT_CHILD_STACK_GAP = 70;
+const AUTO_LAYOUT_NODE_GAP = 40;
+const AUTO_LAYOUT_RANK_GAP = 95;
+const FORM_EXECUTION_MESSAGE_TYPE = 'autoflow:form-execution-started';
+const EXECUTION_POLL_INTERVAL_MS = 700;
+const buildFormPageUrl = (workflowId: string, nodeId: string): string => {
+  const origin = window.location.origin.replace(/\/$/, '');
+  return `${origin}/app/forms/${workflowId}?nodeId=${nodeId}`;
+};
+
 const initialNodes: WorkflowNode[] = [];
 const initialEdges: WorkflowEdge[] = [];
 
@@ -56,6 +73,7 @@ interface WorkflowCanvasProps {
   onExecutionUpdate?: (detail: ExecutionDetail) => void;
   onToggleAiAssistant?: () => void;
   isAiAssistantOpen?: boolean;
+  onCanvasMutated?: (reason: string) => void;
 }
 
 const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
@@ -65,15 +83,17 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   onExecutionUpdate,
   onToggleAiAssistant,
   isAiAssistantOpen,
+  onCanvasMutated,
 }) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const connectingNode = useRef<{ nodeId: string; handleId: string | null } | null>(null);
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<WorkflowEdge>(initialEdges);
+  const [nodes, setNodes, onNodesChangeBase] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChangeBase] = useEdgesState<WorkflowEdge>(initialEdges);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
   const { isDark } = useTheme();
   const [activeTab, setActiveTab] = useState<'editor' | 'executions'>('editor');
   const [executionHistory, setExecutionHistory] = useState<ExecutionHistoryEntry[]>([]);
+  const isHydratingCanvasRef = useRef(false);
 
   const formatDateTime = (iso: string | null) => {
     if (!iso) return '—';
@@ -163,6 +183,35 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [triggerFormData, setTriggerFormData] = useState<Record<string, string>>({});
   const [triggerNode, setTriggerNode] = useState<WorkflowNode | null>(null);
 
+  const emitCanvasMutation = useCallback((reason: string) => {
+    if (isHydratingCanvasRef.current) return;
+    onCanvasMutated?.(reason);
+  }, [onCanvasMutated]);
+
+  const onNodesChange = useCallback((changes: any[]) => {
+    onNodesChangeBase(changes);
+
+    if (isHydratingCanvasRef.current) return;
+    const hasMeaningfulChange = changes.some((change) =>
+      ['add', 'remove', 'position', 'reset'].includes(change?.type)
+    );
+    if (hasMeaningfulChange) {
+      emitCanvasMutation('nodes_change');
+    }
+  }, [onNodesChangeBase, emitCanvasMutation]);
+
+  const onEdgesChange = useCallback((changes: any[]) => {
+    onEdgesChangeBase(changes);
+
+    if (isHydratingCanvasRef.current) return;
+    const hasMeaningfulChange = changes.some((change) =>
+      ['add', 'remove', 'reset'].includes(change?.type)
+    );
+    if (hasMeaningfulChange) {
+      emitCanvasMutation('edges_change');
+    }
+  }, [onEdgesChangeBase, emitCanvasMutation]);
+
   useEffect(() => {
     const misaligned = nodes.some(
       (node) => node.position.x % 20 !== 0 || node.position.y % 20 !== 0
@@ -220,8 +269,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     // Config layout: Left to Right
     dagreGraph.setGraph({ 
       rankdir: 'LR', 
-      nodesep: 80, 
-      ranksep: 150,
+      nodesep: AUTO_LAYOUT_NODE_GAP, 
+      ranksep: AUTO_LAYOUT_RANK_GAP,
       marginx: 50,
       marginy: 50
     });
@@ -230,13 +279,27 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       dagreGraph.setNode(node.id, { width: 250, height: 100 });
     });
 
-    edgesToLayout.forEach((edge) => {
+    const nodeTypeById = new Map(
+      nodesToLayout.map((node) => [node.id, node?.data?.type || node?.type]),
+    );
+
+    // Important: AI Agent sub-node links (chat_model/memory/tool) should not
+    // affect the main DAG layout. We place those child nodes manually later.
+    const layoutEdges = edgesToLayout.filter((edge) => {
+      const handle = String(edge.targetHandle || '');
+      const isAiSubnodeLink =
+        AI_AGENT_CHILD_HANDLES.includes(handle as (typeof AI_AGENT_CHILD_HANDLES)[number]) &&
+        nodeTypeById.get(edge.target) === 'ai_agent';
+      return !isAiSubnodeLink;
+    });
+
+    layoutEdges.forEach((edge) => {
       dagreGraph.setEdge(edge.source, edge.target);
     });
 
     dagre.layout(dagreGraph);
 
-    return nodesToLayout.map((node) => {
+    const positioned = nodesToLayout.map((node) => {
       const nodeWithPosition = dagreGraph.node(node.id);
       return {
         ...node,
@@ -246,11 +309,46 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         },
       };
     });
+
+    const positionedById = new Map(positioned.map((node) => [node.id, node]));
+    const positionedNodeTypeById = new Map(
+      positioned.map((node) => [node.id, node?.data?.type || node?.type]),
+    );
+
+    const aiChildLinks = edgesToLayout.filter((edge) => {
+      const handle = String(edge.targetHandle || '');
+      return (
+        AI_AGENT_CHILD_HANDLES.includes(handle as (typeof AI_AGENT_CHILD_HANDLES)[number]) &&
+        positionedNodeTypeById.get(edge.target) === 'ai_agent'
+      );
+    });
+
+    const stackIndexByHandle = new Map<string, number>();
+
+    aiChildLinks.forEach((edge) => {
+      const parent = positionedById.get(edge.target);
+      const child = positionedById.get(edge.source);
+      if (!parent || !child) return;
+
+      const handle = String(edge.targetHandle || 'memory');
+      const key = `${edge.target}:${handle}`;
+      const stackIndex = stackIndexByHandle.get(key) || 0;
+      stackIndexByHandle.set(key, stackIndex + 1);
+
+      const handleOffsetX = AI_AGENT_CHILD_X_OFFSET[handle] ?? 0;
+      child.position = {
+        x: parent.position.x + handleOffsetX,
+        y: parent.position.y + AI_AGENT_CHILD_Y_OFFSET + stackIndex * AI_AGENT_CHILD_STACK_GAP,
+      };
+    });
+
+    return positioned;
   }, []);
 
   const alignNodes = useCallback(() => {
     const positionedNodes = autoLayout(nodes, edges);
     setNodes(positionedNodes);
+    emitCanvasMutation('align_nodes');
 
     if (reactFlowInstance) {
       setTimeout(() => {
@@ -259,7 +357,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
 
     toast.success('Workflow perfectly aligned');
-  }, [nodes, edges, setNodes, autoLayout, reactFlowInstance]);
+  }, [nodes, edges, setNodes, autoLayout, reactFlowInstance, emitCanvasMutation]);
 
   const stopPolling = useCallback(() => {
     if (pollingIntervalRef.current !== null) {
@@ -345,8 +443,36 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     void pollExecution(executionId);
     pollingIntervalRef.current = window.setInterval(() => {
       void pollExecution(executionId);
-    }, 2000);
+    }, EXECUTION_POLL_INTERVAL_MS);
   }, [onExecutionStart, pollExecution, stopPolling]);
+
+  useEffect(() => {
+    const onFormExecutionStarted = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+
+      const payload = event.data as {
+        type?: string;
+        workflowId?: string;
+        executionId?: string;
+      };
+
+      if (!payload || payload.type !== FORM_EXECUTION_MESSAGE_TYPE) return;
+      if (!payload.workflowId || payload.workflowId !== workflowId) return;
+      if (!payload.executionId) return;
+
+      setNodes((nds) =>
+        nds.map((node) => ({
+          ...node,
+          data: { ...node.data, status: 'PENDING', last_execution_result: null },
+        }))
+      );
+      beginExecutionTracking(payload.executionId);
+      toast.success('Form submitted. Workflow execution started.');
+    };
+
+    window.addEventListener('message', onFormExecutionStarted);
+    return () => window.removeEventListener('message', onFormExecutionStarted);
+  }, [workflowId, beginExecutionTracking, setNodes]);
 
   const handleRunWorkflow = useCallback(async () => {
     if (workflowId === 'new') {
@@ -383,8 +509,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             toast.success('Workflow execution started!');
             beginExecutionTracking(enqueue.execution_id);
           } else if (trigger.data.type === 'form_trigger') {
-            setTriggerNode(trigger);
-            setShowTriggerForm(true);
+            const formUrl = buildFormPageUrl(workflowId, trigger.id);
+            const opened = window.open(formUrl, '_blank');
+            if (opened) {
+              toast.success('Form opened in a new tab. Submit there to continue execution.');
+            } else {
+              toast(`Popup blocked. Open this form URL manually: ${formUrl}`, { duration: 7000 });
+            }
           } else if (trigger.data.type === 'webhook_trigger') {
             toast.success('Webhook trigger: Use HTTP POST to the webhook endpoint to trigger this workflow', { duration: 5000 });
           } else {
@@ -422,9 +553,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         toast.success('Workflow execution started!');
         beginExecutionTracking(enqueue.execution_id);
       } else if (trigger.data.type === 'form_trigger') {
-        // Show form modal for form trigger
-        setTriggerNode(trigger);
-        setShowTriggerForm(true);
+        const formUrl = buildFormPageUrl(workflowId, trigger.id);
+        const opened = window.open(formUrl, '_blank');
+        if (opened) {
+          toast.success('Form opened in a new tab. Submit there to continue execution.');
+        } else {
+          toast(`Popup blocked. Open this form URL manually: ${formUrl}`, { duration: 7000 });
+        }
       } else if (trigger.data.type === 'webhook_trigger') {
         // For webhook triggers, show information about webhook usage
         toast.success('Webhook trigger: Use HTTP POST to the webhook endpoint to trigger this workflow', { duration: 5000 });
@@ -471,9 +606,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' }
     };
     setEdges((eds) => addEdge(newEdge as any, eds));
+    emitCanvasMutation('connect_nodes');
     connectingNode.current = null; // Clear connection state after successful connection
     toast.success('Nodes connected');
-  }, [setEdges]);
+  }, [setEdges, emitCanvasMutation]);
 
   const onConnectStart = useCallback((_: any, { nodeId, handleId }: { nodeId: string | null; handleId?: string | null }) => {
     if (!nodeId) {
@@ -539,6 +675,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       const newNodeId = newNode.id;
 
       setNodes((nds) => nds.concat(newNode));
+      emitCanvasMutation('add_node');
       toast.success(`${newNode.data.label} added`);
 
       if (connectingNode.current) {
@@ -559,6 +696,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           },
         };
         setEdges((eds) => addEdge(newEdge, eds));
+        emitCanvasMutation('quick_add_connect');
         connectingNode.current = null;
       }
 
@@ -566,7 +704,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     } catch (error) {
       console.error(error);
     }
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, emitCanvasMutation]);
 
   const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: any) => {
     setSelectedNodeId(node.id);
@@ -619,6 +757,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       };
     });
 
+    isHydratingCanvasRef.current = true;
     setNodes(rfNodes);
 
     // Map simplified edges back to React Flow format with handle awareness
@@ -633,6 +772,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }));
 
     setEdges(rfEdges);
+
+    requestAnimationFrame(() => {
+      isHydratingCanvasRef.current = false;
+    });
   }, [setNodes, setEdges]);
 
   // Unsaved changes tracking
@@ -701,6 +844,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
         style: { stroke: '#94a3b8', strokeWidth: 2 }
       })));
+      emitCanvasMutation('apply_ai_workflow');
 
       setTimeout(() => {
         reactFlowInstance?.fitView({ duration: 800, padding: 0.2 });
@@ -736,7 +880,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       delete (window as any).applyAiWorkflow;
       delete (window as any).isCanvasDirty;
     };
-  }, [getWorkflowData, loadWorkflowData, autoLayout, isDirty, reactFlowInstance]);
+  }, [getWorkflowData, loadWorkflowData, autoLayout, isDirty, reactFlowInstance, emitCanvasMutation]);
 
   const updateNodeConfig = useCallback((id: string, config: Record<string, any>, output?: any) => {
     setNodes((nds) =>
@@ -754,7 +898,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         return node;
       })
     );
-  }, [setNodes]);
+    emitCanvasMutation('node_config_change');
+  }, [setNodes, emitCanvasMutation]);
 
   const getUpstreamData = (nodeId: string) => {
     const upstreamEdges = edges.filter(e => e.target === nodeId) as WorkflowEdge[];

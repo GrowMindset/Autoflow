@@ -43,6 +43,12 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
 
   const missingReqs = getMissingRequirements(data.type, data.config, isChatModelConnected);
   const hasIncomplete = missingReqs.length > 0;
+  const aiNodeErrorMessage = data.type === 'ai_agent' && data.status === 'FAILED'
+    ? (data.last_execution_result?.error_message || '')
+    : '';
+  const aiNodeErrorPreview = aiNodeErrorMessage.length > 90
+    ? `${aiNodeErrorMessage.slice(0, 90)}...`
+    : aiNodeErrorMessage;
 
   // Debug log whenever data changes
   useEffect(() => {
@@ -171,6 +177,15 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
             data.status === 'FAILED' ? 'text-rose-900 dark:text-rose-100' :
               'text-slate-800 dark:text-slate-100'
           }`}>{data.label}</h3>
+
+        {aiNodeErrorPreview && (
+          <div
+            title={aiNodeErrorMessage}
+            className="rounded-md border border-rose-200 dark:border-rose-900/40 bg-rose-50 dark:bg-rose-900/20 px-1.5 py-1 text-[7px] text-rose-600 dark:text-rose-300 leading-tight line-clamp-2"
+          >
+            {aiNodeErrorPreview}
+          </div>
+        )}
 
         <div className={`mt-1.5 flex items-center justify-between border-t ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'border-emerald-200 dark:border-emerald-900/50' :
             data.status === 'FAILED' ? 'border-rose-200 dark:border-rose-900/50' :
@@ -304,4 +319,3 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
 };
 
 export default memo(BaseNode);
-

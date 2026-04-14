@@ -46,6 +46,9 @@ const getErrorMessage = (error: any): string => {
   }
   
   if (typeof detail === 'object' && detail !== null) {
+    if (typeof detail.message === 'string' && detail.message.trim()) {
+      return detail.message;
+    }
     return JSON.stringify(detail);
   }
   

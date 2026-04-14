@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import Topbar from './Topbar';
 import ExecutionLogsFooter from './ExecutionLogsFooter';
+import ExecutionLogsPopup from './ExecutionLogsPopup';
 import NodeSidebar from '../sidebar/NodeSidebar';
 import WorkflowSidebar from '../sidebar/WorkflowSidebar';
 import WorkflowCanvas from '../canvas/WorkflowCanvas';
@@ -16,6 +17,9 @@ interface Workflow {
   description?: string;
   is_published?: boolean;
 }
+
+const AI_CHAT_HISTORY_SESSION_KEY = 'autoflow_ai_chat_history_v1';
+const AUTO_SAVE_DEBOUNCE_MS = 1200;
 
 const MainLayout: React.FC = () => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -37,9 +41,14 @@ const MainLayout: React.FC = () => {
   // Save Status State
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [currentDescription, setCurrentDescription] = useState<string>('');
+  const autoSaveTimeoutRef = useRef<number | null>(null);
+  const isAutoSaveInFlightRef = useRef(false);
+  const queuedAutoSaveRef = useRef(false);
+  const lastSavedDefinitionRef = useRef<string>('');
 
   // Logs Panel State
   const [logsExpanded, setLogsExpanded] = useState(false);
+  const [isLogsPopupOpen, setIsLogsPopupOpen] = useState(false);
   const [logsPanelHeight, setLogsPanelHeight] = useState(320);
   const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(null);
   const [currentExecutionDetail, setCurrentExecutionDetail] = useState<ExecutionDetail | null>(null);
@@ -140,6 +149,26 @@ const MainLayout: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    const raw = sessionStorage.getItem(AI_CHAT_HISTORY_SESSION_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setChatMessages(parsed);
+      }
+    } catch (error) {
+      console.warn('Could not restore AI chat history from session storage:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    sessionStorage.setItem(
+      AI_CHAT_HISTORY_SESSION_KEY,
+      JSON.stringify(chatMessages.slice(-40))
+    );
+  }, [chatMessages]);
+
+  useEffect(() => {
     (window as any).openNodePalette = () => setIsRightSidebarOpen(true);
     return () => {
       delete (window as any).openNodePalette;
@@ -153,11 +182,32 @@ const MainLayout: React.FC = () => {
   const isPublished = currentWorkflow.is_published || false;
   const footerOffset = logsExpanded ? logsPanelHeight : FOOTER_COLLAPSED_HEIGHT;
 
+  const clearAutoSaveTimeout = useCallback(() => {
+    if (autoSaveTimeoutRef.current !== null) {
+      window.clearTimeout(autoSaveTimeoutRef.current);
+      autoSaveTimeoutRef.current = null;
+    }
+  }, []);
+
+  const getCurrentDefinitionSnapshot = useCallback(() => {
+    try {
+      if (!(window as any).getCanvasWorkflowData) return '';
+      const workflowData = (window as any).getCanvasWorkflowData(currentWorkflow.name);
+      return workflowData?.definition ? JSON.stringify(workflowData.definition) : '';
+    } catch (error) {
+      console.warn('Could not build workflow snapshot for autosave:', error);
+      return '';
+    }
+  }, [currentWorkflow.name]);
+
   const onNewWorkflow = useCallback(() => {
     // They will get an ID once saved to the backend.
+    clearAutoSaveTimeout();
     setCurrentWorkflowId('new');
     setNewWorkflowDraftName('Untitled Workflow');
     setCurrentDescription('');
+    lastSavedDefinitionRef.current = JSON.stringify({ nodes: [], edges: [] });
+    setSaveStatus('idle');
     if ((window as any).loadCanvasWorkflowData) {
       (window as any).loadCanvasWorkflowData({ nodes: [], edges: [] });
     }
@@ -166,7 +216,7 @@ const MainLayout: React.FC = () => {
     setExecutionState('idle');
     setLastExecutionDuration(undefined);
     toast.success('Started a fresh workflow draft');
-  }, []);
+  }, [clearAutoSaveTimeout]);
 
   const onRenameWorkflow = useCallback((id: string, newName: string) => {
     if (id === 'new') {
@@ -191,6 +241,8 @@ const MainLayout: React.FC = () => {
     }
 
     setCurrentDescription(data.definition.description || '');
+    setSaveStatus('idle');
+    clearAutoSaveTimeout();
 
     // Load into canvas
     if ((window as any).loadCanvasWorkflowData) {
@@ -198,7 +250,7 @@ const MainLayout: React.FC = () => {
     }
 
     toast.success('Workflow data loaded. Click "Save Changes" to persist.');
-  }, [currentWorkflowId, setWorkflows]);
+  }, [currentWorkflowId, setWorkflows, clearAutoSaveTimeout]);
 
   const onSelectWorkflow = useCallback(async (id: string) => {
     if (id === 'new') {
@@ -211,11 +263,14 @@ const MainLayout: React.FC = () => {
     setCurrentExecutionDetail(null);
     setExecutionState('idle');
     setLastExecutionDuration(undefined);
+    clearAutoSaveTimeout();
+    setSaveStatus('idle');
     setIsLoading(true);
     try {
       const fullWorkflow = await workflowService.getWorkflow(id);
       if (fullWorkflow) {
         setCurrentDescription(fullWorkflow.description || '');
+        lastSavedDefinitionRef.current = JSON.stringify(fullWorkflow.definition || { nodes: [], edges: [] });
         if ((window as any).loadCanvasWorkflowData) {
           (window as any).loadCanvasWorkflowData(fullWorkflow.definition);
         }
@@ -223,9 +278,8 @@ const MainLayout: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [onNewWorkflow]);
-
-  const handleSave = useCallback(async () => {
+  }, [onNewWorkflow, clearAutoSaveTimeout]);
+  const saveWorkflow = useCallback(async ({ silent = false, force = false }: { silent?: boolean; force?: boolean } = {}) => {
     if (!(window as any).getCanvasWorkflowData) return;
 
     const workflowData = (window as any).getCanvasWorkflowData(currentWorkflow.name);
@@ -236,40 +290,106 @@ const MainLayout: React.FC = () => {
     };
     const { definition } = savePayload;
 
-    // Validation: prevent completely empty flows
-    if (definition.nodes.length === 0) {
-      toast.error('Cannot save an empty workflow');
+    if (!force && currentWorkflowId !== 'new' && !(window as any).isCanvasDirty?.()) {
       return;
     }
 
-    // 4. Execution with Toast feedback
+    // Validation: prevent completely empty flows
+    if (definition.nodes.length === 0) {
+      if (!silent) {
+        toast.error('Cannot save an empty workflow');
+      }
+      return;
+    }
+
     setSaveStatus('saving');
     try {
-      const savedResult = await toast.promise(
-        workflowService.saveWorkflow(savePayload),
-        {
-          loading: 'Saving workflow...',
-          success: <b>Workflow saved successfully!</b>,
-          error: <b>Could not save workflow.</b>,
-        }
-      );
+      const savedResult = silent
+        ? await workflowService.saveWorkflow(savePayload)
+        : await toast.promise(
+            workflowService.saveWorkflow(savePayload),
+            {
+              loading: 'Saving workflow...',
+              success: <b>Workflow saved successfully!</b>,
+              error: <b>Could not save workflow.</b>,
+            }
+          );
 
-      // Update workflows list
-      const updatedWorkflows = await workflowService.getWorkflows();
-      setWorkflows(updatedWorkflows);
+      if (!silent || currentWorkflowId === 'new') {
+        const updatedWorkflows = await workflowService.getWorkflows();
+        setWorkflows(updatedWorkflows);
+      }
 
       // If it was a new workflow, switch to the newly created ID
       if (currentWorkflowId === 'new' && savedResult.id) {
         setCurrentWorkflowId(savedResult.id);
+        window.setTimeout(() => {
+          (window as any).loadCanvasWorkflowData?.(definition);
+        }, 0);
       }
 
+      lastSavedDefinitionRef.current = JSON.stringify(definition);
       setSaveStatus('saved');
       console.log('--- SAVED DATA ---', savedResult);
+      return savedResult;
     } catch (error) {
       setSaveStatus('error');
       console.error('Save failed:', error);
     }
   }, [currentWorkflow.name, currentWorkflowId, currentDescription]);
+
+  const runAutoSave = useCallback(async () => {
+    if (isAutoSaveInFlightRef.current) {
+      queuedAutoSaveRef.current = true;
+      return;
+    }
+
+    if (!(window as any).isCanvasDirty?.()) {
+      return;
+    }
+
+    const snapshot = getCurrentDefinitionSnapshot();
+    if (!snapshot || snapshot === lastSavedDefinitionRef.current) {
+      return;
+    }
+
+    isAutoSaveInFlightRef.current = true;
+    queuedAutoSaveRef.current = false;
+    await saveWorkflow({ silent: true, force: false });
+    isAutoSaveInFlightRef.current = false;
+
+    if (queuedAutoSaveRef.current) {
+      queuedAutoSaveRef.current = false;
+      void runAutoSave();
+    }
+  }, [getCurrentDefinitionSnapshot, saveWorkflow]);
+
+  const scheduleAutoSave = useCallback(() => {
+    clearAutoSaveTimeout();
+    autoSaveTimeoutRef.current = window.setTimeout(() => {
+      void runAutoSave();
+    }, AUTO_SAVE_DEBOUNCE_MS);
+  }, [clearAutoSaveTimeout, runAutoSave]);
+
+  const handleCanvasMutated = useCallback((_reason: string) => {
+    if (!(window as any).isCanvasDirty?.()) {
+      return;
+    }
+    setSaveStatus((prev) => (prev === 'saving' ? prev : 'idle'));
+    scheduleAutoSave();
+  }, [scheduleAutoSave]);
+
+  const handleSave = useCallback(async () => {
+    clearAutoSaveTimeout();
+    queuedAutoSaveRef.current = false;
+    await saveWorkflow({ silent: false, force: true });
+  }, [clearAutoSaveTimeout, saveWorkflow]);
+
+  useEffect(() => {
+    return () => {
+      clearAutoSaveTimeout();
+    };
+  }, [clearAutoSaveTimeout]);
 
   const handleTogglePublish = useCallback(async () => {
     if (currentWorkflowId === 'new') {
@@ -348,8 +468,14 @@ const MainLayout: React.FC = () => {
         ...(response.workflow ? { workflow: response.workflow } : {})
       } as any;
       setChatMessages(prev => [...prev, assistantMsg]);
-    } catch (error) {
-      toast.error('AI Architect is currently unavailable');
+    } catch (error: any) {
+      const fallback = 'AI workflow generation failed. Please try again.';
+      const detail = error?.response?.data?.detail;
+      const errorMessage =
+        typeof detail === 'string'
+          ? detail
+          : detail?.message || error?.message || fallback;
+      toast.error(errorMessage);
     } finally {
       setIsAiLoading(false);
     }
@@ -420,6 +546,7 @@ const MainLayout: React.FC = () => {
               key={currentWorkflowId}
               workflowId={currentWorkflowId}
               footerOffset={footerOffset}
+              onCanvasMutated={handleCanvasMutated}
               onToggleAiAssistant={() => setIsAiAssistantOpen(!isAiAssistantOpen)}
               isAiAssistantOpen={isAiAssistantOpen}
               onExecutionStart={(executionId) => {
@@ -452,6 +579,15 @@ const MainLayout: React.FC = () => {
             panelHeight={logsPanelHeight}
             onToggle={() => setLogsExpanded((prev) => !prev)}
             onResizeStart={handleLogResizeStart}
+            isPopoutOpen={isLogsPopupOpen}
+            onTogglePopout={() => setIsLogsPopupOpen((prev) => !prev)}
+          />
+
+          <ExecutionLogsPopup
+            isOpen={isLogsPopupOpen}
+            executionId={currentExecutionId}
+            executionDetail={currentExecutionDetail}
+            onClose={() => setIsLogsPopupOpen(false)}
           />
 
           <AIWorkflowChatPanel

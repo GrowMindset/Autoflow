@@ -47,11 +47,11 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
     });
   }, [formFields, node.data.type]);
 
-  const testUrl = useMemo(() => {
+  const formPageUrl = useMemo(() => {
     if (!workflowId || workflowId === 'new') return '';
-    const baseUrl = String(api.defaults.baseURL || '').replace(/\/$/, '');
-    return `${baseUrl}/workflows/${workflowId}/run-form`;
-  }, [workflowId]);
+    const origin = window.location.origin.replace(/\/$/, '');
+    return `${origin}/app/forms/${workflowId}?nodeId=${node.id}`;
+  }, [workflowId, node.id]);
 
   const webhookUrl = useMemo(() => {
     if (!workflowId || workflowId === 'new') return '';
@@ -59,6 +59,30 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
     const path = node.data.config?.path || 'your-path';
     return `${baseUrl}/webhook/${workflowId}/${path.replace(/^\//, '')}`;
   }, [workflowId, node.data.config?.path]);
+
+  const aiResponseText = useMemo(() => {
+    if (node.data.type !== 'ai_agent') return null;
+
+    const executionResponse = node.data.last_execution_result?.output_data?.ai_response;
+    if (typeof executionResponse === 'string' && executionResponse.trim()) {
+      return executionResponse;
+    }
+
+    const adHocResponse = output?.ai_response;
+    if (typeof adHocResponse === 'string' && adHocResponse.trim()) {
+      return adHocResponse;
+    }
+
+    return null;
+  }, [node.data.type, node.data.last_execution_result, output]);
+
+  const aiErrorText = useMemo(() => {
+    if (node.data.type !== 'ai_agent') return null;
+    const executionError = node.data.last_execution_result?.error_message;
+    if (executionError) return executionError;
+    if (typeof output?.error === 'string' && output.error.trim()) return output.error;
+    return null;
+  }, [node.data.type, node.data.last_execution_result, output]);
 
   // Sync state if node changes externally
   const handleConfigChange = (key: string, value: any) => {
@@ -334,20 +358,29 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                     <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 p-6">
                       <div className="flex items-center justify-between gap-4">
                         <div>
-                          <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Test URL</h3>
-                          <p className="text-xs text-slate-500 dark:text-slate-500">Use this authenticated endpoint to submit test form data into the workflow.</p>
+                          <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Form Page URL</h3>
+                          <p className="text-xs text-slate-500 dark:text-slate-500">Open this URL in a new tab to fill and submit the form on a dedicated page.</p>
                         </div>
                       </div>
-                      <div className="mt-4 flex items-center gap-2">
-                        <div className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-600 break-all select-all">
-                          {testUrl || 'Save the workflow to generate the test URL.'}
+                      <div className="mt-4 flex flex-wrap items-center gap-2">
+                        <div className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-600 break-all select-all">
+                          {formPageUrl || 'Save the workflow to generate the form page URL.'}
                         </div>
-                        <button 
+                        <button
                           className="px-4 py-3 bg-white border border-slate-200 rounded-2xl text-slate-500 hover:text-slate-800 transition-colors disabled:opacity-50 font-bold text-xs"
-                          disabled={!testUrl}
+                          disabled={!formPageUrl}
                           onClick={() => {
-                            navigator.clipboard.writeText(testUrl);
-                            toast.success('Copied test URL');
+                            window.open(formPageUrl, '_blank', 'noopener,noreferrer');
+                          }}
+                        >
+                          Open
+                        </button>
+                        <button
+                          className="px-4 py-3 bg-white border border-slate-200 rounded-2xl text-slate-500 hover:text-slate-800 transition-colors disabled:opacity-50 font-bold text-xs"
+                          disabled={!formPageUrl}
+                          onClick={() => {
+                            navigator.clipboard.writeText(formPageUrl);
+                            toast.success('Copied form page URL');
                           }}
                         >
                           Copy
@@ -441,10 +474,50 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
               <div className="flex-1 overflow-auto custom-scrollbar p-4 animate-in slide-in-from-right-4 duration-300">
                 {node.data.last_execution_result ? (
                   <div className="space-y-6">
+                    {node.data.type === 'ai_agent' && aiResponseText && (
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-blue-500">AI Response</span>
+                        <div className="rounded-2xl border border-blue-100 dark:border-blue-900/30 bg-blue-50/60 dark:bg-blue-900/10 p-4">
+                          <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed text-blue-900 dark:text-blue-100 font-mono">
+                            {aiResponseText}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+
+                    {node.data.type === 'ai_agent' && aiErrorText && (
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-rose-500">AI Error</span>
+                        <div className="rounded-2xl border border-rose-200 dark:border-rose-900/30 bg-rose-50 dark:bg-rose-900/20 p-3 text-xs text-rose-600 dark:text-rose-300 font-mono whitespace-pre-wrap break-words">
+                          {aiErrorText}
+                        </div>
+                      </div>
+                    )}
                     <LogSection title="Result Payload" data={node.data.last_execution_result.output_data} />
                   </div>
                 ) : output ? (
-                  <JsonTree data={output} />
+                  <div className="space-y-6">
+                    {node.data.type === 'ai_agent' && aiResponseText && (
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-blue-500">AI Response</span>
+                        <div className="rounded-2xl border border-blue-100 dark:border-blue-900/30 bg-blue-50/60 dark:bg-blue-900/10 p-4">
+                          <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed text-blue-900 dark:text-blue-100 font-mono">
+                            {aiResponseText}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+
+                    {node.data.type === 'ai_agent' && aiErrorText && (
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-rose-500">AI Error</span>
+                        <div className="rounded-2xl border border-rose-200 dark:border-rose-900/30 bg-rose-50 dark:bg-rose-900/20 p-3 text-xs text-rose-600 dark:text-rose-300 font-mono whitespace-pre-wrap break-words">
+                          {aiErrorText}
+                        </div>
+                      </div>
+                    )}
+                    <JsonTree data={output} />
+                  </div>
                 ) : (
                   <div className="h-full flex flex-col items-center justify-center text-slate-300 p-8 text-center space-y-4">
                     <div className="p-4 rounded-full bg-slate-50 border border-slate-100">

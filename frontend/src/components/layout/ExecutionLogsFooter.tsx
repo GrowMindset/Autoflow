@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, ChevronUp, GripHorizontal, TerminalSquare } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { ChevronUp, GripHorizontal, TerminalSquare } from 'lucide-react';
 import { ExecutionDetail } from '../../services/executionService';
 import { useTheme } from '../../context/ThemeContext';
+import ExecutionLogsPanelContent from './ExecutionLogsPanelContent';
 
 interface ExecutionLogsFooterProps {
   executionDetail: ExecutionDetail | null;
@@ -10,30 +11,11 @@ interface ExecutionLogsFooterProps {
   panelHeight: number;
   onToggle: () => void;
   onResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void;
+  isPopoutOpen: boolean;
+  onTogglePopout: () => void;
 }
 
 const COLLAPSED_HEIGHT = 52;
-
-const formatTimestamp = (value: string | null) => {
-  if (!value) return '--:--:--';
-  return new Date(value).toLocaleTimeString();
-};
-
-const formatJson = (value: unknown) => {
-  if (value === null || value === undefined) {
-    return 'null';
-  }
-
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-};
 
 const toneByStatus = (status: string) => {
   switch (status) {
@@ -71,9 +53,10 @@ const ExecutionLogsFooter: React.FC<ExecutionLogsFooterProps> = ({
   panelHeight,
   onToggle,
   onResizeStart,
+  isPopoutOpen,
+  onTogglePopout,
 }) => {
   const { isDark } = useTheme();
-  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
 
   const sortedNodeResults = useMemo(
     () =>
@@ -151,9 +134,21 @@ const ExecutionLogsFooter: React.FC<ExecutionLogsFooterProps> = ({
           </div>
         </div>
 
-
-
         <div className="flex items-center gap-3 text-[10px] font-mono">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onTogglePopout();
+            }}
+            className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-[0.18em] transition ${
+              isDark
+                ? 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            {isPopoutOpen ? 'Hide Pop' : 'Pop Logs'}
+          </button>
           {executionDetail ? (
             <>
               <span className={`${toneByStatus(executionDetail.status).text} font-bold`}>
@@ -178,205 +173,7 @@ const ExecutionLogsFooter: React.FC<ExecutionLogsFooterProps> = ({
             isDark ? 'bg-slate-950' : 'bg-slate-100/80'
           }`}
         >
-          {executionDetail ? (
-            <div className="space-y-4">
-              <div
-                className={`rounded-2xl border px-4 py-3 ${
-                  isDark
-                    ? 'border-slate-800 bg-slate-900'
-                    : 'border-slate-200 bg-white'
-                }`}
-              >
-                <div className="flex flex-wrap items-center gap-3">
-                  <span
-                    className={`text-[11px] font-black uppercase tracking-[0.2em] ${
-                      isDark ? 'text-slate-400' : 'text-slate-500'
-                    }`}
-                  >
-                    Current Run
-                  </span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.18em] ${
-                      toneByStatus(executionDetail.status).badge
-                    }`}
-                  >
-                    {executionDetail.status}
-                  </span>
-                </div>
-                <div
-                  className={`mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[12px] font-mono ${
-                    isDark ? 'text-slate-300' : 'text-slate-700'
-                  }`}
-                >
-                  <span><span className={isDark ? 'text-slate-500' : 'text-slate-400'}>workflow</span> {executionDetail.workflow_id.slice(0, 8)}...</span>
-                  <span><span className={isDark ? 'text-slate-500' : 'text-slate-400'}>execution</span> {executionDetail.id.slice(0, 8)}...</span>
-                  <span><span className={isDark ? 'text-slate-500' : 'text-slate-400'}>trigger</span> {executionDetail.triggered_by}</span>
-                </div>
-                {executionDetail.error_message && (
-                  <div
-                    className={`mt-3 rounded-xl border px-3 py-2 text-sm ${
-                      isDark
-                        ? 'border-rose-900/50 bg-rose-950/30 text-rose-300'
-                        : 'border-rose-200 bg-rose-50 text-rose-700'
-                    }`}
-                  >
-                    {executionDetail.error_message}
-                  </div>
-                )}
-              </div>
-
-              {sortedNodeResults.length > 0 ? (
-                sortedNodeResults.map((nodeResult) => {
-                  const rowExpanded = Boolean(expandedRows[nodeResult.node_id]);
-                  const tone = toneByStatus(nodeResult.status);
-
-                  return (
-                    <div
-                      key={nodeResult.node_id}
-                      className={`rounded-2xl border transition-colors ${
-                        isDark
-                          ? 'border-slate-800 bg-slate-900'
-                          : 'border-slate-200 bg-white'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setExpandedRows((prev) => ({
-                            ...prev,
-                            [nodeResult.node_id]: !prev[nodeResult.node_id],
-                          }))
-                        }
-                        className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left"
-                      >
-                        <div className="flex min-w-0 items-center gap-3">
-                          <div className={`h-2.5 w-2.5 rounded-full ${tone.dot}`} />
-                          <span
-                            className={`text-[12px] font-mono ${
-                              isDark ? 'text-slate-300' : 'text-slate-700'
-                            }`}
-                          >
-                            [{formatTimestamp(nodeResult.started_at ?? nodeResult.finished_at)}]
-                          </span>
-                          <span
-                            className={`truncate text-sm font-bold ${
-                              isDark ? 'text-slate-100' : 'text-slate-900'
-                            }`}
-                          >
-                            {nodeResult.node_id}
-                          </span>
-                          <span
-                            className={`truncate text-xs ${
-                              isDark ? 'text-slate-500' : 'text-slate-400'
-                            }`}
-                          >
-                            ({nodeResult.node_type})
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-3">
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.18em] ${
-                              tone.badge
-                            }`}
-                          >
-                            {nodeResult.status}
-                          </span>
-                          {rowExpanded ? (
-                            <ChevronDown size={18} className={isDark ? 'text-slate-400' : 'text-slate-500'} />
-                          ) : (
-                            <ChevronRight size={18} className={isDark ? 'text-slate-400' : 'text-slate-500'} />
-                          )}
-                        </div>
-                      </button>
-
-                      {rowExpanded && (
-                        <div
-                          className={`border-t px-4 py-4 ${
-                            isDark
-                              ? 'border-slate-800'
-                              : 'border-slate-200'
-                          }`}
-                        >
-                          <div className="grid gap-4 lg:grid-cols-2">
-                            <div>
-                              <div
-                                className={`mb-2 text-[11px] font-black uppercase tracking-[0.22em] ${
-                                  isDark ? 'text-slate-500' : 'text-slate-500'
-                                }`}
-                              >
-                                Input
-                              </div>
-                              <pre
-                                className={`overflow-auto rounded-xl border px-3 py-2 text-[12px] font-mono leading-6 ${
-                                  isDark
-                                    ? 'border-slate-800 bg-slate-950 text-slate-300'
-                                    : 'border-slate-200 bg-slate-50 text-slate-700'
-                                }`}
-                              >
-                                {formatJson(nodeResult.input_data)}
-                              </pre>
-                            </div>
-
-                            <div>
-                              <div
-                                className={`mb-2 text-[11px] font-black uppercase tracking-[0.22em] ${
-                                  isDark ? 'text-slate-500' : 'text-slate-500'
-                                }`}
-                              >
-                                Output
-                              </div>
-                              <pre
-                                className={`overflow-auto rounded-xl border px-3 py-2 text-[12px] font-mono leading-6 ${
-                                  isDark
-                                    ? 'border-slate-800 bg-slate-950 text-slate-300'
-                                    : 'border-slate-200 bg-slate-50 text-slate-700'
-                                }`}
-                              >
-                                {formatJson(nodeResult.output_data)}
-                              </pre>
-                            </div>
-                          </div>
-
-                          {nodeResult.error_message && (
-                            <div
-                              className={`mt-4 rounded-xl border px-3 py-2 text-sm ${
-                                isDark
-                                  ? 'border-rose-900/50 bg-rose-950/30 text-rose-300'
-                                  : 'border-rose-200 bg-rose-50 text-rose-700'
-                              }`}
-                            >
-                              {nodeResult.error_message}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              ) : (
-                <div
-                  className={`rounded-2xl border border-dashed px-4 py-6 text-sm ${
-                    isDark
-                      ? 'border-slate-800 bg-slate-900 text-slate-500'
-                      : 'border-slate-300 bg-white text-slate-500'
-                  }`}
-                >
-                  No node results yet. Start a workflow run to stream the current execution here.
-                </div>
-              )}
-            </div>
-          ) : (
-            <div
-              className={`rounded-2xl border border-dashed px-4 py-6 text-sm ${
-                isDark
-                  ? 'border-slate-800 bg-slate-900 text-slate-500'
-                  : 'border-slate-300 bg-white text-slate-500'
-              }`}
-            >
-              Execute the workflow to open a fresh log session for that run.
-            </div>
-          )}
+          <ExecutionLogsPanelContent executionDetail={executionDetail} />
         </div>
       )}
     </div>
