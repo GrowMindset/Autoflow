@@ -204,13 +204,19 @@ class NodeExecutionTests(unittest.IsolatedAsyncioTestCase):
 
         captured: dict[str, object] = {}
 
-        def fake_call_openai(**kwargs):
-            captured.update(kwargs)
+        def fake_call_openai(*args, **kwargs):
+            provider = next((arg for arg in args if hasattr(arg, "api_key")), None)
+            captured["api_key"] = getattr(provider, "api_key", None)
+            captured["model"] = kwargs.get("model")
+            captured["system_prompt"] = kwargs.get("system_prompt")
+            captured["command"] = kwargs.get("command")
+            captured["temperature"] = kwargs.get("temperature")
+            captured["max_tokens"] = kwargs.get("max_tokens")
             return "AI says hello"
 
         with (
             patch("app.core.security.decrypt_data", return_value="decrypted-openai-key") as decrypt_mock,
-            patch.object(AIAgentRunner, "_call_openai", side_effect=fake_call_openai),
+            patch.object(AIAgentRunner, "_run_provider_completion", side_effect=fake_call_openai),
         ):
             await execute_workflow_tasks._run_execution(
                 execution_id=str(execution_id),
@@ -277,3 +283,186 @@ class NodeExecutionTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         )
+
+    async def test_webhook_filter_ai_agent_telegram_execution_and_get_execution_output(self) -> None:
+        user = await self._create_user("endtoend@example.com")
+        credential_id = uuid4()
+
+        async with self.session_factory() as session:
+            workflow = Workflow(
+                user_id=user.id,
+                name="Webhook Filter AI Workflow",
+                definition={
+                    "nodes": [
+                        {
+                            "id": "trigger",
+                            "type": "webhook_trigger",
+                            "config": {},
+                        },
+                        {
+                            "id": "filter",
+                            "type": "filter",
+                            "config": {
+                                "input_key": "orders",
+                                "field": "amount",
+                                "operator": "greater_than",
+                                "value": 100,
+                            },
+                        },
+                        {
+                            "id": "chat_cfg",
+                            "type": "chat_model_openai",
+                            "config": {
+                                "credential_id": str(credential_id),
+                                "model": "gpt-4o-mini",
+                                "temperature": 0.1,
+                                "max_tokens": 64,
+                            },
+                        },
+                        {
+                            "id": "agent",
+                            "type": "ai_agent",
+                            "config": {
+                                "system_prompt": "Compose a short telegram summary of the filtered orders.",
+                                "command": "Summarize the orders: {{filter.orders}}",
+                            },
+                        },
+                        {
+                            "id": "telegram",
+                            "type": "telegram",
+                            "config": {
+                                "chat_id": "12345",
+                                "message": "{{agent.output}}",
+                            },
+                        },
+                    ],
+                    "edges": [
+                        {"id": "e1", "source": "trigger", "target": "filter"},
+                        {
+                            "id": "e2",
+                            "source": "chat_cfg",
+                            "target": "agent",
+                            "targetHandle": "chat_model",
+                        },
+                        {"id": "e3", "source": "filter", "target": "agent"},
+                        {"id": "e4", "source": "agent", "target": "telegram"},
+                    ],
+                },
+            )
+            session.add(workflow)
+            await session.flush()
+            session.add(
+                AppCredential(
+                    id=credential_id,
+                    user_id=user.id,
+                    app_name="openai",
+                    token_data={"api_key": "encrypted-openai-token"},
+                )
+            )
+            session.add(
+                Execution(
+                    workflow_id=workflow.id,
+                    user_id=user.id,
+                    status="PENDING",
+                    triggered_by="webhook",
+                    started_at=None,
+                    finished_at=None,
+                    error_message=None,
+                )
+            )
+            await session.commit()
+            await session.refresh(workflow)
+            execution = await session.scalar(
+                select(Execution).where(Execution.workflow_id == workflow.id)
+            )
+            self.assertIsNotNone(execution)
+            execution_id = execution.id
+
+        captured: dict[str, object] = {}
+
+        def fake_call_openai(*args, **kwargs):
+            provider = next((arg for arg in args if hasattr(arg, "api_key")), None)
+            captured["api_key"] = getattr(provider, "api_key", None)
+            captured["model"] = kwargs.get("model")
+            captured["system_prompt"] = kwargs.get("system_prompt")
+            captured["command"] = kwargs.get("command")
+            captured["temperature"] = kwargs.get("temperature")
+            captured["max_tokens"] = kwargs.get("max_tokens")
+            return "AI summary of filtered orders"
+
+        with (
+            patch("app.core.security.decrypt_data", return_value="decrypted-openai-key"),
+            patch.object(AIAgentRunner, "_run_provider_completion", side_effect=fake_call_openai),
+        ):
+            await execute_workflow_tasks._run_execution(
+                execution_id=str(execution_id),
+                initial_payload={
+                    "orders": [
+                        {"id": "o1", "amount": 50},
+                        {"id": "o2", "amount": 200},
+                    ],
+                },
+                start_node_id="trigger",
+            )
+
+        async with self.session_factory() as session:
+            execution = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution)
+            self.assertEqual(execution.status, "SUCCEEDED")
+
+            rows = (
+                await session.execute(
+                    select(NodeExecution).where(NodeExecution.execution_id == execution_id)
+                )
+            ).scalars().all()
+
+        rows_by_id = {row.node_id: row for row in rows}
+        self.assertEqual(rows_by_id["trigger"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["filter"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["agent"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["telegram"].status, "SUCCEEDED")
+
+        self.assertEqual(
+            rows_by_id["filter"].output_data,
+            {
+                "orders": [{"id": "o2", "amount": 200}],
+                "triggered": True,
+                "trigger_type": "webhook",
+            },
+        )
+        self.assertEqual(
+            rows_by_id["agent"].output_data,
+            {
+                "output": "AI summary of filtered orders",
+                "ai_metadata": {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "system_prompt": "Compose a short telegram summary of the filtered orders.",
+                    "temperature": 0.1,
+                },
+            },
+        )
+        self.assertEqual(
+            rows_by_id["telegram"].output_data,
+            {
+                "output": "AI summary of filtered orders",
+                "ai_metadata": {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "system_prompt": "Compose a short telegram summary of the filtered orders.",
+                    "temperature": 0.1,
+                },
+                "dummy_node_executed": True,
+                "dummy_node_type": "telegram",
+                "dummy_node_message": "Dummy node executed for 'telegram'",
+            },
+        )
+
+        status_code, payload = await self.client.get(
+            f"/executions/{execution_id}",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(status_code, 200)
+        node_results = {node["node_id"]: node for node in payload["node_results"]}
+        self.assertEqual(node_results["agent"]["output_data"], rows_by_id["agent"].output_data)
+        self.assertEqual(node_results["telegram"]["output_data"], rows_by_id["telegram"].output_data)

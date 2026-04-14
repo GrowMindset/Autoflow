@@ -7,8 +7,9 @@ from textwrap import dedent
 from typing import Any
 
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
 from pydantic import ValidationError
+
+from app.services.llm_providers import BaseLLMProvider, get_provider
 
 from app.execution.dag_executor import TRIGGER_NODE_TYPES
 from app.schemas.workflows import NODE_CONFIG_DEFAULTS, WorkflowDefinition
@@ -158,7 +159,7 @@ class LLMService:
     def __init__(
         self,
         *,
-        client: AsyncOpenAI | None = None,
+        client: Any | None = None,
         model: str | None = None,
         max_retries: int = 1,
     ) -> None:
@@ -179,33 +180,50 @@ class LLMService:
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": cleaned_prompt},
         ]
-
         last_error: WorkflowGenerationError | None = None
+
         for _ in range(self.max_retries + 1):
-            response = await client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.1,
-                response_format={"type": "json_object"},
-            )
-            raw_content = self._extract_response_text(response)
+            if isinstance(client, BaseLLMProvider):
+                user_prompt = cleaned_prompt
+                if last_error is not None:
+                    user_prompt = (
+                        f"{cleaned_prompt}\n\nYour previous response was invalid. "
+                        f"Fix these issues and return only corrected JSON: {last_error}"
+                    )
+
+                raw_content = await client.complete(
+                    system_prompt=self.system_prompt,
+                    user_prompt=user_prompt,
+                    model=self.model,
+                    temperature=0.1,
+                    max_tokens=None,
+                )
+            else:
+                response = await client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+                raw_content = self._extract_response_text(response)
 
             try:
                 return self.validate_generated_workflow(raw_content)
             except WorkflowGenerationError as exc:
                 last_error = exc
-                messages.extend(
-                    [
-                        {"role": "assistant", "content": raw_content},
-                        {
-                            "role": "user",
-                            "content": (
-                                "Your previous response was invalid. "
-                                f"Fix these issues and return only corrected JSON: {exc}"
-                            ),
-                        },
-                    ]
-                )
+                if not isinstance(client, BaseLLMProvider):
+                    messages.extend(
+                        [
+                            {"role": "assistant", "content": raw_content},
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Your previous response was invalid. "
+                                    f"Fix these issues and return only corrected JSON: {exc}"
+                                ),
+                            },
+                        ]
+                    )
 
         raise WorkflowGenerationError(
             "Could not generate a valid workflow from the model response."
@@ -322,7 +340,7 @@ class LLMService:
         cls._validate_ai_subnode_structure(definition)
         return definition
 
-    def _get_client(self) -> AsyncOpenAI:
+    def _get_client(self) -> Any:
         if self.client is not None:
             return self.client
 
@@ -331,7 +349,7 @@ class LLMService:
                 "OPENAI_API_KEY is not set. Add it to your .env file."
             )
 
-        self.client = AsyncOpenAI(api_key=self._api_key)
+        self.client = get_provider("openai", self._api_key)
         return self.client
 
     @staticmethod

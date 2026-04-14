@@ -1,5 +1,6 @@
 import unittest
 
+from app.execution.runners.nodes import ai_agent
 from app.execution.runners.nodes.aggregate import AggregateRunner
 from app.execution.runners.nodes.ai_agent import AIAgentRunner
 from app.execution.runners.nodes.datetime_format import DateTimeFormatRunner
@@ -18,7 +19,7 @@ from app.execution.runners.triggers.webhook_trigger import WebhookTriggerRunner
 class RunnerTests(unittest.TestCase):
     def test_ai_agent_runner_returns_output_key(self):
         runner = AIAgentRunner()
-        runner._call_openai = lambda **_: "hello world"
+        runner._run_provider_completion = lambda *args, **kwargs: "hello world"
 
         result = runner.run(
             config={
@@ -36,29 +37,42 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn("ai_response", result)
 
     def test_ai_agent_runner_prefers_inline_chat_model_api_key(self):
-        runner = AIAgentRunner()
-        captured = {}
+        original_get_provider = ai_agent.get_provider
+        fake_provider = None
 
-        def fake_call_openai(**kwargs):
-            captured.update(kwargs)
-            return "done"
+        class FakeProvider:
+            def __init__(self, api_key):
+                self.api_key = api_key
 
-        runner._call_openai = fake_call_openai
-        runner.run(
-            config={"command": "Hello"},
-            input_data={
-                "chat_model": {
-                    "provider": "openai",
-                    "model": "gpt-4o",
-                    "credential_id": "cred-inline",
-                    "api_key": "inline-secret",
-                    "options": {"temperature": 0.1},
-                }
-            },
-            context={"resolved_credentials": {"cred-inline": "context-secret"}},
-        )
+            async def complete(self, *args, **kwargs):
+                return "done"
 
-        self.assertEqual(captured["api_key"], "inline-secret")
+        def fake_get_provider(provider, api_key):
+            nonlocal fake_provider
+            fake_provider = FakeProvider(api_key)
+            return fake_provider
+
+        ai_agent.get_provider = fake_get_provider
+        try:
+            runner = AIAgentRunner()
+            runner.run(
+                config={"command": "Hello"},
+                input_data={
+                    "chat_model": {
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "credential_id": "cred-inline",
+                        "api_key": "inline-secret",
+                        "options": {"temperature": 0.1},
+                    }
+                },
+                context={"resolved_credentials": {"cred-inline": "context-secret"}},
+            )
+        finally:
+            ai_agent.get_provider = original_get_provider
+
+        self.assertIsNotNone(fake_provider)
+        self.assertEqual(fake_provider.api_key, "inline-secret")
 
     def test_ai_agent_runner_maps_authentication_error(self):
         runner = AIAgentRunner()
@@ -66,10 +80,10 @@ class RunnerTests(unittest.TestCase):
         class AuthenticationError(Exception):
             pass
 
-        def fake_call_openai(**kwargs):
+        def fake_call_openai(*args, **kwargs):
             raise AuthenticationError("bad key")
 
-        runner._call_openai = fake_call_openai
+        runner._run_provider_completion = fake_call_openai
 
         with self.assertRaisesRegex(
             ValueError,
@@ -91,10 +105,10 @@ class RunnerTests(unittest.TestCase):
         class RateLimitError(Exception):
             pass
 
-        def fake_call_groq(**kwargs):
+        def fake_call_groq(*args, **kwargs):
             raise RateLimitError("slow down")
 
-        runner._call_groq = fake_call_groq
+        runner._run_provider_completion = fake_call_groq
 
         with self.assertRaisesRegex(
             ValueError,
@@ -116,10 +130,10 @@ class RunnerTests(unittest.TestCase):
         class APITimeoutError(Exception):
             pass
 
-        def fake_call_openai(**kwargs):
+        def fake_call_openai(*args, **kwargs):
             raise APITimeoutError("timed out")
 
-        runner._call_openai = fake_call_openai
+        runner._run_provider_completion = fake_call_openai
 
         with self.assertRaisesRegex(
             ValueError,

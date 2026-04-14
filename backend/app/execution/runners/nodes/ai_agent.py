@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
+
+from app.services.llm_providers import BaseLLMProvider, get_provider
 
 
 class AIAgentRunner:
@@ -69,25 +72,16 @@ class AIAgentRunner:
             )
 
         # ── Call the LLM ─────────────────────────────────────────────────────
+        provider_instance = get_provider(provider, api_key)
         try:
-            if provider == "groq":
-                response_text = self._call_groq(
-                    api_key=api_key,
-                    model=model,
-                    system_prompt=system_prompt,
-                    command=command,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-            else:
-                response_text = self._call_openai(
-                    api_key=api_key,
-                    model=model,
-                    system_prompt=system_prompt,
-                    command=command,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
+            response_text = self._run_provider_completion(
+                provider_instance,
+                system_prompt=system_prompt,
+                command=command,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
         except Exception as exc:
             raise ValueError(self._format_provider_error(exc)) from exc
 
@@ -122,53 +116,34 @@ class AIAgentRunner:
         return str(exc)
 
     @staticmethod
-    def _call_openai(
-        api_key: str,
-        model: str,
+    def _run_provider_completion(
+        provider_instance: BaseLLMProvider,
         system_prompt: str,
         command: str,
+        model: str,
         temperature: float,
         max_tokens: int | None,
     ) -> str:
-        from openai import OpenAI
+        def _run() -> str:
+            return asyncio.run(
+                provider_instance.complete(
+                    system_prompt=system_prompt,
+                    user_prompt=command,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            )
 
-        client = OpenAI(api_key=api_key)
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": command},
-            ],
-            "temperature": temperature,
-        }
-        if max_tokens:
-            kwargs["max_tokens"] = int(max_tokens)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return _run()
 
-        response = client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content
+        # If we're already inside an event loop, run the provider in a dedicated
+        # thread with its own event loop so synchronous execution still works.
+        import concurrent.futures
 
-    @staticmethod
-    def _call_groq(
-        api_key: str,
-        model: str,
-        system_prompt: str,
-        command: str,
-        temperature: float,
-        max_tokens: int | None,
-    ) -> str:
-        from groq import Groq
-
-        client = Groq(api_key=api_key)
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": command},
-            ],
-            "temperature": temperature,
-        }
-        if max_tokens:
-            kwargs["max_tokens"] = int(max_tokens)
-
-        response = client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run)
+            return future.result()
