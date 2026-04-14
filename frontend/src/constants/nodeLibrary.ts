@@ -255,7 +255,7 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       description: 'Configure a Groq chat model.',
       default_config: {
         credential_id: '',
-        model: 'llama3-70b-8192',
+        model: 'llama-3.3-70b-versatile',
         temperature: 0.7,
       },
       is_dummy: false,
