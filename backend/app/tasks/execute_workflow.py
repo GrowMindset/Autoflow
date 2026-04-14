@@ -61,46 +61,34 @@ async def _resolve_credentials(
     return resolved
 
 
-def _find_chat_model_config(
+def _find_inline_subnode_configs(
     definition: dict[str, Any],
-    ai_agent_node_id: str,
-) -> dict[str, Any] | None:
-    """
-    Looks up the chat_model node (chat_model_openai or chat_model_groq) that
-    is connected to the given ai_agent node via the 'chat_model' target handle.
-
-    Returns the runner output format that ChatModelOpenAI/GroqRunner would
-    produce, so the AIAgentRunner can find provider/model/credential_id.
-    Returns None if no connected chat_model node is found.
-    """
-    CHAT_MODEL_TYPES = {"chat_model_openai", "chat_model_groq"}
+    target_node_id: str,
+) -> list[dict[str, Any]]:
+    """Returns config sub-nodes that should execute inline before the target."""
+    supported_subnode_types = {"chat_model_openai", "chat_model_groq"}
     nodes_by_id = {n["id"]: n for n in definition.get("nodes", [])}
+    subnode_configs: list[dict[str, Any]] = []
 
     for edge in definition.get("edges", []):
-        if edge.get("target") != ai_agent_node_id:
+        if edge.get("target") != target_node_id:
             continue
-        if edge.get("targetHandle") != "chat_model":
-            continue
+
         source_id = edge.get("source")
         source_node = nodes_by_id.get(source_id)
-        if source_node is None or source_node.get("type") not in CHAT_MODEL_TYPES:
+        if source_node is None or source_node.get("type") not in supported_subnode_types:
             continue
 
-        cfg = source_node.get("config", {})
-        node_type = source_node["type"]
-        provider = "groq" if node_type == "chat_model_groq" else "openai"
-        default_model = "llama-3.3-70b-versatile" if provider == "groq" else "gpt-4o"
+        subnode_configs.append(
+            {
+                "node_id": source_id,
+                "node_type": source_node["type"],
+                "target_handle": edge.get("targetHandle"),
+                "config": source_node.get("config", {}),
+            }
+        )
 
-        return {
-            "provider": provider,
-            "model": cfg.get("model", default_model),
-            "credential_id": cfg.get("credential_id"),
-            "options": {
-                "temperature": cfg.get("temperature", 0.7),
-                "max_tokens": cfg.get("max_tokens"),
-            },
-        }
-    return None
+    return subnode_configs
 
 
 def _create_task_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -345,16 +333,10 @@ async def _run_node_test(
                 user_id=execution.user_id,
             )
 
-            # For AI agent nodes tested in isolation, inject upstream chat_model
-            # config as synthetic input so the runner can find provider/model/cred_id.
-            if node_def["type"] == "ai_agent":
-                if not isinstance(input_data, dict) or "chat_model" not in input_data:
-                    chat_model_input = _find_chat_model_config(
-                        definition=workflow.definition,
-                        ai_agent_node_id=node_id,
-                    )
-                    if chat_model_input:
-                        input_data = {**(input_data or {}), "chat_model": chat_model_input}
+            subnode_configs = _find_inline_subnode_configs(
+                definition=workflow.definition,
+                target_node_id=node_id,
+            )
 
             # Execute single node
             res = DagExecutor().execute_node(
@@ -365,7 +347,8 @@ async def _run_node_test(
                 runner_context={
                     "user_id": execution.user_id,
                     "resolved_credentials": resolved_credentials,
-                }
+                },
+                subnode_configs=subnode_configs,
             )
 
 

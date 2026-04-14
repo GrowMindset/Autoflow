@@ -16,6 +16,7 @@ class RunnerRegistry:
             "aggregate": self._build_aggregate,
             "datetime_format": self._build_datetime_format,
             "split_in": self._build_split_in,
+            "split_out": self._build_split_out,
             "ai_agent": self._build_ai_agent,
             "chat_model_openai": self._build_chat_model_openai,
             "chat_model_groq": self._build_chat_model_groq,

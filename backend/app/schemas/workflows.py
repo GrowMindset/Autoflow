@@ -87,11 +87,20 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "output_key": "",
     },
     "ai_agent": {
-        "model": "gpt-4-turbo",
         "system_prompt": "",
         "command": "",
-        "memory": "static_memory",
-        "tools": "static_tools",
+    },
+    "chat_model_openai": {
+        "credential_id": "",
+        "model": "gpt-4o",
+        "temperature": 0.7,
+        "max_tokens": None,
+    },
+    "chat_model_groq": {
+        "credential_id": "",
+        "model": "llama-3.3-70b-versatile",
+        "temperature": 0.7,
+        "max_tokens": None,
     },
 }
 

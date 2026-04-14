@@ -87,16 +87,29 @@ class DagExecutor:
         config: dict[str, Any],
         input_data: dict[str, Any] | None = None,
         runner_context: dict[str, Any] | None = None,
+        subnode_configs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Executes a single node in isolation for testing."""
         runner = self.registry.get_runner(node_type)
-        resolved_config = self._resolve_templates(config, input_data or {})
+        resolved_input = self._execute_subnodes_inline(
+            input_data=input_data,
+            subnode_configs=subnode_configs or [],
+            runner_context=runner_context or {},
+        )
+        resolved_config = self._resolve_templates(
+            config,
+            self._build_template_context(resolved_input),
+        )
         try:
-            output_data = runner.run(config=resolved_config, input_data=input_data, context=runner_context or {})
+            output_data = runner.run(
+                config=resolved_config,
+                input_data=resolved_input,
+                context=runner_context or {},
+            )
             return {
                 "node_id": node_id,
                 "node_type": node_type,
-                "input_data": input_data,
+                "input_data": resolved_input,
                 "output_data": output_data,
                 "status": "SUCCEEDED",
                 "error_message": None,
@@ -105,7 +118,7 @@ class DagExecutor:
             return {
                 "node_id": node_id,
                 "node_type": node_type,
-                "input_data": input_data,
+                "input_data": resolved_input,
                 "output_data": None,
                 "status": "FAILED",
                 "error_message": str(exc),
@@ -168,6 +181,81 @@ class DagExecutor:
         if not isinstance(input_data, dict):
             return config  # nothing to resolve against
         return {k: _resolve(v) for k, v in config.items()}
+
+    @staticmethod
+    def _build_template_context(
+        input_data: Any,
+        node_outputs: dict[str, Any] | None = None,
+    ) -> Any:
+        if not isinstance(input_data, dict):
+            return input_data
+
+        template_context = dict(input_data)
+        for node_id, output_data in (node_outputs or {}).items():
+            template_context[node_id] = output_data
+        return template_context
+
+    @staticmethod
+    def _inject_api_key(
+        sub_output: Any,
+        runner_context: dict[str, Any],
+    ) -> Any:
+        if not isinstance(sub_output, dict):
+            return sub_output
+
+        credential_id = sub_output.get("credential_id")
+        if not credential_id or sub_output.get("api_key"):
+            return sub_output
+
+        resolved_credentials: dict[str, str] = (
+            runner_context.get("resolved_credentials") or {}
+        )
+        api_key = resolved_credentials.get(str(credential_id))
+        if not api_key:
+            return sub_output
+
+        return {
+            **sub_output,
+            "api_key": api_key,
+        }
+
+    def _execute_subnodes_inline(
+        self,
+        *,
+        input_data: Any,
+        subnode_configs: list[dict[str, Any]],
+        runner_context: dict[str, Any],
+        node_outputs: dict[str, Any] | None = None,
+    ) -> Any:
+        resolved_input = input_data
+
+        for subnode in subnode_configs:
+            sub_type = subnode["node_type"]
+            sub_handle = subnode.get("target_handle")
+            sub_runner = self.registry.get_runner(sub_type)
+            template_context = self._build_template_context(resolved_input, node_outputs)
+            sub_config = self._resolve_templates(
+                subnode.get("config", {}),
+                template_context,
+            )
+
+            try:
+                sub_output = sub_runner.run(
+                    config=sub_config,
+                    input_data=None,
+                    context=runner_context,
+                )
+            except Exception:
+                sub_output = {}
+
+            sub_output = self._inject_api_key(sub_output, runner_context)
+
+            if sub_handle:
+                if not isinstance(resolved_input, dict):
+                    resolved_input = {} if resolved_input is None else {"_default": resolved_input}
+                resolved_input[sub_handle] = sub_output
+
+        return resolved_input
 
     def build_context(self, definition: dict[str, Any]) -> ExecutionContext:
         nodes = definition.get("nodes", [])
@@ -354,34 +442,26 @@ class DagExecutor:
             self._handle_merge_execution(context=context, node_id=node_id, merge_inputs=merge_data_list)
             return
 
-        # ── Inline sub-node resolution ─────────────────────────────────────────
-        # Run any config sub-nodes (chat_model_groq / chat_model_openai) that are
-        # wired into this node via a named handle.  Their output is injected into
-        # resolved_input under the targetHandle key (e.g. "chat_model") so that
-        # the parent runner (e.g. AIAgentRunner) can find provider/model/cred_id.
-        for sub_edge in context.subnode_edges.get(node_id, []):
-            sub_source_id = sub_edge["source"]
-            sub_handle = sub_edge.get("targetHandle")  # e.g. "chat_model"
-            sub_node = context.nodes_by_id[sub_source_id]
-            sub_type = sub_node["type"]
-            sub_runner = self.registry.get_runner(sub_type)
-            sub_config = sub_node.get("config", {})
-            try:
-                sub_output = sub_runner.run(
-                    config=sub_config,
-                    input_data=None,
-                    context=context.runner_context,
-                )
-            except Exception:
-                sub_output = {}
-
-            if sub_handle:
-                if not isinstance(resolved_input, dict):
-                    resolved_input = {}
-                resolved_input[sub_handle] = sub_output
+        resolved_input = self._execute_subnodes_inline(
+            input_data=resolved_input,
+            subnode_configs=[
+                {
+                    "node_id": sub_edge["source"],
+                    "node_type": context.nodes_by_id[sub_edge["source"]]["type"],
+                    "target_handle": sub_edge.get("targetHandle"),
+                    "config": context.nodes_by_id[sub_edge["source"]].get("config", {}),
+                }
+                for sub_edge in context.subnode_edges.get(node_id, [])
+            ],
+            runner_context=context.runner_context,
+            node_outputs=context.node_outputs,
+        )
 
         runner = self.registry.get_runner(node_type)
-        config = self._resolve_templates(node.get("config", {}), resolved_input)
+        config = self._resolve_templates(
+            node.get("config", {}),
+            self._build_template_context(resolved_input, context.node_outputs),
+        )
         context.node_inputs[node_id] = resolved_input
         try:
             output_data = runner.run(config=config, input_data=resolved_input, context=context.runner_context)
@@ -484,7 +564,10 @@ class DagExecutor:
             return
 
         runner = self.registry.get_runner(node_type)
-        config = node.get("config", {})
+        config = self._resolve_templates(
+            node.get("config", {}),
+            self._build_template_context(input_data, context.node_outputs),
+        )
         context.node_inputs[node_id] = input_data
         try:
             output_data = runner.run(config=config, input_data=input_data, context=context.runner_context)

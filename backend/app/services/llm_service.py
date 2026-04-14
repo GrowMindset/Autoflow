@@ -24,6 +24,8 @@ SHARED_OPERATORS = (
     "not_contains",
 )
 
+AI_CHAT_MODEL_NODE_TYPES = {"chat_model_openai", "chat_model_groq"}
+
 NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     "manual_trigger": {
         "category": "trigger",
@@ -121,7 +123,29 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "ai_agent": {
         "category": "ai",
-        "description": "AI node placeholder. Use prompt and model config keys exactly.",
+        "description": "Runs an LLM task. Use system_prompt and command config keys exactly.",
+        "rules": [
+            "Prefer pairing every ai_agent with exactly one connected chat model sub-node.",
+            "Put the main task instruction in command.",
+            "Use system_prompt for role or behavior instructions.",
+            "When the prompt should reference upstream workflow data, use {{path.to.value}} templates.",
+        ],
+    },
+    "chat_model_openai": {
+        "category": "ai",
+        "description": "OpenAI chat model configuration sub-node for ai_agent.",
+        "rules": [
+            "Connect this node to an ai_agent with targetHandle set to chat_model.",
+            "Use credential_id, model, temperature, and max_tokens only.",
+        ],
+    },
+    "chat_model_groq": {
+        "category": "ai",
+        "description": "Groq chat model configuration sub-node for ai_agent.",
+        "rules": [
+            "Connect this node to an ai_agent with targetHandle set to chat_model.",
+            "Use credential_id, model, temperature, and max_tokens only.",
+        ],
     },
 }
 
@@ -258,12 +282,15 @@ class LLMService:
             - Always include a config object, even when it is empty.
             - For dummy integration nodes, keep unresolved user-specific values as empty strings instead of inventing secrets, ids, or credentials.
             - Never invent extra config keys that are not part of the schema below.
+            - If you use ai_agent, also include exactly one connected chat_model_openai or chat_model_groq node for it.
+            - Chat model nodes are configuration sub-nodes, not normal workflow steps.
 
             Edge rules:
             - Standard linear edges may omit branch or set it to null.
             - Edges leaving if_else must set branch to "true" or "false".
             - Edges leaving switch must set branch to a case label or the default_case value.
             - sourceHandle and targetHandle should usually be null unless a frontend handle name is explicitly needed.
+            - Edges leaving chat_model_openai or chat_model_groq must target an ai_agent and set targetHandle to "chat_model".
 
             Node type list and config schemas:
             {chr(10).join(node_sections)}
@@ -292,6 +319,7 @@ class LLMService:
         cls._validate_node_types(definition)
         cls._validate_trigger_structure(definition)
         cls._validate_branch_edges(definition)
+        cls._validate_ai_subnode_structure(definition)
         return definition
 
     def _get_client(self) -> AsyncOpenAI:
@@ -405,3 +433,52 @@ class LLMService:
                         "switch edges must use a valid case label or default_case. "
                         f"Invalid edge ids: {', '.join(invalid_edges)}"
                     )
+
+    @staticmethod
+    def _validate_ai_subnode_structure(definition: WorkflowDefinition) -> None:
+        nodes_by_id = {node.id: node for node in definition.nodes}
+        incoming_edges: dict[str, list[Any]] = {node.id: [] for node in definition.nodes}
+        outgoing_edges: dict[str, list[Any]] = {node.id: [] for node in definition.nodes}
+
+        for edge in definition.edges:
+            incoming_edges.setdefault(edge.target, []).append(edge)
+            outgoing_edges.setdefault(edge.source, []).append(edge)
+
+        for node in definition.nodes:
+            if node.type not in AI_CHAT_MODEL_NODE_TYPES:
+                continue
+
+            invalid_edges = [
+                edge.id
+                for edge in outgoing_edges[node.id]
+                if nodes_by_id[edge.target].type != "ai_agent"
+                or edge.targetHandle != "chat_model"
+            ]
+            if invalid_edges:
+                raise WorkflowGenerationError(
+                    "Chat model nodes must connect only to ai_agent nodes using "
+                    "targetHandle 'chat_model'. "
+                    f"Invalid edge ids: {', '.join(invalid_edges)}"
+                )
+
+        for node in definition.nodes:
+            if node.type != "ai_agent":
+                continue
+
+            chat_model_edges = [
+                edge
+                for edge in incoming_edges[node.id]
+                if nodes_by_id[edge.source].type in AI_CHAT_MODEL_NODE_TYPES
+            ]
+            if len(chat_model_edges) != 1:
+                raise WorkflowGenerationError(
+                    f"ai_agent node '{node.id}' must have exactly one connected "
+                    "chat_model_openai or chat_model_groq sub-node."
+                )
+
+            edge = chat_model_edges[0]
+            if edge.targetHandle != "chat_model":
+                raise WorkflowGenerationError(
+                    f"ai_agent node '{node.id}' must receive its chat model on "
+                    "targetHandle 'chat_model'."
+                )

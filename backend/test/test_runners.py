@@ -1,6 +1,7 @@
 import unittest
 
 from app.execution.runners.nodes.aggregate import AggregateRunner
+from app.execution.runners.nodes.ai_agent import AIAgentRunner
 from app.execution.runners.nodes.datetime_format import DateTimeFormatRunner
 from app.execution.runners.nodes.dummy import DummyNodeRunner
 from app.execution.runners.nodes.filter import FilterRunner
@@ -15,6 +16,125 @@ from app.execution.runners.triggers.webhook_trigger import WebhookTriggerRunner
 
 
 class RunnerTests(unittest.TestCase):
+    def test_ai_agent_runner_returns_output_key(self):
+        runner = AIAgentRunner()
+        runner._call_openai = lambda **_: "hello world"
+
+        result = runner.run(
+            config={
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "credential_id": "cred-1",
+                "system_prompt": "You are helpful.",
+                "command": "Say hello",
+            },
+            input_data=None,
+            context={"resolved_credentials": {"cred-1": "secret"}},
+        )
+
+        self.assertEqual(result["output"], "hello world")
+        self.assertNotIn("ai_response", result)
+
+    def test_ai_agent_runner_prefers_inline_chat_model_api_key(self):
+        runner = AIAgentRunner()
+        captured = {}
+
+        def fake_call_openai(**kwargs):
+            captured.update(kwargs)
+            return "done"
+
+        runner._call_openai = fake_call_openai
+        runner.run(
+            config={"command": "Hello"},
+            input_data={
+                "chat_model": {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "credential_id": "cred-inline",
+                    "api_key": "inline-secret",
+                    "options": {"temperature": 0.1},
+                }
+            },
+            context={"resolved_credentials": {"cred-inline": "context-secret"}},
+        )
+
+        self.assertEqual(captured["api_key"], "inline-secret")
+
+    def test_ai_agent_runner_maps_authentication_error(self):
+        runner = AIAgentRunner()
+
+        class AuthenticationError(Exception):
+            pass
+
+        def fake_call_openai(**kwargs):
+            raise AuthenticationError("bad key")
+
+        runner._call_openai = fake_call_openai
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Invalid API key. Check your saved credential.",
+        ):
+            runner.run(
+                config={
+                    "provider": "openai",
+                    "credential_id": "cred-1",
+                    "command": "Hello",
+                },
+                input_data=None,
+                context={"resolved_credentials": {"cred-1": "secret"}},
+            )
+
+    def test_ai_agent_runner_maps_rate_limit_error(self):
+        runner = AIAgentRunner()
+
+        class RateLimitError(Exception):
+            pass
+
+        def fake_call_groq(**kwargs):
+            raise RateLimitError("slow down")
+
+        runner._call_groq = fake_call_groq
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Rate limit reached. Wait and retry.",
+        ):
+            runner.run(
+                config={
+                    "provider": "groq",
+                    "credential_id": "cred-1",
+                    "command": "Hello",
+                },
+                input_data=None,
+                context={"resolved_credentials": {"cred-1": "secret"}},
+            )
+
+    def test_ai_agent_runner_maps_timeout_error(self):
+        runner = AIAgentRunner()
+
+        class APITimeoutError(Exception):
+            pass
+
+        def fake_call_openai(**kwargs):
+            raise APITimeoutError("timed out")
+
+        runner._call_openai = fake_call_openai
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Request timed out. Try again.",
+        ):
+            runner.run(
+                config={
+                    "provider": "openai",
+                    "credential_id": "cred-1",
+                    "command": "Hello",
+                },
+                input_data=None,
+                context={"resolved_credentials": {"cred-1": "secret"}},
+            )
+
     def test_if_else_runner_true_branch(self):
         runner = IfElseRunner()
         result = runner.run(

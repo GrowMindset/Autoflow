@@ -42,6 +42,58 @@ def _valid_definition() -> dict:
 
 
 def _definition_for_prompt_kind(kind: str) -> dict:
+    if kind == "manual_ai_agent_openai":
+        return {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "manual_trigger",
+                    "label": "Manual Trigger",
+                    "position": {"x": 100, "y": 150},
+                    "config": {},
+                },
+                {
+                    "id": "n2",
+                    "type": "ai_agent",
+                    "label": "Draft Reply",
+                    "position": {"x": 360, "y": 150},
+                    "config": {
+                        "system_prompt": "You are a helpful support assistant.",
+                        "command": "Reply to {{customer.message}}",
+                    },
+                },
+                {
+                    "id": "n3",
+                    "type": "chat_model_openai",
+                    "label": "OpenAI Chat Model",
+                    "position": {"x": 360, "y": 330},
+                    "config": {
+                        "credential_id": "",
+                        "model": "gpt-4o",
+                        "temperature": 0.7,
+                        "max_tokens": None,
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "target": "n2",
+                    "sourceHandle": None,
+                    "targetHandle": None,
+                    "branch": None,
+                },
+                {
+                    "id": "e2",
+                    "source": "n3",
+                    "target": "n2",
+                    "sourceHandle": None,
+                    "targetHandle": "chat_model",
+                    "branch": None,
+                },
+            ],
+        }
     if kind == "webhook_telegram":
         return {
             "nodes": [
@@ -186,6 +238,7 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Return ONLY one valid JSON object.", prompt)
         self.assertIn('Edges leaving if_else must set branch to "true" or "false".', prompt)
         self.assertIn("Edges leaving switch must set branch to a case label", prompt)
+        self.assertIn('targetHandle to "chat_model"', prompt)
 
     def test_validate_generated_workflow_accepts_definition_wrapper(self) -> None:
         raw_content = json.dumps({"definition": _valid_definition()})
@@ -243,6 +296,35 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
             LLMService.validate_generated_workflow(json.dumps(payload))
 
         self.assertIn("if_else edges must use branch", str(context.exception))
+
+    def test_validate_generated_workflow_accepts_ai_agent_with_chat_model_subnode(self) -> None:
+        raw_content = json.dumps({"definition": _definition_for_prompt_kind("manual_ai_agent_openai")})
+
+        definition = LLMService.validate_generated_workflow(raw_content)
+
+        actual_node_types = {node.type for node in definition.nodes}
+        self.assertEqual(
+            actual_node_types,
+            {"manual_trigger", "ai_agent", "chat_model_openai"},
+        )
+
+    def test_validate_generated_workflow_rejects_ai_agent_without_chat_model_subnode(self) -> None:
+        payload = _definition_for_prompt_kind("manual_ai_agent_openai")
+        payload["edges"] = [payload["edges"][0]]
+
+        with self.assertRaises(WorkflowGenerationError) as context:
+            LLMService.validate_generated_workflow(json.dumps(payload))
+
+        self.assertIn("must have exactly one connected", str(context.exception))
+
+    def test_validate_generated_workflow_rejects_invalid_chat_model_target_handle(self) -> None:
+        payload = _definition_for_prompt_kind("manual_ai_agent_openai")
+        payload["edges"][1]["targetHandle"] = None
+
+        with self.assertRaises(WorkflowGenerationError) as context:
+            LLMService.validate_generated_workflow(json.dumps(payload))
+
+        self.assertIn("targetHandle 'chat_model'", str(context.exception))
 
     def test_validate_generated_workflow_rejects_non_existent_edge_source_cleanly(self) -> None:
         payload = _valid_definition()
@@ -307,6 +389,11 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
                 "Create a form-based workflow that filters active items",
                 "form_filter",
                 {"form_trigger", "filter"},
+            ),
+            (
+                "When I manually run the workflow, use AI to draft a reply to the customer's message",
+                "manual_ai_agent_openai",
+                {"manual_trigger", "ai_agent", "chat_model_openai"},
             ),
         ]
 

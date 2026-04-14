@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import unittest
 from uuid import UUID, uuid4
+from unittest.mock import patch
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -11,10 +12,12 @@ from app.core.auth import create_access_token
 from app.core.database import get_db
 from app.main import app
 from app.models import Base
+from app.models.credential import AppCredential
 from app.models.executions import Execution
 from app.models.nodes_executions import NodeExecution
 from app.models.user import User
 from app.models.workflows import Workflow
+from app.execution.runners.nodes.ai_agent import AIAgentRunner
 from app.tasks import execute_workflow as execute_workflow_tasks
 from test.asgi_client import ASGITestClient
 
@@ -124,3 +127,153 @@ class NodeExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(node_execs[0].node_id, node_id)
             self.assertEqual(node_execs[0].node_type, "datetime_format")
             self.assertEqual(node_execs[0].input_data, {"date": "2024-01-01"})
+
+    async def test_run_execution_resolves_ai_credentials_and_persists_output(self) -> None:
+        user = await self._create_user("ai-node@example.com")
+        credential_id = uuid4()
+
+        async with self.session_factory() as session:
+            workflow = Workflow(
+                user_id=user.id,
+                name="AI Workflow",
+                definition={
+                    "nodes": [
+                        {
+                            "id": "trigger",
+                            "type": "manual_trigger",
+                            "config": {},
+                        },
+                        {
+                            "id": "agent",
+                            "type": "ai_agent",
+                            "config": {
+                                "system_prompt": "You are replying to {{trigger.customer.name}} using {{chat_model.model}}.",
+                                "command": "Reply to {{trigger.customer.name}} about {{trigger.customer.topic}}",
+                            },
+                        },
+                        {
+                            "id": "chat_cfg",
+                            "type": "chat_model_openai",
+                            "config": {
+                                "credential_id": str(credential_id),
+                                "model": "gpt-4o-mini",
+                                "temperature": 0.25,
+                                "max_tokens": 64,
+                            },
+                        },
+                    ],
+                    "edges": [
+                        {"id": "e1", "source": "trigger", "target": "agent"},
+                        {
+                            "id": "e2",
+                            "source": "chat_cfg",
+                            "target": "agent",
+                            "targetHandle": "chat_model",
+                        },
+                    ],
+                },
+            )
+            session.add(workflow)
+            await session.flush()
+            session.add(
+                AppCredential(
+                    id=credential_id,
+                    user_id=user.id,
+                    app_name="openai",
+                    token_data={"api_key": "encrypted-openai-token"},
+                )
+            )
+            session.add(
+                Execution(
+                    workflow_id=workflow.id,
+                    user_id=user.id,
+                    status="PENDING",
+                    triggered_by="manual",
+                    started_at=None,
+                    finished_at=None,
+                    error_message=None,
+                )
+            )
+            await session.commit()
+
+            execution = await session.scalar(
+                select(Execution).where(Execution.workflow_id == workflow.id)
+            )
+            self.assertIsNotNone(execution)
+            execution_id = execution.id
+
+        captured: dict[str, object] = {}
+
+        def fake_call_openai(**kwargs):
+            captured.update(kwargs)
+            return "AI says hello"
+
+        with (
+            patch("app.core.security.decrypt_data", return_value="decrypted-openai-key") as decrypt_mock,
+            patch.object(AIAgentRunner, "_call_openai", side_effect=fake_call_openai),
+        ):
+            await execute_workflow_tasks._run_execution(
+                execution_id=str(execution_id),
+                initial_payload={
+                    "customer": {
+                        "name": "Asha",
+                        "topic": "order status",
+                    }
+                },
+                start_node_id="trigger",
+            )
+
+        decrypt_mock.assert_called_once_with("encrypted-openai-token")
+        self.assertEqual(captured["api_key"], "decrypted-openai-key")
+        self.assertEqual(captured["model"], "gpt-4o-mini")
+        self.assertEqual(
+            captured["system_prompt"],
+            "You are replying to Asha using gpt-4o-mini.",
+        )
+        self.assertEqual(
+            captured["command"],
+            "Reply to Asha about order status",
+        )
+
+        async with self.session_factory() as session:
+            execution = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution)
+            self.assertEqual(execution.status, "SUCCEEDED")
+
+            rows = (
+                await session.execute(
+                    select(NodeExecution)
+                    .where(NodeExecution.execution_id == execution_id)
+                    .order_by(NodeExecution.node_id)
+                )
+            ).scalars().all()
+
+        rows_by_id = {row.node_id: row for row in rows}
+        self.assertEqual(rows_by_id["trigger"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["agent"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["agent"].error_message, None)
+        self.assertEqual(
+            rows_by_id["agent"].input_data["chat_model"],
+            {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "credential_id": str(credential_id),
+                "api_key": "decrypted-openai-key",
+                "options": {
+                    "temperature": 0.25,
+                    "max_tokens": 64,
+                },
+            },
+        )
+        self.assertEqual(
+            rows_by_id["agent"].output_data,
+            {
+                "output": "AI says hello",
+                "ai_metadata": {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "system_prompt": "You are replying to Asha using gpt-4o-mini.",
+                    "temperature": 0.25,
+                },
+            },
+        )

@@ -1,6 +1,34 @@
 import unittest
 
 from app.execution.dag_executor import DagExecutor
+from app.execution.registry import RunnerRegistry
+from app.execution.runners.nodes.ai_agent import AIAgentRunner
+
+
+class _RecordingRunner:
+    def __init__(self, result=None, calls=None):
+        self.result = result or {}
+        self.calls = calls if calls is not None else []
+
+    def run(self, config, input_data, context=None):
+        self.calls.append(
+            {
+                "config": config,
+                "input_data": input_data,
+                "context": context or {},
+            }
+        )
+        if callable(self.result):
+            return self.result(config, input_data, context or {})
+        return self.result
+
+
+class _FakeRegistry:
+    def __init__(self, runners):
+        self.runners = runners
+
+    def get_runner(self, node_type):
+        return self.runners[node_type]
 
 
 class DagExecutorTests(unittest.TestCase):
@@ -32,6 +60,10 @@ class DagExecutorTests(unittest.TestCase):
 
         self.assertEqual(context.indegree, {"n1": 0, "n2": 1, "n3": 1})
         self.assertEqual(context.topological_order, ["n1", "n2", "n3"])
+
+    def test_runner_registry_registers_ai_agent_runner(self):
+        runner = RunnerRegistry().get_runner("ai_agent")
+        self.assertIsInstance(runner, AIAgentRunner)
 
     def test_build_context_rejects_cycles(self):
         definition = {
@@ -428,6 +460,173 @@ class DagExecutorTests(unittest.TestCase):
         self.assertEqual(result["node_outputs"]["n2"]["dummy_node_executed"], True)
         self.assertEqual(result["node_outputs"]["n2"]["dummy_node_type"], "send_gmail_message")
         self.assertEqual(result["node_outputs"]["n3"], {"order_count": 2})
+
+    def test_execute_inline_subnodes_before_ai_agent_and_injects_api_key(self):
+        call_order: list[str] = []
+
+        class ChatModelRunner:
+            def run(self, config, input_data, context=None):
+                call_order.append("chat_model")
+                return {
+                    "provider": "openai",
+                    "model": config["model"],
+                    "credential_id": config["credential_id"],
+                    "options": {
+                        "temperature": config["temperature"],
+                        "max_tokens": config["max_tokens"],
+                    },
+                }
+
+        class AgentRunner:
+            def run(self, config, input_data, context=None):
+                call_order.append("ai_agent")
+                return {
+                    "seen_config": config,
+                    "seen_input": input_data,
+                }
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: {
+                            "triggered": True,
+                            "trigger_type": "manual",
+                            **(input_data or {}),
+                        }
+                    ),
+                    "chat_model_openai": ChatModelRunner(),
+                    "ai_agent": AgentRunner(),
+                }
+            )
+        )
+        definition = {
+            "nodes": [
+                {"id": "trigger", "type": "manual_trigger", "config": {}},
+                {
+                    "id": "agent",
+                    "type": "ai_agent",
+                    "config": {
+                        "system_prompt": "System {{trigger.customer.name}}",
+                        "command": "Reply to {{trigger.customer.name}}",
+                    },
+                },
+                {
+                    "id": "chat_cfg",
+                    "type": "chat_model_openai",
+                    "config": {
+                        "credential_id": "cred-1",
+                        "model": "gpt-4o-mini",
+                        "temperature": 0.2,
+                        "max_tokens": 128,
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "trigger", "target": "agent"},
+                {
+                    "id": "e2",
+                    "source": "chat_cfg",
+                    "target": "agent",
+                    "targetHandle": "chat_model",
+                },
+            ],
+        }
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"customer": {"name": "Asha"}},
+            runner_context={"resolved_credentials": {"cred-1": "secret-key"}},
+        )
+
+        self.assertEqual(call_order, ["chat_model", "ai_agent"])
+        self.assertEqual(
+            result["node_inputs"]["agent"]["chat_model"],
+            {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "credential_id": "cred-1",
+                "api_key": "secret-key",
+                "options": {
+                    "temperature": 0.2,
+                    "max_tokens": 128,
+                },
+            },
+        )
+        self.assertEqual(
+            result["node_outputs"]["agent"]["seen_config"],
+            {
+                "system_prompt": "System Asha",
+                "command": "Reply to Asha",
+            },
+        )
+
+    def test_execute_node_runs_inline_subnodes_before_runner(self):
+        call_order: list[str] = []
+
+        class ChatModelRunner:
+            def run(self, config, input_data, context=None):
+                call_order.append("chat_model")
+                return {
+                    "provider": "groq",
+                    "model": config["model"],
+                    "credential_id": config["credential_id"],
+                    "options": {},
+                }
+
+        agent_runner = _RecordingRunner(
+            result=lambda config, input_data, _ctx: {
+                "config": config,
+                "input": input_data,
+            },
+            calls=[],
+        )
+
+        class OrderedAgentRunner:
+            def run(self, config, input_data, context=None):
+                call_order.append("ai_agent")
+                return agent_runner.run(config, input_data, context)
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "chat_model_groq": ChatModelRunner(),
+                    "ai_agent": OrderedAgentRunner(),
+                }
+            )
+        )
+
+        result = executor.execute_node(
+            node_id="agent",
+            node_type="ai_agent",
+            config={"command": "Summarize {{customer.name}}", "system_prompt": "Helper"},
+            input_data={"customer": {"name": "Mina"}},
+            runner_context={"resolved_credentials": {"cred-9": "groq-key"}},
+            subnode_configs=[
+                {
+                    "node_id": "chat_cfg",
+                    "node_type": "chat_model_groq",
+                    "target_handle": "chat_model",
+                    "config": {
+                        "credential_id": "cred-9",
+                        "model": "llama-3.3-70b-versatile",
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual(call_order, ["chat_model", "ai_agent"])
+        self.assertEqual(
+            result["input_data"]["chat_model"],
+            {
+                "provider": "groq",
+                "model": "llama-3.3-70b-versatile",
+                "credential_id": "cred-9",
+                "api_key": "groq-key",
+                "options": {},
+            },
+        )
+        self.assertEqual(result["output_data"]["config"]["command"], "Summarize Mina")
 
 
 if __name__ == "__main__":
