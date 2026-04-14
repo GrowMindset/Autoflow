@@ -17,7 +17,7 @@ interface AIWorkflowChatPanelProps {
 const EXAMPLE_PROMPTS = [
   'Create a workflow that classifies support ticket sentiment and routes negative ones to Telegram.',
   'Generate a form trigger flow that summarizes feedback with AI and logs the result.',
-  'Add AI Agent after my trigger and return a short customer reply message.',
+  'Create a workflow that generates the linkedIn post that takes form trigger and takes values post title, tone, type of post and generates post and sent it to linkedIn post',
 ];
 
 const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
