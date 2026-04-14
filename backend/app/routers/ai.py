@@ -34,5 +34,13 @@ async def generate_workflow(
                 "message": str(exc),
             },
         ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "workflow_generation_upstream_error",
+                "message": str(exc) or "Failed to generate workflow from AI provider.",
+            },
+        ) from exc
 
     return GenerateWorkflowResponse(definition=definition)

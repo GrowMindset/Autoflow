@@ -175,6 +175,7 @@ class LLMService:
             raise WorkflowGenerationError("Prompt must not be empty.")
 
         client = self._get_client()
+        generation_temperature = self._resolve_generation_temperature()
 
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self.system_prompt},
@@ -195,16 +196,19 @@ class LLMService:
                     system_prompt=self.system_prompt,
                     user_prompt=user_prompt,
                     model=self.model,
-                    temperature=0.1,
+                    temperature=generation_temperature,
                     max_tokens=None,
                 )
             else:
-                response = await client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=0.1,
-                    response_format={"type": "json_object"},
-                )
+                chat_kwargs: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": messages,
+                    "response_format": {"type": "json_object"},
+                }
+                if generation_temperature is not None:
+                    chat_kwargs["temperature"] = generation_temperature
+
+                response = await client.chat.completions.create(**chat_kwargs)
                 raw_content = self._extract_response_text(response)
 
             try:
@@ -371,6 +375,29 @@ class LLMService:
             if text_parts:
                 return "".join(text_parts)
         raise WorkflowGenerationError("Model response did not include text content.")
+
+    def _resolve_generation_temperature(self) -> float | None:
+        configured_temperature = os.getenv("OPENAI_WORKFLOW_TEMPERATURE")
+        if configured_temperature is None:
+            return self._default_temperature_for_model(self.model)
+
+        normalized_temperature = configured_temperature.strip()
+        if not normalized_temperature:
+            return None
+
+        try:
+            return float(normalized_temperature)
+        except ValueError as exc:
+            raise WorkflowGenerationError(
+                "OPENAI_WORKFLOW_TEMPERATURE must be numeric or empty."
+            ) from exc
+
+    @staticmethod
+    def _default_temperature_for_model(model: str) -> float | None:
+        normalized_model = model.strip().lower()
+        if normalized_model.startswith("gpt-5"):
+            return None
+        return 0.1
 
     @staticmethod
     def _validate_node_types(definition: WorkflowDefinition) -> None:
