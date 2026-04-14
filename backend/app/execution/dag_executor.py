@@ -248,8 +248,6 @@ class DagExecutor:
             except Exception:
                 sub_output = {}
 
-            sub_output = self._inject_api_key(sub_output, runner_context)
-
             if sub_handle:
                 if not isinstance(resolved_input, dict):
                     resolved_input = {} if resolved_input is None else {"_default": resolved_input}

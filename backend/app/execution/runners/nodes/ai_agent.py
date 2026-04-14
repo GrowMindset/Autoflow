@@ -85,15 +85,21 @@ class AIAgentRunner:
         except Exception as exc:
             raise ValueError(self._format_provider_error(exc)) from exc
 
-        return {
-            "output": response_text,
-            "ai_metadata": {
-                "provider": provider,
-                "model": model,
-                "system_prompt": system_prompt,
-                "temperature": temperature,
-            },
+        result = {}
+        if isinstance(input_data, dict):
+            # Preserve upstream context but strip subnode configs to keep payload clean
+            result.update({k: v for k, v in input_data.items() if k not in ("chat_model", "memory", "tool")})
+
+        result["ai_response"] = response_text
+        result["output"] = response_text
+        result["ai_metadata"] = {
+            "provider": provider,
+            "model": model,
+            "system_prompt": system_prompt,
+            "temperature": temperature,
         }
+
+        return result
 
     # ─────────────────────────────────────────────────────────────────────────
     # Private helpers
