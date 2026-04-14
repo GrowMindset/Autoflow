@@ -12,7 +12,7 @@ class BaseLLMProvider(abc.ABC):
         system_prompt: str,
         user_prompt: str,
         model: str,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int | None,
     ) -> str:
         raise NotImplementedError
@@ -26,7 +26,7 @@ def _build_chat_kwargs(
     model: str,
     system_prompt: str,
     user_prompt: str,
-    temperature: float,
+    temperature: float | None,
     max_tokens: int | None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
@@ -35,8 +35,9 @@ def _build_chat_kwargs(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": temperature,
     }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     if max_tokens:
         kwargs["max_tokens"] = int(max_tokens)
     return kwargs
@@ -72,23 +73,37 @@ class OpenAIProvider(BaseLLMProvider):
         system_prompt: str,
         user_prompt: str,
         model: str,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int | None,
     ) -> str:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=self.api_key)
-        response = await _maybe_await(
-            client.chat.completions.create(
-                **_build_chat_kwargs(
-                    model=model,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-            )
+        chat_kwargs = _build_chat_kwargs(
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
+        try:
+            response = await _maybe_await(
+                client.chat.completions.create(**chat_kwargs)
+            )
+        except Exception as exc:
+            # Some models (e.g. GPT-5 family) reject custom temperature values.
+            error_message = str(exc).lower()
+            if (
+                chat_kwargs.get("temperature") is not None
+                and "temperature" in error_message
+                and ("unsupported" in error_message or "does not support" in error_message)
+            ):
+                chat_kwargs.pop("temperature", None)
+                response = await _maybe_await(
+                    client.chat.completions.create(**chat_kwargs)
+                )
+            else:
+                raise
         return _extract_response_text(response)
 
 
@@ -101,7 +116,7 @@ class GroqProvider(BaseLLMProvider):
         system_prompt: str,
         user_prompt: str,
         model: str,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int | None,
     ) -> str:
         from groq import Groq

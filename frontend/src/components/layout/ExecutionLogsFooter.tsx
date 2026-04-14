@@ -102,9 +102,16 @@ const ExecutionLogsFooter: React.FC<ExecutionLogsFooterProps> = ({
         </div>
       )}
 
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onToggle();
+          }
+        }}
         className={`relative flex h-[52px] w-full items-center justify-between border-b px-6 text-left transition-colors ${
           isDark
             ? 'border-slate-800 bg-slate-900'
@@ -165,7 +172,7 @@ const ExecutionLogsFooter: React.FC<ExecutionLogsFooterProps> = ({
             </span>
           )}
         </div>
-      </button>
+      </div>
 
       {isExpanded && (
         <div
