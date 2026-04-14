@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from textwrap import dedent
 from typing import Any
 
@@ -155,6 +157,12 @@ class WorkflowGenerationError(ValueError):
     """Raised when the model response cannot be converted into a valid workflow."""
 
 
+@dataclass(slots=True)
+class GeneratedWorkflowResult:
+    definition: WorkflowDefinition
+    name: str | None = None
+
+
 class LLMService:
     def __init__(
         self,
@@ -169,7 +177,7 @@ class LLMService:
         self.client = client
         self.system_prompt = self.build_workflow_generation_system_prompt()
 
-    async def generate_workflow_definition(self, prompt: str) -> WorkflowDefinition:
+    async def generate_workflow_definition(self, prompt: str) -> GeneratedWorkflowResult:
         cleaned_prompt = prompt.strip()
         if not cleaned_prompt:
             raise WorkflowGenerationError("Prompt must not be empty.")
@@ -212,7 +220,10 @@ class LLMService:
                 raw_content = self._extract_response_text(response)
 
             try:
-                return self.validate_generated_workflow(raw_content)
+                definition, suggested_name = self.validate_generated_workflow(raw_content)
+                if not suggested_name:
+                    suggested_name = self._derive_workflow_name(cleaned_prompt)
+                return GeneratedWorkflowResult(definition=definition, name=suggested_name)
             except WorkflowGenerationError as exc:
                 last_error = exc
                 if not isinstance(client, BaseLLMProvider):
@@ -265,7 +276,7 @@ class LLMService:
             Do not add explanation, notes, comments, or prose.
             The top-level object must be either:
             1. a workflow definition object with keys "nodes" and "edges", or
-            2. an object with a single "definition" key whose value is that workflow definition.
+            2. an object with "definition" and optional "name" keys where definition is the workflow and name is the workflow title.
 
             Required workflow shape:
             {{
@@ -320,7 +331,9 @@ class LLMService:
         ).strip()
 
     @classmethod
-    def validate_generated_workflow(cls, raw_content: str) -> WorkflowDefinition:
+    def validate_generated_workflow(
+        cls, raw_content: str
+    ) -> tuple[WorkflowDefinition, str | None]:
         if not raw_content.strip():
             raise WorkflowGenerationError("Model response was empty.")
 
@@ -328,6 +341,9 @@ class LLMService:
             payload = json.loads(raw_content)
         except json.JSONDecodeError as exc:
             raise WorkflowGenerationError(f"Model returned invalid JSON: {exc.msg}") from exc
+
+        if not isinstance(payload, Mapping):
+            raise WorkflowGenerationError("Workflow definition must be a JSON object.")
 
         definition_payload = payload.get("definition", payload)
         if not isinstance(definition_payload, Mapping):
@@ -342,7 +358,52 @@ class LLMService:
         cls._validate_trigger_structure(definition)
         cls._validate_branch_edges(definition)
         cls._validate_ai_subnode_structure(definition)
-        return definition
+        return definition, cls._extract_workflow_name(payload)
+
+    @staticmethod
+    def _extract_workflow_name(payload: Mapping[str, Any]) -> str | None:
+        for key in ("name", "workflow_name", "title"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                normalized = " ".join(value.split())
+                if normalized:
+                    return normalized[:100]
+        return None
+
+    @staticmethod
+    def _derive_workflow_name(prompt: str) -> str:
+        base_prompt = prompt.split("\n\nCurrent canvas summary:", 1)[0]
+        text = re.sub(r"\s+", " ", base_prompt.strip())
+        if not text:
+            return "AI Generated Workflow"
+
+        lower = text.lower()
+        prefixes = (
+            "create a workflow that",
+            "create workflow that",
+            "build a workflow that",
+            "build workflow that",
+            "generate a workflow that",
+            "generate workflow that",
+            "create a workflow to",
+            "create workflow to",
+            "build a workflow to",
+            "build workflow to",
+            "generate a workflow to",
+            "generate workflow to",
+        )
+        for prefix in prefixes:
+            if lower.startswith(prefix):
+                text = text[len(prefix) :].strip()
+                break
+
+        text = text.strip(" .,:;-")
+        if not text:
+            return "AI Generated Workflow"
+
+        words = text.split()
+        compact = " ".join(words[:9]) if len(words) > 9 else text
+        return compact[:100]
 
     def _get_client(self) -> Any:
         if self.client is not None:

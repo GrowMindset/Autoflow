@@ -37,18 +37,22 @@ const DeletableEdge: React.FC<EdgeProps> = ({
 
   // Apply path-aware styling
   const isActive = data?.isActivePath;
+  const executionState = data?.executionState as 'idle' | 'running' | 'success' | 'failed' | undefined;
+  const isFailedPath = executionState === 'failed';
+  const isRunningPath = executionState === 'running';
   const edgeStyle = {
     ...style,
-    stroke: isActive ? '#10b981' : (style?.stroke || '#94a3b8'),
-    strokeWidth: isActive ? 4 : (style?.strokeWidth || 2),
-    opacity: isActive ? 1 : 0.6,
+    stroke: isFailedPath ? '#f43f5e' : isActive ? '#10b981' : (style?.stroke || '#94a3b8'),
+    strokeWidth: (isActive || isFailedPath) ? 4 : (style?.strokeWidth || 2),
+    opacity: (isActive || isFailedPath) ? 1 : 0.6,
+    filter: isRunningPath ? 'drop-shadow(0 0 6px rgba(16,185,129,0.45))' : undefined,
   };
 
   // Prepare markerEnd based on its type (string or object)
   const markerEndConfig = typeof markerEnd === 'object' && markerEnd !== null
     ? {
       ...(markerEnd as any),
-      color: isActive ? '#10b981' : ((markerEnd as any).color || '#94a3b8'),
+      color: isFailedPath ? '#f43f5e' : isActive ? '#10b981' : ((markerEnd as any).color || '#94a3b8'),
     }
     : markerEnd;
 

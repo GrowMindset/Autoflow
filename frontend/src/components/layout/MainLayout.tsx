@@ -18,7 +18,9 @@ interface Workflow {
   is_published?: boolean;
 }
 
-const AI_CHAT_HISTORY_SESSION_KEY = 'autoflow_ai_chat_history_v1';
+type ChatHistoryByWorkflow = Record<string, Message[]>;
+
+const AI_CHAT_HISTORY_SESSION_KEY = 'autoflow_ai_chat_history_v2';
 const AUTO_SAVE_DEBOUNCE_MS = 1200;
 
 const MainLayout: React.FC = () => {
@@ -31,8 +33,9 @@ const MainLayout: React.FC = () => {
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
 
   // AI Chat & Resize State
-  const [chatMessages, setChatMessages] = useState<Message[]>([]);
+  const [chatMessagesByWorkflow, setChatMessagesByWorkflow] = useState<ChatHistoryByWorkflow>({});
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [reviewedWorkflowSignature, setReviewedWorkflowSignature] = useState<string | null>(null);
   const [chatPanelWidth, setChatPanelWidth] = useState(400);
   const chatResizingRef = useRef(false);
   const chatStartXRef = useRef(0);
@@ -154,7 +157,9 @@ const MainLayout: React.FC = () => {
     try {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        setChatMessages(parsed);
+        setChatMessagesByWorkflow({ new: parsed.slice(-40) });
+      } else if (parsed && typeof parsed === 'object') {
+        setChatMessagesByWorkflow(parsed as ChatHistoryByWorkflow);
       }
     } catch (error) {
       console.warn('Could not restore AI chat history from session storage:', error);
@@ -162,11 +167,18 @@ const MainLayout: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    sessionStorage.setItem(
-      AI_CHAT_HISTORY_SESSION_KEY,
-      JSON.stringify(chatMessages.slice(-40))
+    const compacted = Object.entries(chatMessagesByWorkflow).reduce<ChatHistoryByWorkflow>(
+      (acc, [workflowId, messages]) => {
+        if (!Array.isArray(messages) || messages.length === 0) {
+          return acc;
+        }
+        acc[workflowId] = messages.slice(-40);
+        return acc;
+      },
+      {}
     );
-  }, [chatMessages]);
+    sessionStorage.setItem(AI_CHAT_HISTORY_SESSION_KEY, JSON.stringify(compacted));
+  }, [chatMessagesByWorkflow]);
 
   useEffect(() => {
     (window as any).openNodePalette = () => setIsRightSidebarOpen(true);
@@ -178,6 +190,20 @@ const MainLayout: React.FC = () => {
   const currentWorkflow = currentWorkflowId === 'new'
     ? { id: 'new', name: newWorkflowDraftName, is_published: false }
     : workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };
+  const activeChatScopeId = currentWorkflowId || 'new';
+  const chatMessages = chatMessagesByWorkflow[activeChatScopeId] || [];
+  const getWorkflowSignature = useCallback((definition: any) => {
+    try {
+      return JSON.stringify(definition || {});
+    } catch (_error) {
+      return '';
+    }
+  }, []);
+
+  const clearAiReviewState = useCallback(() => {
+    (window as any).clearAiWorkflowPreview?.();
+    setReviewedWorkflowSignature(null);
+  }, []);
 
   const isPublished = currentWorkflow.is_published || false;
   const footerOffset = logsExpanded ? logsPanelHeight : FOOTER_COLLAPSED_HEIGHT;
@@ -200,10 +226,12 @@ const MainLayout: React.FC = () => {
     }
   }, [currentWorkflow.name]);
 
-  const onNewWorkflow = useCallback(() => {
+  const createNewWorkflowDraft = useCallback(() => {
     // They will get an ID once saved to the backend.
     clearAutoSaveTimeout();
+    clearAiReviewState();
     setCurrentWorkflowId('new');
+    setChatMessagesByWorkflow((prev) => ({ ...prev, new: [] }));
     setNewWorkflowDraftName('Untitled Workflow');
     setCurrentDescription('');
     lastSavedDefinitionRef.current = JSON.stringify({ nodes: [], edges: [] });
@@ -216,7 +244,7 @@ const MainLayout: React.FC = () => {
     setExecutionState('idle');
     setLastExecutionDuration(undefined);
     toast.success('Started a fresh workflow draft');
-  }, [clearAutoSaveTimeout]);
+  }, [clearAutoSaveTimeout, clearAiReviewState]);
 
   const onRenameWorkflow = useCallback((id: string, newName: string) => {
     if (id === 'new') {
@@ -232,6 +260,7 @@ const MainLayout: React.FC = () => {
       toast.error('Invalid workflow file');
       return;
     }
+    clearAiReviewState();
 
     // Update current workflow in list or create a "new" draft if current is 'new'
     if (currentWorkflowId === 'new') {
@@ -250,14 +279,15 @@ const MainLayout: React.FC = () => {
     }
 
     toast.success('Workflow data loaded. Click "Save Changes" to persist.');
-  }, [currentWorkflowId, setWorkflows, clearAutoSaveTimeout]);
+  }, [currentWorkflowId, setWorkflows, clearAutoSaveTimeout, clearAiReviewState]);
 
   const onSelectWorkflow = useCallback(async (id: string) => {
     if (id === 'new') {
-      onNewWorkflow();
+      createNewWorkflowDraft();
       return;
     }
 
+    clearAiReviewState();
     setCurrentWorkflowId(id);
     setCurrentExecutionId(null);
     setCurrentExecutionDetail(null);
@@ -278,9 +308,15 @@ const MainLayout: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [onNewWorkflow, clearAutoSaveTimeout]);
+  }, [createNewWorkflowDraft, clearAutoSaveTimeout, clearAiReviewState]);
   const saveWorkflow = useCallback(async ({ silent = false, force = false }: { silent?: boolean; force?: boolean } = {}) => {
     if (!(window as any).getCanvasWorkflowData) return;
+    if ((window as any).isAiWorkflowPreviewActive?.()) {
+      if (!silent) {
+        toast.error('Accept or discard AI preview before saving.');
+      }
+      return;
+    }
 
     const workflowData = (window as any).getCanvasWorkflowData(currentWorkflow.name);
     const savePayload = {
@@ -322,6 +358,18 @@ const MainLayout: React.FC = () => {
 
       // If it was a new workflow, switch to the newly created ID
       if (currentWorkflowId === 'new' && savedResult.id) {
+        setChatMessagesByWorkflow((prev) => {
+          const draftMessages = prev.new || [];
+          if (draftMessages.length === 0) {
+            return prev;
+          }
+          const existing = prev[savedResult.id] || [];
+          return {
+            ...prev,
+            [savedResult.id]: [...existing, ...draftMessages].slice(-40),
+            new: [],
+          };
+        });
         setCurrentWorkflowId(savedResult.id);
         window.setTimeout(() => {
           (window as any).loadCanvasWorkflowData?.(definition);
@@ -418,6 +466,9 @@ const MainLayout: React.FC = () => {
   }, [currentWorkflowId, isPublished]);
 
   const handleDeleteWorkflow = async (id: string) => {
+    if (id === currentWorkflowId) {
+      clearAiReviewState();
+    }
     await toast.promise(
       workflowService.deleteWorkflow(id),
       {
@@ -438,12 +489,14 @@ const MainLayout: React.FC = () => {
           (window as any).loadCanvasWorkflowData(full.definition);
         }
       } else {
-        onNewWorkflow();
+        createNewWorkflowDraft();
       }
     }
   };
 
   const handleSendMessage = useCallback(async (content: string) => {
+    clearAiReviewState();
+    const scopeId = currentWorkflowId || 'new';
     const userMsg: Message = {
       id: Date.now().toString(),
       role: 'user',
@@ -451,7 +504,10 @@ const MainLayout: React.FC = () => {
       timestamp: new Date().toISOString(),
     };
 
-    setChatMessages(prev => [...prev, userMsg]);
+    setChatMessagesByWorkflow((prev) => ({
+      ...prev,
+      [scopeId]: [...(prev[scopeId] || []), userMsg].slice(-40),
+    }));
     setIsAiLoading(true);
 
     try {
@@ -465,9 +521,13 @@ const MainLayout: React.FC = () => {
         role: 'assistant',
         content: response.message,
         timestamp: new Date().toISOString(),
-        ...(response.workflow ? { workflow: response.workflow } : {})
+        ...(response.workflow ? { workflow: response.workflow } : {}),
+        ...(response.workflowName ? { workflowName: response.workflowName } : {}),
       } as any;
-      setChatMessages(prev => [...prev, assistantMsg]);
+      setChatMessagesByWorkflow((prev) => ({
+        ...prev,
+        [scopeId]: [...(prev[scopeId] || []), assistantMsg].slice(-40),
+      }));
     } catch (error: any) {
       const fallback = 'AI workflow generation failed. Please try again.';
       const detail = error?.response?.data?.detail;
@@ -479,9 +539,32 @@ const MainLayout: React.FC = () => {
     } finally {
       setIsAiLoading(false);
     }
-  }, []);
+  }, [clearAiReviewState, currentWorkflow.name, currentWorkflowId]);
 
-  const handleApplyAiWorkflow = useCallback((workflow: any) => {
+  const normalizeAiWorkflowPayload = useCallback((workflowPayload: any) => {
+    const workflowDefinition = workflowPayload?.definition || workflowPayload;
+    const suggestedName =
+      typeof workflowPayload?.name === 'string' && workflowPayload.name.trim().length > 0
+        ? workflowPayload.name.trim().slice(0, 100)
+        : '';
+    const signature = getWorkflowSignature(workflowDefinition);
+    return { workflowDefinition, suggestedName, signature };
+  }, [getWorkflowSignature]);
+
+  const applyWorkflowName = useCallback((suggestedName: string) => {
+    if (!suggestedName) return;
+    if (currentWorkflowId === 'new') {
+      setNewWorkflowDraftName(suggestedName);
+      return;
+    }
+    setWorkflows((prev) =>
+      prev.map((workflow) =>
+        workflow.id === currentWorkflowId ? { ...workflow, name: suggestedName } : workflow
+      )
+    );
+  }, [currentWorkflowId]);
+
+  const handleApplyAiWorkflow = useCallback((workflowPayload: any) => {
     const isDirty = (window as any).isCanvasDirty?.();
 
     if (isDirty) {
@@ -490,10 +573,76 @@ const MainLayout: React.FC = () => {
       }
     }
 
+    const { workflowDefinition, suggestedName } = normalizeAiWorkflowPayload(workflowPayload);
+
     if ((window as any).applyAiWorkflow) {
-      (window as any).applyAiWorkflow(workflow);
-      toast.success('AI Workflow applied! Review and save your changes.');
+      (window as any).applyAiWorkflow(workflowDefinition);
+      applyWorkflowName(suggestedName);
+      clearAiReviewState();
+      toast.success(
+        suggestedName
+          ? `AI Workflow applied as "${suggestedName}". Review and save your changes.`
+          : 'AI Workflow applied! Review and save your changes.'
+      );
     }
+  }, [normalizeAiWorkflowPayload, applyWorkflowName, clearAiReviewState]);
+
+  const handleReviewAiWorkflow = useCallback((workflowPayload: any) => {
+    const { workflowDefinition, suggestedName, signature } = normalizeAiWorkflowPayload(workflowPayload);
+    if (!workflowDefinition) {
+      toast.error('Cannot review empty workflow.');
+      return;
+    }
+    if (typeof (window as any).previewAiWorkflow !== 'function') {
+      toast.error('Preview is not available right now.');
+      return;
+    }
+    const reviewed = (window as any).previewAiWorkflow(workflowDefinition, { name: suggestedName });
+    if (reviewed === false) {
+      toast.error('Could not start workflow preview.');
+      return;
+    }
+    setReviewedWorkflowSignature(signature);
+    toast.success('Preview loaded on canvas. Accept to apply changes.');
+  }, [normalizeAiWorkflowPayload]);
+
+  const handleAcceptReviewedWorkflow = useCallback((workflowPayload: any) => {
+    const { workflowDefinition, suggestedName, signature } = normalizeAiWorkflowPayload(workflowPayload);
+    if (!workflowDefinition) {
+      toast.error('No workflow to accept.');
+      return;
+    }
+
+    if (reviewedWorkflowSignature && reviewedWorkflowSignature !== signature) {
+      const started = (window as any).previewAiWorkflow?.(workflowDefinition, { name: suggestedName });
+      if (started === false) {
+        toast.error('Could not refresh preview for this workflow.');
+        return;
+      }
+      setReviewedWorkflowSignature(signature);
+      toast('Preview switched. Click accept again to apply this one.', { icon: 'ℹ️' });
+      return;
+    }
+
+    const applied = (window as any).acceptAiWorkflowPreview?.();
+    if (!applied) {
+      handleApplyAiWorkflow(workflowPayload);
+      return;
+    }
+
+    applyWorkflowName(suggestedName);
+    setReviewedWorkflowSignature(null);
+    toast.success(
+      suggestedName
+        ? `Workflow accepted as "${suggestedName}". Review and save your changes.`
+        : 'Workflow accepted. Review and save your changes.'
+    );
+  }, [normalizeAiWorkflowPayload, reviewedWorkflowSignature, handleApplyAiWorkflow, applyWorkflowName]);
+
+  const handleDiscardReviewedWorkflow = useCallback(() => {
+    (window as any).discardAiWorkflowPreview?.();
+    setReviewedWorkflowSignature(null);
+    toast('AI preview discarded.', { icon: 'ℹ️' });
   }, []);
 
   return (
@@ -512,7 +661,7 @@ const MainLayout: React.FC = () => {
         workflows={workflows}
         currentWorkflowId={currentWorkflowId}
         onSelectWorkflow={onSelectWorkflow}
-        onNewWorkflow={onNewWorkflow}
+        onNewWorkflow={createNewWorkflowDraft}
         onDeleteWorkflow={handleDeleteWorkflow}
         isCollapsed={isLeftSidebarCollapsed}
         onToggleCollapse={() => setIsLeftSidebarCollapsed(!isLeftSidebarCollapsed)}
@@ -595,7 +744,10 @@ const MainLayout: React.FC = () => {
             onClose={() => setIsAiAssistantOpen(false)}
             messages={chatMessages}
             onSendMessage={handleSendMessage}
-            onApplyWorkflow={handleApplyAiWorkflow}
+            onReviewWorkflow={handleReviewAiWorkflow}
+            onAcceptReviewedWorkflow={handleAcceptReviewedWorkflow}
+            onDiscardReviewedWorkflow={handleDiscardReviewedWorkflow}
+            reviewedWorkflowSignature={reviewedWorkflowSignature}
             isLoading={isAiLoading}
             width={chatPanelWidth}
             onResizeStart={handleChatResizeStart}

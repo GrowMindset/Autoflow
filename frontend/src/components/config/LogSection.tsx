@@ -1,5 +1,5 @@
 import React from 'react';
-import JsonTree from './JsonTree';
+import DataView from './DataView';
 
 interface LogSectionProps {
   title: string;
@@ -14,11 +14,7 @@ const LogSection: React.FC<LogSectionProps> = ({ title, data, icon }) => (
       <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500">{title}</span>
     </div>
     <div className="rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/20 p-2 shadow-sm transition-colors">
-      {data ? (
-        <JsonTree data={data} />
-      ) : (
-        <span className="text-[10px] text-slate-300 dark:text-slate-600 italic px-2 py-4 block">No data recorded</span>
-      )}
+      <DataView data={data} emptyMessage="No data recorded" />
     </div>
   </div>
 );

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Send, Sparkles, User, Bot, Loader2, Check, ArrowRight } from 'lucide-react';
+import { X, Send, Sparkles, User, Bot, Loader2, Check, Eye, CheckCircle2, XCircle } from 'lucide-react';
 import { Message } from '../../services/aiService';
 
 interface AIWorkflowChatPanelProps {
@@ -7,7 +7,10 @@ interface AIWorkflowChatPanelProps {
   onClose: () => void;
   messages: Message[];
   onSendMessage: (content: string) => void;
-  onApplyWorkflow: (workflow: any) => void;
+  onReviewWorkflow: (workflow: any) => void;
+  onAcceptReviewedWorkflow: (workflow: any) => void;
+  onDiscardReviewedWorkflow: () => void;
+  reviewedWorkflowSignature: string | null;
   isLoading: boolean;
   width: number;
   onResizeStart: (e: React.MouseEvent<HTMLDivElement>) => void;
@@ -25,7 +28,10 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
   onClose,
   messages,
   onSendMessage,
-  onApplyWorkflow,
+  onReviewWorkflow,
+  onAcceptReviewedWorkflow,
+  onDiscardReviewedWorkflow,
+  reviewedWorkflowSignature,
   isLoading,
   width,
   onResizeStart,
@@ -134,13 +140,47 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
                       <Check size={14} className="font-bold" />
                       <span className="text-[11px] font-bold uppercase tracking-wider">Workflow Generated</span>
                     </div>
-                    <button
-                      onClick={() => onApplyWorkflow((msg as any).workflow)}
-                      className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20 active:scale-[0.98]"
-                    >
-                      Apply to Canvas
-                      <ArrowRight size={14} />
-                    </button>
+                    {(() => {
+                      const workflowPayload = {
+                        definition: (msg as any).workflow,
+                        name: (msg as any).workflowName,
+                      };
+                      const signature = JSON.stringify((msg as any).workflow || {});
+                      const isReviewed = reviewedWorkflowSignature === signature;
+
+                      if (isReviewed) {
+                        return (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => onAcceptReviewedWorkflow(workflowPayload)}
+                              className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 active:scale-[0.98]"
+                            >
+                              Accept Workflow
+                              <CheckCircle2 size={14} />
+                            </button>
+                            <button
+                              onClick={onDiscardReviewedWorkflow}
+                              className="py-2 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 hover:bg-slate-50 dark:hover:bg-slate-700"
+                            >
+                              Discard
+                              <XCircle size={13} />
+                            </button>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="flex items-center">
+                          <button
+                            onClick={() => onReviewWorkflow(workflowPayload)}
+                            className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20 active:scale-[0.98]"
+                          >
+                            Review on Canvas
+                            <Eye size={14} />
+                          </button>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>

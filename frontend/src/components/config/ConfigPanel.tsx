@@ -2,34 +2,63 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import { WorkflowNode } from '../../types/workflow';
-import JsonTree from './JsonTree';
 import ConfigForm from './ConfigForm';
 import LogSection from './LogSection';
+import DataView from './DataView';
 import { executionService } from '../../services/executionService';
 import api from '../../services/api';
+
+const DEFAULT_LEFT_PANEL_WIDTH = 350;
+const DEFAULT_RIGHT_PANEL_WIDTH = 400;
 
 interface ConfigPanelProps {
   node: WorkflowNode;
   workflowId: string;
   upstreamData: any;
+  previousNodes: WorkflowNode[];
+  nextNodes: WorkflowNode[];
   onClose: () => void;
   onUpdate: (id: string, config: Record<string, any>, output?: any) => void;
+  onNavigateNode: (nodeId: string) => void;
 }
 
 
 
-const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamData, onClose, onUpdate }) => {
+const ConfigPanel: React.FC<ConfigPanelProps> = ({
+  node,
+  workflowId,
+  upstreamData,
+  previousNodes,
+  nextNodes,
+  onClose,
+  onUpdate,
+  onNavigateNode,
+}) => {
   const [output, setOutput] = useState<any>(node.data.last_output || null);
   const [isExecuting, setIsExecuting] = useState(false);
   const [isLeftVisible, setIsLeftVisible] = useState(true);
   const [isRightVisible, setIsRightVisible] = useState(true);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(DEFAULT_LEFT_PANEL_WIDTH);
+  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [isSubmittingForm, setIsSubmittingForm] = useState(false);
+  const [openNavMenu, setOpenNavMenu] = useState<'prev' | 'next' | null>(null);
+  const resizingSideRef = React.useRef<'left' | 'right' | null>(null);
+  const resizeStartXRef = React.useRef(0);
+  const resizeStartWidthRef = React.useRef(0);
 
   const formFields = useMemo(
     () => Array.isArray(node.data.config?.fields) ? node.data.config.fields : [],
     [node.data.config],
   );
+
+  useEffect(() => {
+    setOutput(node.data.last_output || null);
+  }, [node.id, node.data.last_output]);
+
+  useEffect(() => {
+    setOpenNavMenu(null);
+  }, [node.id]);
 
   useEffect(() => {
     if (node.data.type !== 'form_trigger') {
@@ -83,6 +112,45 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
     if (typeof output?.error === 'string' && output.error.trim()) return output.error;
     return null;
   }, [node.data.type, node.data.last_execution_result, output]);
+
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!resizingSideRef.current) return;
+
+      const delta = event.clientX - resizeStartXRef.current;
+      if (resizingSideRef.current === 'left') {
+        const nextWidth = Math.min(620, Math.max(240, resizeStartWidthRef.current + delta));
+        setLeftPanelWidth(nextWidth);
+      } else {
+        const nextWidth = Math.min(700, Math.max(260, resizeStartWidthRef.current - delta));
+        setRightPanelWidth(nextWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (!resizingSideRef.current) return;
+      resizingSideRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, []);
+
+  const handleResizeStart = (event: React.MouseEvent<HTMLDivElement>, side: 'left' | 'right') => {
+    resizingSideRef.current = side;
+    resizeStartXRef.current = event.clientX;
+    resizeStartWidthRef.current = side === 'left' ? leftPanelWidth : rightPanelWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
 
   // Sync state if node changes externally
   const handleConfigChange = (key: string, value: any) => {
@@ -180,9 +248,103 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
     }
   };
 
+  const handleNavClick = (direction: 'prev' | 'next') => {
+    const options = direction === 'prev' ? previousNodes : nextNodes;
+    if (options.length === 0) return;
+    if (options.length === 1) {
+      onNavigateNode(options[0].id);
+      return;
+    }
+    setOpenNavMenu((current) => (current === direction ? null : direction));
+  };
+
   return createPortal(
-    <div className="fixed inset-0 z-[9999] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 md:p-8 animate-in fade-in zoom-in-95 duration-300">
-      <div className="bg-white dark:bg-slate-900 w-full h-[92vh] max-w-[1700px] rounded-[2.5rem] shadow-[0_40px_100px_rgba(0,0,0,0.5)] flex flex-col overflow-hidden border border-white/20 dark:border-slate-800 transition-colors duration-300">
+    <div
+      className="fixed inset-0 z-[9999] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 md:p-8 animate-in fade-in zoom-in-95 duration-300"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          setOpenNavMenu(null);
+          onClose();
+        }
+      }}
+    >
+      <div className="relative w-full h-[92vh] max-w-[1700px]">
+
+        {/* Side Navigation - vertically centered */}
+        <div className="absolute inset-y-0 -left-14 md:-left-20 z-30 flex items-center pointer-events-none">
+          <div className="relative pointer-events-auto">
+            <button
+              type="button"
+              onClick={() => handleNavClick('prev')}
+              disabled={previousNodes.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-white/95 dark:bg-slate-900/95 text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-300 shadow-sm enabled:hover:border-blue-300 enabled:hover:text-blue-600 enabled:dark:hover:text-blue-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title={previousNodes.length > 0 ? `Open previous node config (${previousNodes.length} upstream)` : 'No previous node connected'}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+              Prev
+              <span className="text-[9px] text-slate-400 dark:text-slate-500">({previousNodes.length})</span>
+              {previousNodes.length > 1 && (
+                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+              )}
+            </button>
+            {openNavMenu === 'prev' && previousNodes.length > 1 && (
+              <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 w-72 max-h-64 overflow-y-auto rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl z-30 p-2">
+                {previousNodes.map((connectedNode) => (
+                  <button
+                    key={connectedNode.id}
+                    type="button"
+                    onClick={() => {
+                      onNavigateNode(connectedNode.id);
+                      setOpenNavMenu(null);
+                    }}
+                    className="w-full text-left rounded-xl px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    <div className="text-xs font-bold text-slate-700 dark:text-slate-200 truncate">{connectedNode.data.label}</div>
+                    <div className="text-[10px] text-slate-400 dark:text-slate-500 uppercase tracking-wide">{connectedNode.data.type}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="absolute inset-y-0 -right-14 md:-right-20 z-30 flex items-center pointer-events-none">
+          <div className="relative pointer-events-auto">
+            <button
+              type="button"
+              onClick={() => handleNavClick('next')}
+              disabled={nextNodes.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-white/95 dark:bg-slate-900/95 text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-300 shadow-sm enabled:hover:border-blue-300 enabled:hover:text-blue-600 enabled:dark:hover:text-blue-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title={nextNodes.length > 0 ? `Open next node config (${nextNodes.length} downstream)` : 'No next node connected'}
+            >
+              <span className="text-[9px] text-slate-400 dark:text-slate-500">({nextNodes.length})</span>
+              Next
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
+              {nextNodes.length > 1 && (
+                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+              )}
+            </button>
+            {openNavMenu === 'next' && nextNodes.length > 1 && (
+              <div className="absolute right-full top-1/2 -translate-y-1/2 mr-2 w-72 max-h-64 overflow-y-auto rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl z-30 p-2">
+                {nextNodes.map((connectedNode) => (
+                  <button
+                    key={connectedNode.id}
+                    type="button"
+                    onClick={() => {
+                      onNavigateNode(connectedNode.id);
+                      setOpenNavMenu(null);
+                    }}
+                    className="w-full text-left rounded-xl px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    <div className="text-xs font-bold text-slate-700 dark:text-slate-200 truncate">{connectedNode.data.label}</div>
+                    <div className="text-[10px] text-slate-400 dark:text-slate-500 uppercase tracking-wide">{connectedNode.data.type}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 w-full h-full rounded-[2.5rem] shadow-[0_40px_100px_rgba(0,0,0,0.5)] flex flex-col overflow-hidden border border-white/20 dark:border-slate-800 transition-colors duration-300">
 
         {/* Header */}
         <div className="h-20 px-8 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 z-20">
@@ -248,7 +410,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
         <div className="flex-1 flex overflow-hidden relative bg-slate-50/20 dark:bg-slate-950/20">
 
           {/* Column 1: Input Data / Global Execution Logs */}
-          <div className={`flex flex-col border-r border-slate-100 dark:border-slate-800 transition-all duration-500 ease-in-out bg-white dark:bg-slate-900 ${isLeftVisible ? 'w-[350px] opacity-100' : 'w-12 opacity-80'}`}>
+          <div
+            className={`relative flex flex-col border-r border-slate-100 dark:border-slate-800 transition-all duration-300 ease-in-out bg-white dark:bg-slate-900 ${isLeftVisible ? 'opacity-100' : 'w-12 opacity-80'}`}
+            style={isLeftVisible ? { width: `${leftPanelWidth}px` } : undefined}
+          >
             <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900 group select-none">
               {isLeftVisible ? (
                 <>
@@ -300,7 +465,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                     )}
                   </div>
                 ) : upstreamData ? (
-                  <JsonTree data={upstreamData} />
+                  <DataView data={upstreamData} emptyMessage="No input data available" />
                 ) : (
                   <div className="h-full flex flex-col items-center justify-center text-slate-300 p-8 text-center space-y-4">
                     <div className="p-4 rounded-full bg-slate-50 border border-slate-100">
@@ -309,6 +474,16 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                     <p className="text-xs font-medium leading-relaxed">No input data available. <br />Connect an upstream node.</p>
                   </div>
                 )}
+              </div>
+            )}
+            {isLeftVisible && (
+              <div
+                onMouseDown={(event) => handleResizeStart(event, 'left')}
+                onDoubleClick={() => setLeftPanelWidth(DEFAULT_LEFT_PANEL_WIDTH)}
+                className="group absolute top-0 right-0 h-full w-3 cursor-col-resize flex items-center justify-center bg-slate-100/60 dark:bg-slate-800/70 hover:bg-blue-500/10 active:bg-blue-500/20 transition-colors"
+                title="Drag to resize input panel. Double-click to reset width."
+              >
+                <span className="h-14 w-[2px] rounded-full bg-slate-300 dark:bg-slate-600 group-hover:bg-blue-500 transition-colors" />
               </div>
             )}
           </div>
@@ -453,7 +628,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
           </div>
 
           {/* Column 3: Output Data / Execution Result */}
-          <div className={`flex flex-col border-l border-slate-100 dark:border-slate-800 transition-all duration-500 ease-in-out bg-white dark:bg-slate-900 ${isRightVisible ? 'w-[400px] opacity-100' : 'w-12 opacity-80'}`}>
+          <div
+            className={`relative flex flex-col border-l border-slate-100 dark:border-slate-800 transition-all duration-300 ease-in-out bg-white dark:bg-slate-900 ${isRightVisible ? 'opacity-100' : 'w-12 opacity-80'}`}
+            style={isRightVisible ? { width: `${rightPanelWidth}px` } : undefined}
+          >
             <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900 group select-none">
               {!isRightVisible ? (
                 <button onClick={() => setIsRightVisible(true)} className="w-full h-full flex items-center justify-center hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-300 dark:text-slate-700 hover:text-blue-500 transition-all">
@@ -516,7 +694,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                         </div>
                       </div>
                     )}
-                    <JsonTree data={output} />
+                    <DataView data={output} emptyMessage="No output data recorded" />
                   </div>
                 ) : (
                   <div className="h-full flex flex-col items-center justify-center text-slate-300 p-8 text-center space-y-4">
@@ -528,8 +706,19 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ node, workflowId, upstreamDat
                 )}
               </div>
             )}
+            {isRightVisible && (
+              <div
+                onMouseDown={(event) => handleResizeStart(event, 'right')}
+                onDoubleClick={() => setRightPanelWidth(DEFAULT_RIGHT_PANEL_WIDTH)}
+                className="group absolute top-0 left-0 h-full w-3 cursor-col-resize flex items-center justify-center bg-slate-100/60 dark:bg-slate-800/70 hover:bg-blue-500/10 active:bg-blue-500/20 transition-colors"
+                title="Drag to resize output panel. Double-click to reset width."
+              >
+                <span className="h-14 w-[2px] rounded-full bg-slate-300 dark:bg-slate-600 group-hover:bg-blue-500 transition-colors" />
+              </div>
+            )}
           </div>
 
+        </div>
         </div>
       </div>
     </div>,

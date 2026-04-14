@@ -11,6 +11,7 @@ class GenerateWorkflowRequest(BaseModel):
 
 class GenerateWorkflowResponse(BaseModel):
     definition: WorkflowDefinition
+    name: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class AIErrorDetail(BaseModel):

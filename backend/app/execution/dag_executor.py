@@ -1,3 +1,5 @@
+import json
+import re
 from collections import deque
 from typing import Any
 
@@ -25,11 +27,17 @@ class NodeExecutionError(Exception):
         node_type: str,
         input_data: Any,
         original_exception: Exception,
+        visited_nodes: list[str] | None = None,
+        node_inputs: dict[str, Any] | None = None,
+        node_outputs: dict[str, Any] | None = None,
     ) -> None:
         self.node_id = node_id
         self.node_type = node_type
         self.input_data = input_data
         self.original_exception = original_exception
+        self.visited_nodes = visited_nodes or []
+        self.node_inputs = node_inputs or {}
+        self.node_outputs = node_outputs or {}
         super().__init__(str(original_exception))
 
 
@@ -59,11 +67,19 @@ class DagExecutor:
                 f"Start node '{chosen_start_node_id}' must be a trigger node"
             )
 
-        self._execute_from_node(
-            context=context,
-            node_id=chosen_start_node_id,
-            input_data=initial_payload,
-        )
+        try:
+            self._execute_from_node(
+                context=context,
+                node_id=chosen_start_node_id,
+                input_data=initial_payload,
+            )
+        except NodeExecutionError as exc:
+            # Preserve partial progress so callers can persist exactly how far
+            # the workflow ran before failing.
+            exc.visited_nodes = list(context.visited_nodes)
+            exc.node_inputs = dict(context.node_inputs)
+            exc.node_outputs = dict(context.node_outputs)
+            raise
 
         terminal_outputs = {
             node_id: context.node_outputs[node_id]
@@ -130,46 +146,160 @@ class DagExecutor:
         input_data: Any,
     ) -> dict[str, Any]:
         """
-        Recursively walk every string value in *config* and replace
-        ``{{path.to.key}}`` placeholders with the matching value from
-        *input_data*.
+        Resolve ``{{ ... }}`` expressions recursively in node config.
 
-        Rules:
-        - If the entire string is one placeholder and the resolved value is
-          not a string (e.g. a number or dict), the raw Python value is
-          returned so downstream runners receive the correct type.
-        - Unresolvable paths are left as-is (the original ``{{...}}`` text).
-        - Non-string config values (numbers, booleans, lists, dicts) are
-          recursed into but scalars are not touched.
+        Supported expression shapes (common n8n-like forms):
+        - ``{{ field }}``
+        - ``{{ nested.path }}``
+        - ``{{ items[0].price }}``
+        - ``{{ $json.field }}``
+        - ``{{ $json["field"] }}``
+        - ``{{ $node["node_id"].json.some.path }}``
+
+        Behavior:
+        - Whole-string placeholder keeps original type (dict/list/number/bool).
+        - Embedded placeholder in larger text is stringified.
+        - Unresolvable paths are preserved as-is.
         """
-        import re
+        _MISSING = object()
+        _PATTERN = re.compile(r"\{\{\s*(.+?)\s*\}\}")
 
-        def _get(path: str, data: Any) -> Any:
-            """Navigate dot-separated path into *data*."""
-            for part in path.strip().split('.'):
-                if isinstance(data, dict) and part in data:
-                    data = data[part]
-                elif isinstance(data, list):
-                    try:
-                        data = data[int(part)]
-                    except (ValueError, IndexError):
-                        return None
-                else:
-                    return None
-            return data
+        def _normalize_expression(expression: str) -> str:
+            expr = expression.strip()
 
-        _PATTERN = re.compile(r'\{\{([^}]+)\}\}')
+            # n8n-ish node reference: $node["some_id"].json.path
+            node_match = re.fullmatch(
+                r"""\$node\[(["'])(.*?)\1\]\.json(.*)""",
+                expr,
+            )
+            if node_match:
+                node_id = node_match.group(2).strip()
+                suffix = (node_match.group(3) or "").strip()
+                expr = f"{node_id}{suffix}"
+
+            # $json / json aliases for current payload
+            if expr.startswith("$json"):
+                expr = expr[len("$json") :]
+            elif expr == "json" or expr.startswith("json.") or expr.startswith("json["):
+                expr = expr[len("json") :]
+
+            if expr.startswith("."):
+                expr = expr[1:]
+
+            return expr.strip()
+
+        def _parse_path(path: str) -> list[str | int]:
+            tokens: list[str | int] = []
+            i = 0
+            while i < len(path):
+                ch = path[i]
+
+                if ch == ".":
+                    i += 1
+                    continue
+
+                if ch == "[":
+                    i += 1
+                    while i < len(path) and path[i].isspace():
+                        i += 1
+                    if i >= len(path):
+                        break
+
+                    if path[i] in {"'", '"'}:
+                        quote = path[i]
+                        i += 1
+                        start = i
+                        while i < len(path) and path[i] != quote:
+                            if path[i] == "\\" and i + 1 < len(path):
+                                i += 2
+                            else:
+                                i += 1
+                        token = path[start:i]
+                        i += 1 if i < len(path) else 0
+                        while i < len(path) and path[i].isspace():
+                            i += 1
+                        if i < len(path) and path[i] == "]":
+                            i += 1
+                        tokens.append(token)
+                        continue
+
+                    start = i
+                    while i < len(path) and path[i] != "]":
+                        i += 1
+                    raw = path[start:i].strip()
+                    if i < len(path) and path[i] == "]":
+                        i += 1
+
+                    if not raw:
+                        continue
+                    if raw.isdigit() or (raw.startswith("-") and raw[1:].isdigit()):
+                        tokens.append(int(raw))
+                    else:
+                        tokens.append(raw.strip("'\""))
+                    continue
+
+                start = i
+                while i < len(path) and path[i] not in ".[":
+                    i += 1
+                token = path[start:i].strip()
+                if token:
+                    tokens.append(token)
+
+            return tokens
+
+        def _get(expression: str, data: Any) -> Any:
+            normalized = _normalize_expression(expression)
+            if normalized == "":
+                return data
+
+            tokens = _parse_path(normalized)
+            if not tokens:
+                return _MISSING
+
+            current = data
+            for token in tokens:
+                if isinstance(token, int):
+                    if isinstance(current, list) and -len(current) <= token < len(current):
+                        current = current[token]
+                    else:
+                        return _MISSING
+                    continue
+
+                if isinstance(current, dict) and token in current:
+                    current = current[token]
+                    continue
+
+                if isinstance(current, list) and token.isdigit():
+                    index = int(token)
+                    if -len(current) <= index < len(current):
+                        current = current[index]
+                        continue
+
+                return _MISSING
+
+            return current
+
+        def _stringify(value: Any) -> str:
+            if isinstance(value, (dict, list)):
+                return json.dumps(value, ensure_ascii=False)
+            if value is None:
+                return "null"
+            return str(value)
 
         def _resolve(value: Any) -> Any:
             if isinstance(value, str):
-                # Fast-path: entire value is one placeholder
-                full = _PATTERN.fullmatch(value)
+                # Fast path: keep real type if the whole string is one expression.
+                full = _PATTERN.fullmatch(value.strip())
                 if full:
                     result = _get(full.group(1), input_data)
-                    return value if result is None else result
-                # Partial substitution — always returns a string
+                    return value if result is _MISSING else result
+
                 return _PATTERN.sub(
-                    lambda m: str(_get(m.group(1), input_data) or m.group(0)),
+                    lambda m: (
+                        m.group(0)
+                        if (resolved := _get(m.group(1), input_data)) is _MISSING
+                        else _stringify(resolved)
+                    ),
                     value,
                 )
             if isinstance(value, dict):
@@ -178,8 +308,6 @@ class DagExecutor:
                 return [_resolve(item) for item in value]
             return value
 
-        if not isinstance(input_data, dict):
-            return config  # nothing to resolve against
         return {k: _resolve(v) for k, v in config.items()}
 
     @staticmethod
@@ -187,12 +315,20 @@ class DagExecutor:
         input_data: Any,
         node_outputs: dict[str, Any] | None = None,
     ) -> Any:
-        if not isinstance(input_data, dict):
-            return input_data
+        template_context: dict[str, Any] = {}
+        if isinstance(input_data, dict):
+            template_context.update(input_data)
 
-        template_context = dict(input_data)
+        # Aliases for current upstream payload.
+        template_context.setdefault("previous_output", input_data)
+        template_context.setdefault("json", input_data)
+
+        node_alias_context: dict[str, Any] = {}
         for node_id, output_data in (node_outputs or {}).items():
             template_context[node_id] = output_data
+            node_alias_context[node_id] = {"json": output_data}
+
+        template_context.setdefault("node", node_alias_context)
         return template_context
 
     @staticmethod

@@ -45,21 +45,17 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
   // ── Leaf primitive value ──────────────────────────────────────────────────
   if (typeof data !== 'object') {
     const displayStr = typeof data === 'string' ? `"${data}"` : String(data);
-    const ph = `{{${path}}}`;
 
     return (
       <div
         draggable
         onDragStart={(e) => onValueDragStart(e, data)}
         title={`Drag to copy literal value`}
-        className="inline-flex items-center gap-1.5 group cursor-grab active:cursor-grabbing hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded px-1 transition-colors"
+        className="relative inline-flex items-center group cursor-grab active:cursor-grabbing hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded px-1 transition-colors"
       >
         <span className="text-emerald-600 dark:text-emerald-400 font-mono text-xs">{displayStr}</span>
-        <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
+        <span className="pointer-events-none absolute -left-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
           <GripIcon className="text-emerald-400" />
-          <span className="text-[9px] bg-emerald-500 text-white px-1.5 py-0.5 rounded font-mono leading-none max-w-[80px] truncate">
-            {displayStr}
-          </span>
         </span>
       </div>
     );
@@ -73,7 +69,7 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
   }
 
   return (
-    <div className={`font-mono text-xs ${isRoot ? 'p-2' : 'ml-4'}`}>
+    <div className={`font-mono text-xs ${isRoot ? 'p-1' : 'ml-4'}`}>
       <div
         className="flex items-center gap-1 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 rounded select-none"
         onClick={() => setIsExpanded(!isExpanded)}
@@ -89,7 +85,6 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
         <div className="mt-1 border-l border-slate-200 dark:border-slate-800 ml-1.5 pl-3 space-y-1">
           {keys.map((key) => {
             const currentPath = path ? `${path}.${key}` : key;
-            const childIsLeaf = typeof data[key] !== 'object' || data[key] === null;
             const ph = `{{${currentPath}}}`;
 
             return (
@@ -100,14 +95,16 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
                     draggable
                     onDragStart={(e) => onKeyDragStart(e, currentPath)}
                     title={`Drag key → insert ${ph}`}
-                    className="inline-flex items-center gap-1 group/key cursor-grab active:cursor-grabbing hover:bg-amber-50 dark:hover:bg-amber-900/20 px-1 rounded transition-colors"
+                    className="relative inline-flex items-center group/key cursor-grab active:cursor-grabbing hover:bg-amber-50 dark:hover:bg-amber-900/20 px-1 rounded transition-colors"
                   >
-                    <GripIcon className="text-amber-400 opacity-0 group-hover/key:opacity-100 transition-opacity" />
+                    <span className="pointer-events-none absolute -left-3 top-1/2 -translate-y-1/2 opacity-0 group-hover/key:opacity-100 transition-opacity">
+                      <GripIcon className="text-amber-400" />
+                    </span>
                     <span className="text-amber-700 dark:text-amber-500 font-bold whitespace-nowrap">
                       {key}:
                     </span>
                     {/* Tooltip badge showing what will be inserted */}
-                    <span className="opacity-0 group-hover/key:opacity-100 transition-opacity text-[9px] bg-amber-500 text-white px-1.5 py-0.5 rounded font-mono leading-none">
+                    <span className="pointer-events-none absolute left-full ml-1 top-1/2 -translate-y-1/2 opacity-0 group-hover/key:opacity-100 transition-opacity text-[9px] bg-amber-500 text-white px-1.5 py-0.5 rounded font-mono leading-none max-w-[220px] truncate">
                       {ph}
                     </span>
                   </span>

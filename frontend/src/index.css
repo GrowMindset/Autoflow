@@ -31,3 +31,35 @@ body {
   background-color: #334155; /* slate-700 */
   border-color: #0f172a; /* slate-900 */
 }
+
+@keyframes ai-canvas-progress {
+  0% {
+    transform: translateX(-180%);
+  }
+  100% {
+    transform: translateX(360%);
+  }
+}
+
+.ai-canvas-progress {
+  animation: ai-canvas-progress 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes ai-node-updated-glow {
+  0% {
+    transform: scale(0.98);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.36);
+  }
+  45% {
+    transform: scale(1.02);
+    box-shadow: 0 0 0 10px rgba(59, 130, 246, 0.14);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}
+
+.react-flow__node.ai-node-updated > div {
+  animation: ai-node-updated-glow 1s ease-in-out 2;
+}

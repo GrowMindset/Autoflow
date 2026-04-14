@@ -238,6 +238,26 @@ async def _run_execution(
                 await db.commit()
             except NodeExecutionError as exc:
                 now = _utcnow()
+                visited_node_ids = set(exc.visited_nodes or [])
+
+                # Persist the successfully completed path first.
+                for node_id in exc.visited_nodes or []:
+                    node_def = next((n for n in workflow.definition.get("nodes", []) if n["id"] == node_id), None)
+                    if node_def is None:
+                        continue
+                    row = _upsert_node_row(
+                        node_execution_by_id=node_execution_by_id,
+                        execution=execution,
+                        db=db,
+                        node_id=node_id,
+                        node_type=node_def["type"],
+                    )
+                    row.status = "SUCCEEDED"
+                    row.input_data = (exc.node_inputs or {}).get(node_id)
+                    row.output_data = (exc.node_outputs or {}).get(node_id)
+                    row.error_message = None
+                    row.started_at = execution.started_at
+                    row.finished_at = now
 
                 for node in workflow.definition.get("nodes", []):
                     node_id = node["id"]
@@ -256,6 +276,13 @@ async def _run_execution(
                         row.error_message = str(exc)
                         row.started_at = execution.started_at
                         row.finished_at = now
+                    elif node_id not in visited_node_ids:
+                        row.status = "PENDING"
+                        row.input_data = None
+                        row.output_data = None
+                        row.error_message = None
+                        row.started_at = None
+                        row.finished_at = None
 
                 execution.status = "FAILED"
                 execution.finished_at = now

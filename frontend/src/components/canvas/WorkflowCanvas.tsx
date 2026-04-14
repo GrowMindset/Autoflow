@@ -25,7 +25,7 @@ import ConfigPanel from '../config/ConfigPanel';
 import { executionService, ExecutionDetail } from '../../services/executionService';
 import toast from 'react-hot-toast';
 import { useTheme } from '../../context/ThemeContext';
-import { Play, LayoutGrid, Sparkles, Search } from 'lucide-react';
+import { Play, LayoutGrid, Sparkles, Search, Undo2, Redo2, Loader2, Plus } from 'lucide-react';
 
 const nodeTypes = {
   trigger: BaseNode,
@@ -50,6 +50,10 @@ const AUTO_LAYOUT_NODE_GAP = 40;
 const AUTO_LAYOUT_RANK_GAP = 95;
 const FORM_EXECUTION_MESSAGE_TYPE = 'autoflow:form-execution-started';
 const EXECUTION_POLL_INTERVAL_MS = 700;
+const UNDO_REDO_HISTORY_LIMIT = 100;
+const UNDO_REDO_COMMIT_DEBOUNCE_MS = 180;
+const AI_APPLY_PROCESS_MS = 950;
+const AI_APPLY_HIGHLIGHT_MS = 2200;
 const buildFormPageUrl = (workflowId: string, nodeId: string): string => {
   const origin = window.location.origin.replace(/\/$/, '');
   return `${origin}/app/forms/${workflowId}?nodeId=${nodeId}`;
@@ -61,9 +65,38 @@ const initialEdges: WorkflowEdge[] = [];
 interface ExecutionHistoryEntry {
   executionId: string;
   status: string;
+  triggeredBy: string;
   startedAt: string | null;
   finishedAt: string | null;
+  errorMessage: string | null;
   durationMs?: number;
+}
+
+interface CanvasHistoryEntry {
+  definition: {
+    nodes: Array<{
+      id: string;
+      type: string;
+      label: string;
+      position: XYPosition;
+      config: Record<string, any>;
+    }>;
+    edges: Array<{
+      id: string;
+      source: string;
+      target: string;
+      sourceHandle?: string | null;
+      targetHandle?: string | null;
+      branch?: string;
+    }>;
+  };
+  signature: string;
+}
+
+interface AiPreviewGraph {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  name: string;
 }
 
 interface WorkflowCanvasProps {
@@ -86,14 +119,158 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   onCanvasMutated,
 }) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const connectingNode = useRef<{ nodeId: string; handleId: string | null } | null>(null);
+  const connectingNode = useRef<{
+    nodeId: string;
+    handleId: string | null;
+    connectionType: 'source' | 'target';
+  } | null>(null);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<WorkflowEdge>(initialEdges);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
   const { isDark } = useTheme();
   const [activeTab, setActiveTab] = useState<'editor' | 'executions'>('editor');
   const [executionHistory, setExecutionHistory] = useState<ExecutionHistoryEntry[]>([]);
+  const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(null);
+  const [selectedExecutionDetail, setSelectedExecutionDetail] = useState<ExecutionDetail | null>(null);
+  const [isExecutionDetailLoading, setIsExecutionDetailLoading] = useState(false);
+  const [executionDetailError, setExecutionDetailError] = useState<string | null>(null);
   const isHydratingCanvasRef = useRef(false);
+  const isApplyingHistoryRef = useRef(false);
+  const executionDetailCacheRef = useRef<Record<string, ExecutionDetail>>({});
+  const executionDetailRequestIdRef = useRef(0);
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  const historyStackRef = useRef<CanvasHistoryEntry[]>([]);
+  const historyIndexRef = useRef(-1);
+  const historyCommitTimeoutRef = useRef<number | null>(null);
+  const aiApplyTimeoutRef = useRef<number | null>(null);
+  const aiHighlightTimeoutRef = useRef<number | null>(null);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const [isAiApplyingChanges, setIsAiApplyingChanges] = useState(false);
+  const [recentAiNodeIds, setRecentAiNodeIds] = useState<string[]>([]);
+  const [recentAiEdgeIds, setRecentAiEdgeIds] = useState<string[]>([]);
+
+  const buildWorkflowDefinition = useCallback((sourceNodes: WorkflowNode[], sourceEdges: WorkflowEdge[]) => {
+    return {
+      nodes: sourceNodes.map((node) => ({
+        id: node.id,
+        type: node.data.type,
+        label: node.data.label,
+        position: node.position,
+        config: node.data.config,
+      })),
+      edges: sourceEdges.map((edge: any) => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle,
+        targetHandle: edge.targetHandle,
+        branch: edge.branch ?? edge.sourceHandle ?? undefined,
+      })),
+    };
+  }, []);
+
+  const getCurrentHistoryEntry = useCallback((): CanvasHistoryEntry => {
+    const definition = buildWorkflowDefinition(nodesRef.current, edgesRef.current);
+    return {
+      definition,
+      signature: JSON.stringify(definition),
+    };
+  }, [buildWorkflowDefinition]);
+
+  const updateUndoRedoAvailability = useCallback(() => {
+    const index = historyIndexRef.current;
+    const stackLength = historyStackRef.current.length;
+    setCanUndo(index > 0);
+    setCanRedo(index >= 0 && index < stackLength - 1);
+  }, []);
+
+  const clearPendingHistoryCommit = useCallback(() => {
+    if (historyCommitTimeoutRef.current !== null) {
+      window.clearTimeout(historyCommitTimeoutRef.current);
+      historyCommitTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearAiApplyTimers = useCallback(() => {
+    if (aiApplyTimeoutRef.current !== null) {
+      window.clearTimeout(aiApplyTimeoutRef.current);
+      aiApplyTimeoutRef.current = null;
+    }
+    if (aiHighlightTimeoutRef.current !== null) {
+      window.clearTimeout(aiHighlightTimeoutRef.current);
+      aiHighlightTimeoutRef.current = null;
+    }
+  }, []);
+
+  const triggerAiApplyFeedback = useCallback((nodeIds: string[], edgeIds: string[]) => {
+    clearAiApplyTimers();
+    setIsAiApplyingChanges(true);
+    setRecentAiNodeIds(nodeIds);
+    setRecentAiEdgeIds(edgeIds);
+
+    aiApplyTimeoutRef.current = window.setTimeout(() => {
+      setIsAiApplyingChanges(false);
+      aiApplyTimeoutRef.current = null;
+    }, AI_APPLY_PROCESS_MS);
+
+    aiHighlightTimeoutRef.current = window.setTimeout(() => {
+      setRecentAiNodeIds([]);
+      setRecentAiEdgeIds([]);
+      aiHighlightTimeoutRef.current = null;
+    }, AI_APPLY_PROCESS_MS + AI_APPLY_HIGHLIGHT_MS);
+  }, [clearAiApplyTimers]);
+
+  const resetUndoRedoHistory = useCallback((definition?: CanvasHistoryEntry['definition']) => {
+    const nextDefinition = definition || buildWorkflowDefinition(nodesRef.current, edgesRef.current);
+    historyStackRef.current = [{
+      definition: nextDefinition,
+      signature: JSON.stringify(nextDefinition),
+    }];
+    historyIndexRef.current = 0;
+    updateUndoRedoAvailability();
+  }, [buildWorkflowDefinition, updateUndoRedoAvailability]);
+
+  const commitHistorySnapshot = useCallback(() => {
+    if (isHydratingCanvasRef.current || isApplyingHistoryRef.current) {
+      return;
+    }
+
+    const nextEntry = getCurrentHistoryEntry();
+    const currentEntry = historyStackRef.current[historyIndexRef.current];
+
+    if (currentEntry?.signature === nextEntry.signature) {
+      return;
+    }
+
+    const nextStack = historyStackRef.current.slice(0, historyIndexRef.current + 1);
+    nextStack.push(nextEntry);
+
+    if (nextStack.length > UNDO_REDO_HISTORY_LIMIT) {
+      nextStack.shift();
+    }
+
+    historyStackRef.current = nextStack;
+    historyIndexRef.current = nextStack.length - 1;
+    updateUndoRedoAvailability();
+  }, [getCurrentHistoryEntry, updateUndoRedoAvailability]);
+
+  const scheduleHistorySnapshot = useCallback(() => {
+    clearPendingHistoryCommit();
+    historyCommitTimeoutRef.current = window.setTimeout(() => {
+      historyCommitTimeoutRef.current = null;
+      commitHistorySnapshot();
+    }, UNDO_REDO_COMMIT_DEBOUNCE_MS);
+  }, [clearPendingHistoryCommit, commitHistorySnapshot]);
+
+  const flushPendingHistoryCommit = useCallback(() => {
+    if (historyCommitTimeoutRef.current !== null) {
+      window.clearTimeout(historyCommitTimeoutRef.current);
+      historyCommitTimeoutRef.current = null;
+      commitHistorySnapshot();
+    }
+  }, [commitHistorySnapshot]);
 
   const formatDateTime = (iso: string | null) => {
     if (!iso) return '—';
@@ -102,6 +279,44 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       timeStyle: 'short',
     }).format(new Date(iso));
   };
+
+  const getStatusBadgeClasses = (status: string) => {
+    if (status === 'SUCCEEDED') {
+      return 'bg-emerald-100/80 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-200/50 dark:border-emerald-500/20';
+    }
+    if (status === 'FAILED') {
+      return 'bg-rose-100/80 text-rose-700 dark:bg-rose-500/20 dark:text-rose-400 border border-rose-200/50 dark:border-rose-500/20';
+    }
+    if (status === 'RUNNING') {
+      return 'bg-purple-100/80 text-purple-700 dark:bg-purple-500/20 dark:text-purple-400 border border-purple-200/50 dark:border-purple-500/20';
+    }
+    return 'bg-slate-100/80 text-slate-700 dark:bg-slate-500/20 dark:text-slate-400 border border-slate-200/50 dark:border-slate-500/20';
+  };
+
+  useEffect(() => {
+    nodesRef.current = nodes;
+    edgesRef.current = edges;
+  }, [nodes, edges]);
+
+  useEffect(() => {
+    clearPendingHistoryCommit();
+    clearAiApplyTimers();
+    historyStackRef.current = [];
+    historyIndexRef.current = -1;
+    setCanUndo(false);
+    setCanRedo(false);
+    setIsAiApplyingChanges(false);
+    setRecentAiNodeIds([]);
+    setRecentAiEdgeIds([]);
+    setAiPreviewGraph(null);
+    setSelectedExecutionId(null);
+    setSelectedExecutionDetail(null);
+    setExecutionDetailError(null);
+    setIsExecutionDetailLoading(false);
+    executionDetailCacheRef.current = {};
+    executionDetailRequestIdRef.current = 0;
+    setHasPickedNewWorkflowStarter(false);
+  }, [workflowId, clearPendingHistoryCommit, clearAiApplyTimers]);
 
   useEffect(() => {
     if (workflowId === 'new') {
@@ -116,8 +331,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           const formattedHistory = response.executions.map((exe: any) => ({
             executionId: exe.id,
             status: exe.status,
+            triggeredBy: exe.triggered_by || 'manual',
             startedAt: exe.started_at,
             finishedAt: exe.finished_at,
+            errorMessage: exe.error_message || null,
             durationMs: exe.started_at && exe.finished_at
               ? Date.parse(exe.finished_at) - Date.parse(exe.started_at)
               : undefined
@@ -132,14 +349,93 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     fetchExecutions();
   }, [workflowId]);
 
+  const applyExecutionDetailToCanvas = useCallback((detail: ExecutionDetail) => {
+    const nodeResultById = new Map(detail.node_results.map((nodeResult) => [nodeResult.node_id, nodeResult]));
+    setNodes((nds) =>
+      nds.map((node) => {
+        const nodeResult = nodeResultById.get(node.id);
+        if (!nodeResult) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              status: 'PENDING',
+              last_execution_result: null,
+            },
+          };
+        }
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            status: nodeResult.status,
+            last_execution_result: nodeResult,
+          },
+        };
+      }),
+    );
+  }, [setNodes]);
+
+  const inspectExecution = useCallback(async (executionId: string) => {
+    setSelectedExecutionId(executionId);
+    setExecutionDetailError(null);
+    setSelectedExecutionDetail(null);
+
+    const cached = executionDetailCacheRef.current[executionId];
+    if (cached) {
+      setSelectedExecutionDetail(cached);
+      applyExecutionDetailToCanvas(cached);
+      setIsExecutionDetailLoading(false);
+      return;
+    }
+
+    const requestId = executionDetailRequestIdRef.current + 1;
+    executionDetailRequestIdRef.current = requestId;
+    setIsExecutionDetailLoading(true);
+
+    try {
+      const detail = await executionService.getExecution(executionId);
+      if (executionDetailRequestIdRef.current !== requestId) return;
+
+      executionDetailCacheRef.current[executionId] = detail;
+      setSelectedExecutionDetail(detail);
+      applyExecutionDetailToCanvas(detail);
+    } catch (error: any) {
+      if (executionDetailRequestIdRef.current !== requestId) return;
+      const message = error?.response?.data?.detail || 'Failed to load execution detail';
+      setExecutionDetailError(message);
+      toast.error(message);
+    } finally {
+      if (executionDetailRequestIdRef.current === requestId) {
+        setIsExecutionDetailLoading(false);
+      }
+    }
+  }, [applyExecutionDetailToCanvas]);
+
+  const handleExecutionRowClick = useCallback((executionId: string) => {
+    if (selectedExecutionId === executionId) {
+      executionDetailRequestIdRef.current += 1;
+      setSelectedExecutionId(null);
+      setSelectedExecutionDetail(null);
+      setExecutionDetailError(null);
+      setIsExecutionDetailLoading(false);
+      return;
+    }
+
+    void inspectExecution(executionId);
+  }, [inspectExecution, selectedExecutionId]);
+
   // Quick Add State
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState<XYPosition | null>(null);
   const [menuSearchTerm, setMenuSearchTerm] = useState('');
+  const [hasPickedNewWorkflowStarter, setHasPickedNewWorkflowStarter] = useState(false);
   const menuSearchRef = useRef<HTMLInputElement>(null);
 
   // Config Panel State
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [aiPreviewGraph, setAiPreviewGraph] = useState<AiPreviewGraph | null>(null);
+  const isAiPreviewMode = aiPreviewGraph !== null;
 
   // Alignment Detection
   const [isAligned, setIsAligned] = useState(true);
@@ -150,16 +446,28 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   useEffect(() => {
     const handleQuickAdd = (e: any) => {
-      const { nodeId, handleId } = e.detail;
+      if (isAiPreviewMode) {
+        toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+        return;
+      }
+      const {
+        nodeId,
+        handleId,
+        connectionType = 'source',
+        clientX,
+        clientY,
+      } = e.detail || {};
       const node = nodes.find(n => n.id === nodeId);
       if (!node || !reactFlowInstance) return;
 
-      const position = {
-        x: node.position.x + 250,
-        y: node.position.y
-      };
+      const position = (typeof clientX === 'number' && typeof clientY === 'number')
+        ? reactFlowInstance.screenToFlowPosition({ x: clientX, y: clientY })
+        : {
+            x: connectionType === 'target' ? node.position.x : node.position.x + 250,
+            y: connectionType === 'target' ? node.position.y + 160 : node.position.y,
+          };
 
-      connectingNode.current = { nodeId, handleId };
+      connectingNode.current = { nodeId, handleId, connectionType };
       setMenuPosition(position);
       setMenuVisible(true);
     };
@@ -169,7 +477,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       window.removeEventListener('rf-quick-add', handleQuickAdd);
       setMenuSearchTerm('');
     };
-  }, [nodes, reactFlowInstance]);
+  }, [isAiPreviewMode, nodes, reactFlowInstance]);
 
   useEffect(() => {
     if (menuVisible && menuSearchRef.current) {
@@ -184,17 +492,24 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [triggerNode, setTriggerNode] = useState<WorkflowNode | null>(null);
 
   const emitCanvasMutation = useCallback((reason: string) => {
-    if (isHydratingCanvasRef.current) return;
+    if (isHydratingCanvasRef.current || isApplyingHistoryRef.current) return;
+    scheduleHistorySnapshot();
     onCanvasMutated?.(reason);
-  }, [onCanvasMutated]);
+  }, [onCanvasMutated, scheduleHistorySnapshot]);
 
   const onNodesChange = useCallback((changes: any[]) => {
     onNodesChangeBase(changes);
 
     if (isHydratingCanvasRef.current) return;
-    const hasMeaningfulChange = changes.some((change) =>
-      ['add', 'remove', 'position', 'reset'].includes(change?.type)
-    );
+    const hasMeaningfulChange = changes.some((change) => {
+      if (['add', 'remove', 'reset'].includes(change?.type)) {
+        return true;
+      }
+      if (change?.type === 'position') {
+        return change?.dragging !== true;
+      }
+      return false;
+    });
     if (hasMeaningfulChange) {
       emitCanvasMutation('nodes_change');
     }
@@ -221,42 +536,64 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   // Update edges to show status animations path-aware
   useEffect(() => {
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+
+    const isEdgeOnSelectedBranch = (edge: any, sourceNode: WorkflowNode | undefined): boolean => {
+      if (!sourceNode) return false;
+
+      const sourceStatus = sourceNode.data.status;
+      if (sourceStatus !== 'RUNNING' && sourceStatus !== 'SUCCEEDED') {
+        return false;
+      }
+
+      if (sourceStatus === 'RUNNING') {
+        return true;
+      }
+
+      const output = sourceNode.data.last_execution_result?.output_data;
+      const chosenBranch = output?._branch;
+      const isBranchingNode = ['if_else', 'switch'].includes(sourceNode.data.type || '');
+
+      if (!isBranchingNode) {
+        return true;
+      }
+
+      if (chosenBranch === undefined || chosenBranch === null) {
+        return false;
+      }
+
+      return String(edge.sourceHandle) === String(chosenBranch);
+    };
+
     setEdges((eds) =>
       eds.map((edge) => {
-        const sourceNode = nodes.find(n => n.id === edge.source);
-        const status = sourceNode?.data.status;
-        const result = sourceNode?.data.last_execution_result;
-        
+        const sourceNode = nodeById.get(edge.source);
+        const targetNode = nodeById.get(edge.target);
+        const isOnSelectedPath = isEdgeOnSelectedBranch(edge, sourceNode as WorkflowNode | undefined);
+        const targetFailed = targetNode?.data.status === 'FAILED';
+
+        let executionState: 'idle' | 'running' | 'success' | 'failed' = 'idle';
         let shouldAnimate = false;
         let isActivePath = false;
 
-        if (status === 'RUNNING') {
+        if (isOnSelectedPath && targetFailed) {
+          executionState = 'failed';
           shouldAnimate = true;
           isActivePath = true;
-        } else if (status === 'SUCCEEDED') {
-          // For successful nodes, we check if this specific edge was part of the path
-          const output = result?.output_data;
-          const chosenBranch = output?._branch;
-
-          const isBranchingNode = ['if_else', 'switch'].includes(sourceNode?.data.type || '');
-
-          if (!isBranchingNode) {
-            // Linear flow: success means path was taken
-            shouldAnimate = true;
-            isActivePath = true;
-          } else if (chosenBranch !== undefined) {
-            // Branching flow: only animate the edge that matches the chosen branch
-            if (String(edge.sourceHandle) === String(chosenBranch)) {
-              shouldAnimate = true;
-              isActivePath = true;
-            }
-          }
+        } else if (sourceNode?.data.status === 'RUNNING' && isOnSelectedPath) {
+          executionState = 'running';
+          shouldAnimate = true;
+          isActivePath = true;
+        } else if (sourceNode?.data.status === 'SUCCEEDED' && isOnSelectedPath) {
+          executionState = 'success';
+          shouldAnimate = true;
+          isActivePath = true;
         }
 
         return {
           ...edge,
           animated: shouldAnimate,
-          data: { ...edge.data, isActivePath },
+          data: { ...edge.data, isActivePath, executionState },
         } as any;
       })
     );
@@ -345,7 +682,68 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     return positioned;
   }, []);
 
+  const buildAiGraphFromDefinition = useCallback((definition: any): AiPreviewGraph => {
+    const rawNodes = (definition?.nodes || []).map((n: any) => {
+      const category = NODE_LIBRARY.trigger.some(ref => ref.type === n.type) ? 'trigger' :
+        NODE_LIBRARY.action.some(ref => ref.type === n.type) ? 'action' :
+          NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' : 'ai';
+      return {
+        ...n,
+        data: {
+          label: n.label || n.type,
+          config: n.config || {},
+          type: n.type,
+          category,
+        },
+      };
+    });
+
+    const positionedNodes = autoLayout(rawNodes, definition?.edges || []);
+
+    const graphNodes: WorkflowNode[] = positionedNodes.map((n: any) => ({
+      id: n.id,
+      type: n.data.category,
+      position: n.position,
+      data: n.data,
+    }));
+
+    const graphEdges: WorkflowEdge[] = (definition?.edges || []).map((e: any, index: number) => ({
+      ...e,
+      id: e.id || `e_${e.source}_${e.target}_${index}`,
+      type: 'deletable',
+      animated: false,
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
+      style: { stroke: '#94a3b8', strokeWidth: 2 },
+    }));
+
+    return {
+      nodes: graphNodes,
+      edges: graphEdges,
+      name: typeof definition?.name === 'string' ? definition.name : '',
+    };
+  }, [autoLayout]);
+
+  const applyAiGraphToCanvas = useCallback((graph: AiPreviewGraph) => {
+    triggerAiApplyFeedback(
+      graph.nodes.map((node) => node.id),
+      graph.edges.map((edge) => edge.id),
+    );
+    setAiPreviewGraph(null);
+    setSelectedNodeId(null);
+    setNodes(graph.nodes);
+    setEdges(graph.edges);
+    emitCanvasMutation('apply_ai_workflow');
+
+    window.setTimeout(() => {
+      reactFlowInstance?.fitView({ duration: 800, padding: 0.2 });
+    }, 100);
+  }, [emitCanvasMutation, reactFlowInstance, triggerAiApplyFeedback]);
+
   const alignNodes = useCallback(() => {
+    if (isAiPreviewMode) {
+      toast('Accept or discard the AI preview before aligning nodes.', { icon: 'ℹ️' });
+      return;
+    }
     const positionedNodes = autoLayout(nodes, edges);
     setNodes(positionedNodes);
     emitCanvasMutation('align_nodes');
@@ -357,7 +755,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
 
     toast.success('Workflow perfectly aligned');
-  }, [nodes, edges, setNodes, autoLayout, reactFlowInstance, emitCanvasMutation]);
+  }, [isAiPreviewMode, nodes, edges, setNodes, autoLayout, reactFlowInstance, emitCanvasMutation]);
 
   const stopPolling = useCallback(() => {
     if (pollingIntervalRef.current !== null) {
@@ -400,6 +798,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             ? {
               ...entry,
               status: detail.status,
+              errorMessage: detail.error_message,
               startedAt: detail.started_at,
               finishedAt: detail.finished_at,
               durationMs:
@@ -410,6 +809,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             : entry
         )
       );
+      executionDetailCacheRef.current[executionId] = detail;
+      if (selectedExecutionId === executionId) {
+        setSelectedExecutionDetail(detail);
+      }
       onExecutionUpdate?.(detail);
 
       if (detail.status === 'SUCCEEDED' || detail.status === 'FAILED') {
@@ -425,7 +828,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       console.error('Polling failed:', error);
       stopPolling();
     }
-  }, [onExecutionUpdate, setNodes, stopPolling]);
+  }, [onExecutionUpdate, selectedExecutionId, setNodes, stopPolling]);
 
   const beginExecutionTracking = useCallback((executionId: string) => {
     stopPolling();
@@ -435,8 +838,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       {
         executionId,
         status: 'PENDING',
+        triggeredBy: 'manual',
         startedAt: null,
         finishedAt: null,
+        errorMessage: null,
       },
       ...history,
     ]);
@@ -475,6 +880,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [workflowId, beginExecutionTracking, setNodes]);
 
   const handleRunWorkflow = useCallback(async () => {
+    if (isAiPreviewMode) {
+      toast('Accept or discard the AI preview before executing workflow.', { icon: 'ℹ️' });
+      return;
+    }
+
     if (workflowId === 'new') {
       toast.error('Please save your workflow before running');
       return;
@@ -570,7 +980,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       console.error('Execution failed:', error);
       toast.error('Workflow execution failed. Check console for details.');
     }
-  }, [workflowId, nodes, edges, beginExecutionTracking]);
+  }, [isAiPreviewMode, workflowId, nodes, edges, beginExecutionTracking]);
 
   useEffect(() => {
     stopPolling();
@@ -590,6 +1000,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [edges]);
 
   const onConnect = useCallback((params: Connection) => {
+    if (isAiPreviewMode) return;
     if (!params.source || !params.target) return;
 
     const newEdge: WorkflowEdge = {
@@ -609,18 +1020,35 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     emitCanvasMutation('connect_nodes');
     connectingNode.current = null; // Clear connection state after successful connection
     toast.success('Nodes connected');
-  }, [setEdges, emitCanvasMutation]);
+  }, [isAiPreviewMode, setEdges, emitCanvasMutation]);
 
-  const onConnectStart = useCallback((_: any, { nodeId, handleId }: { nodeId: string | null; handleId?: string | null }) => {
+  const onConnectStart = useCallback((_: any, {
+    nodeId,
+    handleId,
+    handleType,
+  }: {
+    nodeId: string | null;
+    handleId?: string | null;
+    handleType?: 'source' | 'target' | null;
+  }) => {
+    if (isAiPreviewMode) {
+      connectingNode.current = null;
+      return;
+    }
     if (!nodeId) {
       connectingNode.current = null;
       return;
     }
-    connectingNode.current = { nodeId, handleId: handleId ?? null };
-  }, []);
+    connectingNode.current = {
+      nodeId,
+      handleId: handleId ?? null,
+      connectionType: handleType === 'target' ? 'target' : 'source',
+    };
+  }, [isAiPreviewMode]);
 
   const onConnectEnd = useCallback(
     (event: any) => {
+      if (isAiPreviewMode) return;
       if (!connectingNode.current || !reactFlowInstance) return;
 
       const targetIsPane = event.target.classList.contains('react-flow__pane');
@@ -637,7 +1065,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         setMenuVisible(true);
       }
     },
-    [reactFlowInstance]
+    [isAiPreviewMode, reactFlowInstance]
   );
 
   const onPaneClick = useCallback(() => {
@@ -652,6 +1080,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   const onDrop = useCallback(
     (event: React.DragEvent) => {
+      if (isAiPreviewMode) {
+        toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+        return;
+      }
       event.preventDefault();
 
       if (!reactFlowWrapper.current || !reactFlowInstance) return;
@@ -666,10 +1098,14 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
       addNodeAtPosition(nodeType, position);
     },
-    [reactFlowInstance]
+    [isAiPreviewMode, reactFlowInstance]
   );
 
   const addNodeAtPosition = useCallback((type: string, position: XYPosition) => {
+    if (isAiPreviewMode) {
+      toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+      return;
+    }
     try {
       const newNode = createNode(type, position);
       const newNodeId = newNode.id;
@@ -679,22 +1115,40 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       toast.success(`${newNode.data.label} added`);
 
       if (connectingNode.current) {
-        const sourceHandle = connectingNode.current.handleId ?? undefined;
-        const newEdge: WorkflowEdge = {
-          id: `e_${connectingNode.current!.nodeId}_${newNodeId}`,
-          source: connectingNode.current!.nodeId,
-          target: newNodeId,
-          sourceHandle,
-          targetHandle: null,
-          branch: sourceHandle ?? undefined,
-          type: 'deletable',
-          animated: true,
-          style: { stroke: '#94a3b8', strokeWidth: 2 },
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            color: '#94a3b8',
-          },
-        };
+        const { nodeId: anchorNodeId, handleId, connectionType } = connectingNode.current;
+        const sourceHandle = handleId ?? undefined;
+        const newEdge: WorkflowEdge =
+          connectionType === 'target'
+            ? {
+                id: `e_${newNodeId}_${anchorNodeId}_${handleId || 'def'}`,
+                source: newNodeId,
+                target: anchorNodeId,
+                sourceHandle: null,
+                targetHandle: handleId ?? null,
+                branch: undefined,
+                type: 'deletable',
+                animated: true,
+                style: { stroke: '#94a3b8', strokeWidth: 2 },
+                markerEnd: {
+                  type: MarkerType.ArrowClosed,
+                  color: '#94a3b8',
+                },
+              }
+            : {
+                id: `e_${anchorNodeId}_${newNodeId}_${handleId || 'def'}`,
+                source: anchorNodeId,
+                target: newNodeId,
+                sourceHandle,
+                targetHandle: null,
+                branch: sourceHandle ?? undefined,
+                type: 'deletable',
+                animated: true,
+                style: { stroke: '#94a3b8', strokeWidth: 2 },
+                markerEnd: {
+                  type: MarkerType.ArrowClosed,
+                  color: '#94a3b8',
+                },
+              };
         setEdges((eds) => addEdge(newEdge, eds));
         emitCanvasMutation('quick_add_connect');
         connectingNode.current = null;
@@ -704,39 +1158,58 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     } catch (error) {
       console.error(error);
     }
-  }, [setNodes, setEdges, emitCanvasMutation]);
+  }, [isAiPreviewMode, setNodes, setEdges, emitCanvasMutation]);
 
   const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: any) => {
+    if (isAiPreviewMode) return;
     setSelectedNodeId(node.id);
-  }, []);
+  }, [isAiPreviewMode]);
+
+  const openQuickAddAtCenter = useCallback(() => {
+    if (!reactFlowInstance || !reactFlowWrapper.current) return;
+    const rect = reactFlowWrapper.current.getBoundingClientRect();
+    const centerPosition = reactFlowInstance.screenToFlowPosition({
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    });
+    connectingNode.current = null;
+    setMenuPosition(centerPosition);
+    setMenuVisible(true);
+  }, [reactFlowInstance]);
+
+  const handleAddFirstStepFromStarter = useCallback(() => {
+    setHasPickedNewWorkflowStarter(true);
+    if (typeof (window as any).openNodePalette === 'function') {
+      (window as any).openNodePalette();
+      return;
+    }
+    openQuickAddAtCenter();
+  }, [openQuickAddAtCenter]);
+
+  const handleBuildWithAiFromStarter = useCallback(() => {
+    setHasPickedNewWorkflowStarter(true);
+    if (!isAiAssistantOpen) {
+      onToggleAiAssistant?.();
+    }
+    toast('Describe your workflow to build the first draft with AI.', { icon: '✨' });
+  }, [isAiAssistantOpen, onToggleAiAssistant]);
 
   // Serialization logic for the backend
   const getWorkflowData = useCallback((name: string) => {
     return {
       name,
-      definition: {
-        nodes: nodes.map(n => ({
-          id: n.id,
-          type: n.data.type,
-          label: n.data.label,
-          position: n.position,
-          config: n.data.config
-        })),
-        edges: edges.map((e: any) => ({
-          id: e.id,
-          source: e.source,
-          target: e.target,
-          sourceHandle: e.sourceHandle,
-          targetHandle: e.targetHandle,
-          branch: e.branch ?? e.sourceHandle ?? undefined,
-        }))
-      }
+      definition: buildWorkflowDefinition(nodes, edges),
     };
-  }, [nodes, edges]);
+  }, [nodes, edges, buildWorkflowDefinition]);
 
   // Deserialization logic (restore from backend format)
-  const loadWorkflowData = useCallback((definition: any) => {
+  const loadWorkflowData = useCallback((definition: any, options?: { resetHistory?: boolean }) => {
     if (!definition) return;
+    const incomingNodeCount = Array.isArray(definition.nodes) ? definition.nodes.length : 0;
+    const incomingEdgeCount = Array.isArray(definition.edges) ? definition.edges.length : 0;
+    if (workflowId === 'new' && incomingNodeCount === 0 && incomingEdgeCount === 0) {
+      setHasPickedNewWorkflowStarter(false);
+    }
 
     // Map simplified nodes back to React Flow format
     const rfNodes: WorkflowNode[] = (definition.nodes || []).map((n: any) => {
@@ -772,11 +1245,115 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }));
 
     setEdges(rfEdges);
+    if (options?.resetHistory !== false) {
+      resetUndoRedoHistory({
+        nodes: (definition.nodes || []).map((node: any) => ({
+          id: node.id,
+          type: node.type,
+          label: node.label,
+          position: node.position,
+          config: node.config || {},
+        })),
+        edges: (definition.edges || []).map((edge: any) => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          sourceHandle: edge.sourceHandle || edge.branch || null,
+          targetHandle: edge.targetHandle || null,
+          branch: edge.branch ?? edge.sourceHandle ?? undefined,
+        })),
+      });
+    }
 
     requestAnimationFrame(() => {
       isHydratingCanvasRef.current = false;
     });
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, resetUndoRedoHistory, workflowId]);
+
+  const applyHistoryEntry = useCallback((entry: CanvasHistoryEntry) => {
+    isApplyingHistoryRef.current = true;
+    loadWorkflowData(entry.definition, { resetHistory: false });
+    requestAnimationFrame(() => {
+      isApplyingHistoryRef.current = false;
+    });
+  }, [loadWorkflowData]);
+
+  const undoCanvas = useCallback(() => {
+    flushPendingHistoryCommit();
+    if (historyIndexRef.current <= 0) {
+      return;
+    }
+
+    historyIndexRef.current -= 1;
+    const entry = historyStackRef.current[historyIndexRef.current];
+    updateUndoRedoAvailability();
+    if (entry) {
+      applyHistoryEntry(entry);
+      onCanvasMutated?.('undo');
+    }
+  }, [applyHistoryEntry, flushPendingHistoryCommit, onCanvasMutated, updateUndoRedoAvailability]);
+
+  const redoCanvas = useCallback(() => {
+    flushPendingHistoryCommit();
+    if (historyIndexRef.current >= historyStackRef.current.length - 1) {
+      return;
+    }
+
+    historyIndexRef.current += 1;
+    const entry = historyStackRef.current[historyIndexRef.current];
+    updateUndoRedoAvailability();
+    if (entry) {
+      applyHistoryEntry(entry);
+      onCanvasMutated?.('redo');
+    }
+  }, [applyHistoryEntry, flushPendingHistoryCommit, onCanvasMutated, updateUndoRedoAvailability]);
+
+  useEffect(() => {
+    const isTextInputTarget = (target: EventTarget | null) => {
+      const element = target as HTMLElement | null;
+      if (!element) return false;
+      const tagName = element.tagName?.toLowerCase();
+      return (
+        element.isContentEditable ||
+        tagName === 'input' ||
+        tagName === 'textarea' ||
+        tagName === 'select'
+      );
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isTextInputTarget(event.target)) {
+        return;
+      }
+
+      const isModifierPressed = event.metaKey || event.ctrlKey;
+      if (!isModifierPressed || event.altKey) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      const isUndo = key === 'z' && !event.shiftKey;
+      const isRedo = (key === 'z' && event.shiftKey) || key === 'y';
+
+      if (isUndo) {
+        event.preventDefault();
+        undoCanvas();
+      } else if (isRedo) {
+        event.preventDefault();
+        redoCanvas();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undoCanvas, redoCanvas]);
+
+  useEffect(() => {
+    return () => {
+      clearPendingHistoryCommit();
+      clearAiApplyTimers();
+    };
+  }, [clearPendingHistoryCommit, clearAiApplyTimers]);
 
   // Unsaved changes tracking
   const [initialData, setInitialData] = useState<string>('');
@@ -808,51 +1385,50 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }));
     };
     (window as any).applyAiWorkflow = (definition: any) => {
-      // Map AI nodes to our internal node structures first
-      const rawNodes = (definition.nodes || []).map((n: any) => {
-        const category = NODE_LIBRARY.trigger.some(ref => ref.type === n.type) ? 'trigger' :
-                         NODE_LIBRARY.action.some(ref => ref.type === n.type) ? 'action' :
-                         NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' : 'ai';
-        return {
-          ...n,
-          data: {
-            label: n.label || n.type,
-            config: n.config || {},
-            type: n.type,
-            category: category
-          }
-        };
+      const graph = buildAiGraphFromDefinition(definition);
+      applyAiGraphToCanvas(graph);
+    };
+    (window as any).previewAiWorkflow = (definition: any, options?: { name?: string }) => {
+      const graph = buildAiGraphFromDefinition(definition);
+      setSelectedNodeId(null);
+      setAiPreviewGraph({
+        ...graph,
+        name: options?.name || graph.name || '',
       });
-
-      // Calculate layout
-      const positionedNodes = autoLayout(rawNodes, definition.edges || []);
-
-      // Convert to final React Flow nodes
-      const rfNodes = positionedNodes.map((n: any) => ({
-        id: n.id,
-        type: n.data.category,
-        position: n.position,
-        data: n.data
-      }));
-
-      setNodes(rfNodes);
-      setEdges((definition.edges || []).map((e: any) => ({
-        ...e,
-        id: e.id || `e_${e.source}_${e.target}_${Date.now()}`,
-        type: 'deletable',
-        animated: false,
-        markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
-        style: { stroke: '#94a3b8', strokeWidth: 2 }
-      })));
-      emitCanvasMutation('apply_ai_workflow');
-
-      setTimeout(() => {
-        reactFlowInstance?.fitView({ duration: 800, padding: 0.2 });
-      }, 100);
+      window.setTimeout(() => {
+        reactFlowInstance?.fitView({ duration: 550, padding: 0.22 });
+      }, 20);
+      return true;
+    };
+    (window as any).acceptAiWorkflowPreview = () => {
+      if (!aiPreviewGraph) return false;
+      applyAiGraphToCanvas(aiPreviewGraph);
+      return true;
+    };
+    (window as any).discardAiWorkflowPreview = () => {
+      if (!aiPreviewGraph) return false;
+      setAiPreviewGraph(null);
+      setSelectedNodeId(null);
+      window.setTimeout(() => {
+        reactFlowInstance?.fitView({ duration: 450, padding: 0.2 });
+      }, 20);
+      return true;
+    };
+    (window as any).isAiWorkflowPreviewActive = () => Boolean(aiPreviewGraph);
+    (window as any).getAiWorkflowPreviewName = () => aiPreviewGraph?.name || '';
+    (window as any).clearAiWorkflowPreview = () => {
+      setAiPreviewGraph(null);
+      setSelectedNodeId(null);
     };
     (window as any).isCanvasDirty = () => isDirty;
+    (window as any).undoCanvas = undoCanvas;
+    (window as any).redoCanvas = redoCanvas;
 
     (window as any).addNodeAtCenter = (type: string) => {
+      if (aiPreviewGraph) {
+        toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+        return;
+      }
       if (!reactFlowInstance) return;
       
       let position: XYPosition;
@@ -860,8 +1436,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       if (connectingNode.current) {
         const sourceNode = nodes.find(n => n.id === connectingNode.current?.nodeId);
         position = {
-          x: (sourceNode?.position.x || 0) + 250,
-          y: (sourceNode?.position.y || 0)
+          x: connectingNode.current.connectionType === 'target'
+            ? (sourceNode?.position.x || 0)
+            : (sourceNode?.position.x || 0) + 250,
+          y: connectingNode.current.connectionType === 'target'
+            ? (sourceNode?.position.y || 0) + 160
+            : (sourceNode?.position.y || 0),
         };
       } else {
         reactFlowInstance.getViewport();
@@ -878,9 +1458,28 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       delete (window as any).getCanvasWorkflowData;
       delete (window as any).loadCanvasWorkflowData;
       delete (window as any).applyAiWorkflow;
+      delete (window as any).previewAiWorkflow;
+      delete (window as any).acceptAiWorkflowPreview;
+      delete (window as any).discardAiWorkflowPreview;
+      delete (window as any).isAiWorkflowPreviewActive;
+      delete (window as any).getAiWorkflowPreviewName;
+      delete (window as any).clearAiWorkflowPreview;
       delete (window as any).isCanvasDirty;
+      delete (window as any).undoCanvas;
+      delete (window as any).redoCanvas;
     };
-  }, [getWorkflowData, loadWorkflowData, autoLayout, isDirty, reactFlowInstance, emitCanvasMutation]);
+  }, [
+    getWorkflowData,
+    loadWorkflowData,
+    isDirty,
+    reactFlowInstance,
+    undoCanvas,
+    redoCanvas,
+    aiPreviewGraph,
+    addNodeAtPosition,
+    applyAiGraphToCanvas,
+    buildAiGraphFromDefinition,
+  ]);
 
   const updateNodeConfig = useCallback((id: string, config: Record<string, any>, output?: any) => {
     setNodes((nds) =>
@@ -926,8 +1525,99 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     return combinedData;
   };
 
-  const selectedNode = nodes.find(n => n.id === selectedNodeId);
-  const upstreamData = selectedNodeId ? getUpstreamData(selectedNodeId) : null;
+  const getNodeById = useCallback((nodeId: string) => {
+    return nodes.find((node) => node.id === nodeId) || null;
+  }, [nodes]);
+
+  const sortNavigationNodes = useCallback((items: WorkflowNode[]) => {
+    return [...items].sort((a, b) => {
+      if (a.position.x !== b.position.x) return a.position.x - b.position.x;
+      if (a.position.y !== b.position.y) return a.position.y - b.position.y;
+      return a.data.label.localeCompare(b.data.label);
+    });
+  }, []);
+
+  const selectedNode = isAiPreviewMode ? null : nodes.find(n => n.id === selectedNodeId);
+  const upstreamData = isAiPreviewMode ? null : (selectedNodeId ? getUpstreamData(selectedNodeId) : null);
+  const previousNodes = useMemo(() => {
+    if (isAiPreviewMode) return [] as WorkflowNode[];
+    if (!selectedNodeId) return [] as WorkflowNode[];
+    const uniqueIds = Array.from(new Set(
+      edges
+        .filter((edge) => edge.target === selectedNodeId)
+        .map((edge) => edge.source),
+    ));
+    const connectedNodes = uniqueIds
+      .map((nodeId) => getNodeById(nodeId))
+      .filter((node): node is WorkflowNode => Boolean(node));
+    return sortNavigationNodes(connectedNodes);
+  }, [isAiPreviewMode, selectedNodeId, edges, getNodeById, sortNavigationNodes]);
+
+  const nextNodes = useMemo(() => {
+    if (isAiPreviewMode) return [] as WorkflowNode[];
+    if (!selectedNodeId) return [] as WorkflowNode[];
+    const uniqueIds = Array.from(new Set(
+      edges
+        .filter((edge) => edge.source === selectedNodeId)
+        .map((edge) => edge.target),
+    ));
+    const connectedNodes = uniqueIds
+      .map((nodeId) => getNodeById(nodeId))
+      .filter((node): node is WorkflowNode => Boolean(node));
+    return sortNavigationNodes(connectedNodes);
+  }, [isAiPreviewMode, selectedNodeId, edges, getNodeById, sortNavigationNodes]);
+
+  const graphNodes = aiPreviewGraph?.nodes || nodes;
+  const graphEdges = aiPreviewGraph?.edges || edges;
+  const recentAiNodeIdSet = useMemo(() => new Set(recentAiNodeIds), [recentAiNodeIds]);
+  const recentAiEdgeIdSet = useMemo(() => new Set(recentAiEdgeIds), [recentAiEdgeIds]);
+
+  const displayNodes = useMemo(() => {
+    if (recentAiNodeIdSet.size === 0) {
+      return graphNodes;
+    }
+
+    return graphNodes.map((node) => {
+      if (!recentAiNodeIdSet.has(node.id)) {
+        return node;
+      }
+      const existingClass = node.className ? `${node.className} ` : '';
+      return {
+        ...node,
+        className: `${existingClass}ai-node-updated`,
+      };
+    });
+  }, [graphNodes, recentAiNodeIdSet]);
+
+  const displayEdges = useMemo(() => {
+    if (recentAiEdgeIdSet.size === 0) {
+      return graphEdges;
+    }
+
+    return graphEdges.map((edge) => {
+      if (!recentAiEdgeIdSet.has(edge.id)) {
+        return edge;
+      }
+      return {
+        ...edge,
+        animated: true,
+        style: {
+          ...(edge.style || {}),
+          stroke: '#3b82f6',
+          strokeWidth: 2.6,
+          strokeDasharray: '8 6',
+        },
+      };
+    });
+  }, [graphEdges, recentAiEdgeIdSet]);
+
+  const showNewWorkflowStarter =
+    activeTab === 'editor' &&
+    workflowId === 'new' &&
+    nodes.length === 0 &&
+    !isAiPreviewMode &&
+    !hasPickedNewWorkflowStarter &&
+    !isAiApplyingChanges;
 
   return (
     <div className="flex-1 flex flex-col relative h-full bg-slate-50 dark:bg-slate-950 overflow-hidden">
@@ -971,8 +1661,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         <ReactFlowProvider>
           <div className="flex-1 relative pt-16" ref={reactFlowWrapper}>
           <ReactFlow
-            nodes={nodes}
-            edges={edges}
+            nodes={displayNodes}
+            edges={displayEdges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
@@ -987,13 +1677,91 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             deleteKeyCode={['Delete', 'Backspace']}
+            nodesDraggable={!isAiPreviewMode}
+            nodesConnectable={!isAiPreviewMode}
+            elementsSelectable={!isAiPreviewMode}
+            nodesFocusable={!isAiPreviewMode}
+            edgesFocusable={!isAiPreviewMode}
             fitView
           >
+            {showNewWorkflowStarter && (
+              <div className="pointer-events-none absolute inset-0 z-[915] flex items-center justify-center">
+                <div className="-mt-12 flex items-center gap-8 sm:gap-12 pointer-events-auto">
+                  <button
+                    type="button"
+                    onClick={handleAddFirstStepFromStarter}
+                    className="group flex flex-col items-center gap-3"
+                  >
+                    <div className="h-28 w-28 rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-600 bg-white/75 dark:bg-slate-900/45 flex items-center justify-center transition-all duration-200 group-hover:border-blue-500/70 group-hover:dark:border-blue-400/70 group-hover:bg-white dark:group-hover:bg-slate-900">
+                      <Plus size={36} className="text-slate-500 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-300" />
+                    </div>
+                    <span className="text-xl font-medium text-slate-700 dark:text-slate-200 tracking-tight">
+                      Add first step...
+                    </span>
+                  </button>
+
+                  <span className="text-base text-slate-400 dark:text-slate-500 font-medium">or</span>
+
+                  <button
+                    type="button"
+                    onClick={handleBuildWithAiFromStarter}
+                    className="group flex flex-col items-center gap-3"
+                  >
+                    <div className="h-28 w-28 rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-600 bg-white/75 dark:bg-slate-900/45 flex items-center justify-center transition-all duration-200 group-hover:border-indigo-500/70 group-hover:dark:border-indigo-400/70 group-hover:bg-white dark:group-hover:bg-slate-900">
+                      <Sparkles size={34} className="text-slate-500 dark:text-slate-300 group-hover:text-indigo-600 dark:group-hover:text-indigo-300" />
+                    </div>
+                    <span className="text-xl font-medium text-slate-700 dark:text-slate-200 tracking-tight">
+                      Build with AI
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {isAiPreviewMode && (
+              <div className="pointer-events-none absolute left-1/2 top-20 z-[920] -translate-x-1/2 rounded-2xl border border-amber-300/90 bg-amber-50/95 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.11em] text-amber-700 shadow-[0_14px_38px_rgba(217,119,6,0.2)] dark:border-amber-700/70 dark:bg-amber-900/35 dark:text-amber-200">
+                Preview Mode{aiPreviewGraph?.name ? ` · ${aiPreviewGraph.name}` : ''} · accept or discard from AI panel
+              </div>
+            )}
+
+            {isAiApplyingChanges && (
+              <div className="pointer-events-none absolute inset-0 z-[950]">
+                <div className="absolute inset-0 bg-blue-500/5 dark:bg-blue-400/10 backdrop-blur-[1px]" />
+                <div className="absolute left-1/2 top-20 -translate-x-1/2 rounded-2xl border border-blue-200/80 dark:border-blue-500/30 bg-white/95 dark:bg-slate-900/90 px-4 py-3 shadow-[0_20px_50px_rgba(37,99,235,0.2)]">
+                  <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-blue-700 dark:text-blue-300">
+                    <Loader2 size={14} className="animate-spin" />
+                    Applying AI changes on canvas
+                  </div>
+                  <div className="mt-2 h-1.5 w-56 overflow-hidden rounded-full bg-blue-100 dark:bg-blue-500/20">
+                    <div className="h-full w-16 rounded-full bg-blue-600 dark:bg-blue-400 ai-canvas-progress" />
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Floating Action Buttons - Bottom Center */}
             <div
               className="absolute left-1/2 -translate-x-1/2 z-[1000] flex flex-row items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-500"
               style={{ bottom: footerOffset + 24 }}
             >
+              <button
+                onClick={undoCanvas}
+                disabled={!canUndo}
+                title="Undo (Ctrl/Cmd+Z)"
+                className="group flex items-center justify-center bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-700 shadow-[0_20px_40px_rgba(0,0,0,0.1)] transition-all duration-300 disabled:opacity-45 disabled:cursor-not-allowed enabled:hover:bg-slate-900 enabled:dark:hover:bg-slate-700 enabled:hover:text-white"
+              >
+                <Undo2 size={16} className="transition-transform duration-300 group-enabled:group-hover:-translate-x-0.5" />
+              </button>
+
+              <button
+                onClick={redoCanvas}
+                disabled={!canRedo}
+                title="Redo (Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y)"
+                className="group flex items-center justify-center bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-700 shadow-[0_20px_40px_rgba(0,0,0,0.1)] transition-all duration-300 disabled:opacity-45 disabled:cursor-not-allowed enabled:hover:bg-slate-900 enabled:dark:hover:bg-slate-700 enabled:hover:text-white"
+              >
+                <Redo2 size={16} className="transition-transform duration-300 group-enabled:group-hover:translate-x-0.5" />
+              </button>
+
               {!isAligned && (
                 <button
                   onClick={alignNodes}
@@ -1242,8 +2010,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 node={selectedNode as WorkflowNode}
                 workflowId={workflowId}
                 upstreamData={upstreamData}
+                previousNodes={previousNodes}
+                nextNodes={nextNodes}
                 onClose={() => setSelectedNodeId(null)}
                 onUpdate={updateNodeConfig}
+                onNavigateNode={(nodeId) => setSelectedNodeId(nodeId)}
               />
             )}
           </ReactFlow>
@@ -1270,38 +2041,91 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               ) : (
                 <div className="space-y-4">
                   {executionHistory.map((run) => (
-                    <div key={run.executionId} className="group relative rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 hover:bg-slate-50 dark:hover:bg-slate-800/50 p-5 transition-colors grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-center shadow-sm hover:shadow-md">
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 items-center">
-                        <div>
-                          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-1">Started</div>
-                          <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">{formatDateTime(run.startedAt)}</div>
+                    <div key={run.executionId} className="space-y-2">
+                      <button
+                        type="button"
+                        onClick={() => handleExecutionRowClick(run.executionId)}
+                        className={`group relative w-full text-left rounded-2xl border p-5 transition-colors grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-center shadow-sm hover:shadow-md ${
+                          selectedExecutionId === run.executionId
+                            ? 'border-blue-400 bg-blue-50/40 dark:bg-blue-500/10 ring-2 ring-blue-500/20'
+                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                        }`}
+                      >
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 items-center">
+                          <div>
+                            <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-1">Started</div>
+                            <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">{formatDateTime(run.startedAt)}</div>
+                          </div>
+
+                          <div>
+                            <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-1">Finished</div>
+                            <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">{formatDateTime(run.finishedAt)}</div>
+                          </div>
+                          
+                          <div>
+                            <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-1">Duration</div>
+                            <div className="text-sm font-bold text-slate-800 dark:text-slate-100">{run.durationMs != null ? `${(run.durationMs / 1000).toFixed(2)}s` : <span className="text-blue-500 animate-pulse">Running...</span>}</div>
+                          </div>
                         </div>
 
-                        <div>
-                          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-1">Finished</div>
-                          <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">{formatDateTime(run.finishedAt)}</div>
+                        <div className="flex items-center gap-4 justify-between md:justify-end border-t md:border-t-0 border-slate-100 dark:border-slate-800 pt-4 md:pt-0">
+                          <span className={`inline-flex items-center rounded-full px-3 py-1.5 text-[10px] font-black tracking-widest uppercase shadow-sm ${getStatusBadgeClasses(run.status)}`}>
+                            {run.status}
+                          </span>
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                            {run.triggeredBy}
+                          </span>
                         </div>
-                        
-                        <div>
-                          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-1">Duration</div>
-                          <div className="text-sm font-bold text-slate-800 dark:text-slate-100">{run.durationMs != null ? `${(run.durationMs / 1000).toFixed(2)}s` : <span className="text-blue-500 animate-pulse">Running...</span>}</div>
-                        </div>
-                      </div>
+                      </button>
 
-                      <div className="flex items-center gap-4 justify-between md:justify-end border-t md:border-t-0 border-slate-100 dark:border-slate-800 pt-4 md:pt-0">
-                        <span className={`inline-flex items-center rounded-full px-3 py-1.5 text-[10px] font-black tracking-widest uppercase shadow-sm ${run.status === 'SUCCEEDED' ? 'bg-emerald-100/80 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-200/50 dark:border-emerald-500/20' : run.status === 'FAILED' ? 'bg-rose-100/80 text-rose-700 dark:bg-rose-500/20 dark:text-rose-400 border border-rose-200/50 dark:border-rose-500/20' : run.status === 'RUNNING' ? 'bg-purple-100/80 text-purple-700 dark:bg-purple-500/20 dark:text-purple-400 border border-purple-200/50 dark:border-purple-500/20' : 'bg-slate-100/80 text-slate-700 dark:bg-slate-500/20 dark:text-slate-400 border border-slate-200/50 dark:border-slate-500/20'}`}>
-                          {run.status}
-                        </span>
-                        
-                        {/* <button
-                          type="button"
-                          onClick={() => setActiveTab('editor')}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.1em] text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
-                        >
-                          View
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-                        </button> */}
-                      </div>
+                      {selectedExecutionId === run.executionId && (
+                        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/30 p-4">
+                          {isExecutionDetailLoading && (
+                            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-5 text-sm text-slate-500 dark:text-slate-400">
+                              Loading node execution logs...
+                            </div>
+                          )}
+
+                          {executionDetailError && !isExecutionDetailLoading && (
+                            <div className="rounded-xl border border-rose-200 dark:border-rose-900/40 bg-rose-50 dark:bg-rose-900/20 px-4 py-3 text-sm text-rose-700 dark:text-rose-300">
+                              {executionDetailError}
+                            </div>
+                          )}
+
+                          {!isExecutionDetailLoading && selectedExecutionDetail && selectedExecutionDetail.id === run.executionId && (
+                            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+                              <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500">
+                                Node Execution Logs
+                              </div>
+                              <div className="max-h-[320px] overflow-y-auto">
+                                {selectedExecutionDetail.node_results.map((nodeResult) => (
+                                  <div
+                                    key={`${selectedExecutionDetail.id}_${nodeResult.node_id}`}
+                                    className="px-4 py-3 border-b last:border-b-0 border-slate-100 dark:border-slate-800 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2"
+                                  >
+                                    <div>
+                                      <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                                        {nodeResult.node_type}
+                                        <span className="ml-2 text-xs font-mono text-slate-400 dark:text-slate-500">{nodeResult.node_id}</span>
+                                      </div>
+                                      {nodeResult.error_message && (
+                                        <div className="mt-1 text-xs text-rose-600 dark:text-rose-300 font-mono whitespace-pre-wrap break-words">
+                                          {nodeResult.error_message}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-black tracking-widest uppercase ${getStatusBadgeClasses(nodeResult.status)}`}>
+                                        {nodeResult.status}
+                                      </span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

@@ -11,16 +11,21 @@ export interface Message {
   content: string;
   timestamp: string;
   workflow?: WorkflowDefinition;
+  workflowName?: string;
 }
 
 export interface AIResponse {
   message: string;
   workflow?: WorkflowDefinition;
+  workflowName?: string;
 }
 
 interface GenerateWorkflowApiResponse {
   definition?: WorkflowDefinition;
   workflow?: WorkflowDefinition | { definition?: WorkflowDefinition };
+  name?: string;
+  workflow_name?: string;
+  title?: string;
   message?: string;
 }
 
@@ -63,6 +68,25 @@ class AIService {
 
     return null;
   }
+
+  private extractWorkflowName(data: GenerateWorkflowApiResponse | any): string | undefined {
+    const candidates = [
+      data?.name,
+      data?.workflow_name,
+      data?.title,
+      data?.workflow?.name,
+      data?.workflow?.workflow_name,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate !== 'string') continue;
+      const normalized = candidate.trim();
+      if (normalized) {
+        return normalized.slice(0, 100);
+      }
+    }
+    return undefined;
+  }
   
   async generateWorkflow(
     prompt: string,
@@ -88,6 +112,7 @@ class AIService {
     return {
       message: response.data?.message || 'Workflow generated from backend AI service.',
       workflow: definition,
+      workflowName: this.extractWorkflowName(response.data),
     };
   }
 }

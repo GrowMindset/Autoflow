@@ -25,7 +25,7 @@ async def generate_workflow(
     llm_service: LLMService = Depends(get_llm_service),
 ) -> GenerateWorkflowResponse:
     try:
-        definition = await llm_service.generate_workflow_definition(payload.prompt)
+        generated = await llm_service.generate_workflow_definition(payload.prompt)
     except WorkflowGenerationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -43,4 +43,4 @@ async def generate_workflow(
             },
         ) from exc
 
-    return GenerateWorkflowResponse(definition=definition)
+    return GenerateWorkflowResponse(definition=generated.definition, name=generated.name)

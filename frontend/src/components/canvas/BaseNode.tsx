@@ -68,11 +68,27 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
     updateNodeInternals(id);
   }, [id, caseIds, updateNodeInternals]);
   
-  const isHandleConnected = (handleId: string | null) => {
-    return edges.some(edge => edge.source === id && edge.sourceHandle === handleId);
+  const normalizeHandle = (handleId: string | null | undefined) => handleId ?? null;
+
+  const isHandleConnected = (handleId: string | null, connectionType: 'source' | 'target' = 'source') => {
+    const normalizedHandle = normalizeHandle(handleId);
+
+    if (connectionType === 'target') {
+      return edges.some(
+        (edge) => edge.target === id && normalizeHandle(edge.targetHandle) === normalizedHandle
+      );
+    }
+
+    return edges.some(
+      (edge) => edge.source === id && normalizeHandle(edge.sourceHandle) === normalizedHandle
+    );
   };
 
-  const handlePlusClick = (e: React.MouseEvent, handleId: string | null) => {
+  const handlePlusClick = (
+    e: React.MouseEvent,
+    handleId: string | null,
+    connectionType: 'source' | 'target' = 'source'
+  ) => {
     e.stopPropagation();
     
     // Trigger the quick add menu in WorkflowCanvas via a custom event
@@ -80,19 +96,29 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
         detail: {
             nodeId: id,
             handleId: handleId,
-            position: { x: 0, y: 0 } // Position will be calculated relative to the node
+            connectionType,
+            clientX: e.clientX,
+            clientY: e.clientY,
         }
     });
     window.dispatchEvent(event);
   };
 
-  const PlusButton = ({ handleId, className = "" }: { handleId: string | null, className?: string }) => {
-    if (isHandleConnected(handleId)) return null;
+  const PlusButton = ({
+    handleId,
+    className = "",
+    connectionType = 'source',
+  }: {
+    handleId: string | null;
+    className?: string;
+    connectionType?: 'source' | 'target';
+  }) => {
+    if (isHandleConnected(handleId, connectionType)) return null;
     
     return (
       <button
-        onClick={(e) => handlePlusClick(e, handleId)}
-        className={`nodrag absolute z-[100] w-4 h-4 bg-slate-800 dark:bg-slate-800 text-slate-400 border border-slate-700 rounded-md flex items-center justify-center shadow-lg hover:bg-slate-700 hover:text-white active:scale-95 transition-all ${className}`}
+        onClick={(e) => handlePlusClick(e, handleId, connectionType)}
+        className={`nodrag pointer-events-auto absolute z-[100] w-4 h-4 bg-slate-800 dark:bg-slate-800 text-slate-400 border border-slate-700 rounded-md flex items-center justify-center shadow-lg hover:bg-slate-700 hover:text-white active:scale-95 transition-all ${className}`}
         title="Add node here"
       >
         <Plus size={10} strokeWidth={4} />
@@ -253,7 +279,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
                 className="!w-2 !h-2 !rounded-none border border-white dark:border-slate-900 !bg-purple-500 hover:!bg-purple-400 pointer-events-auto"
               />
               <span className="text-[6px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-tighter">Chat Model*</span>
-              <PlusButton handleId="chat_model" className="-bottom-5" />
+              <PlusButton handleId="chat_model" connectionType="target" className="-bottom-5" />
             </div>
             <div className="flex flex-col items-center gap-0.5 relative group/h">
               <Handle
@@ -264,7 +290,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
                 className="!w-2 !h-2 !rounded-none border border-white dark:border-slate-900 !bg-amber-500 hover:!bg-amber-400 pointer-events-auto"
               />
               <span className="text-[6px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-tighter">Memory</span>
-              <PlusButton handleId="memory" className="-bottom-5" />
+              <PlusButton handleId="memory" connectionType="target" className="-bottom-5" />
             </div>
             <div className="flex flex-col items-center gap-0.5 relative group/h">
               <Handle
@@ -275,7 +301,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
                 className="!w-2 !h-2 !rounded-none border border-white dark:border-slate-900 !bg-emerald-500 hover:!bg-emerald-400 pointer-events-auto"
               />
               <span className="text-[6px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-tighter">Tool</span>
-              <PlusButton handleId="tool" className="-bottom-5" />
+              <PlusButton handleId="tool" connectionType="target" className="-bottom-5" />
             </div>
           </div>
         </>
