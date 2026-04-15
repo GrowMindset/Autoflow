@@ -17,6 +17,7 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     'create_google_sheets': ['credential_id', 'title'],
     'search_update_google_sheets': ['credential_id', 'spreadsheet_id', 'sheet_name', 'search_column', 'search_value', 'update_column', 'update_value'],
     'telegram': ['credential_id', 'message'],
+    'whatsapp': ['credential_id', 'to_number', 'template_name'],
     'ai_agent': ['command'],
     'chat_model_openai': ['credential_id', 'model'],
     'chat_model_groq': ['credential_id', 'model'],

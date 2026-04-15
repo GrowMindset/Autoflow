@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
+import { Plus } from 'lucide-react';
 import { CredentialItem, credentialService } from '../../services/credentialService';
 
 /**
@@ -169,6 +170,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     },
     { key: 'to_number', label: 'Recipient Phone', type: 'text', placeholder: 'e.g. +919876543210' },
     { key: 'template_name', label: 'Template Name', type: 'text', placeholder: 'e.g. hello_world' },
+    { key: 'template_params', label: 'Template Parameters', type: 'string_array' },
     { key: 'language_code', label: 'Language Code', type: 'text', placeholder: 'e.g. en_US' },
   ],
   linkedin: [
@@ -378,6 +380,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
       setNewKey('');
       setNewEmail('');
       setNewChatId('');
+      setNewPhoneNumberId('');
       setNewServiceAccountJson('');
       setActiveCredentialForm(null);
       await fetchCredentials();
@@ -620,6 +623,75 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
               Add Form Field
+            </button>
+          </div>
+        );
+
+      case 'string_array':
+        const stringArray = Array.isArray(value) ? value : [];
+        return (
+          <div className="space-y-2">
+            {stringArray.map((str: string, idx: number) => (
+              <div key={idx} className="relative group">
+                <input
+                  type="text"
+                  placeholder={dragOverField === `${field.key}_${idx}` ? 'Drop to insert…' : `Param ${idx + 1}`}
+                  value={str || ''}
+                  onChange={(e) => {
+                    const next = [...stringArray];
+                    next[idx] = e.target.value;
+                    onChange(field.key, next);
+                  }}
+                  onDragOver={(e) => handleDragOver(e, `${field.key}_${idx}`)}
+                  onDragLeave={(e) => handleDragLeave(e)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDragOverField(null);
+                    let textToInsert = '';
+                    const literalValue = e.dataTransfer.getData('application/json-value');
+                    if (literalValue) {
+                      textToInsert = literalValue;
+                    } else {
+                      const path = e.dataTransfer.getData('application/json-path');
+                      if (path) {
+                        textToInsert = `{{${path}}}`;
+                      } else {
+                        textToInsert = e.dataTransfer.getData('text/plain') || '';
+                      }
+                    }
+                    if (!textToInsert) return;
+                    const el = e.currentTarget as HTMLInputElement;
+                    const current = String(stringArray[idx] || '');
+                    const start = el.selectionStart ?? current.length;
+                    const end = el.selectionEnd ?? start;
+                    const nextArr = [...stringArray];
+                    nextArr[idx] = current.slice(0, start) + textToInsert + current.slice(end);
+                    onChange(field.key, nextArr);
+                  }}
+                  className={`w-full bg-slate-50 dark:bg-slate-800 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none transition-all pr-8 ${dragOverField === `${field.key}_${idx}`
+                    ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                    : 'border-slate-200 dark:border-slate-700 focus:border-blue-500 dark:focus:border-blue-400'
+                    }`}
+                />
+                <button
+                  onClick={() => {
+                    const next = [...stringArray];
+                    next.splice(idx, 1);
+                    onChange(field.key, next);
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => onChange(field.key, [...stringArray, ''])}
+              className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-600 text-[10px] font-bold hover:border-blue-300 dark:hover:border-blue-900 hover:text-blue-500 dark:hover:text-blue-400 transition-all flex items-center justify-center gap-2"
+            >
+              <Plus size={12} strokeWidth={3} />
+              Add Parameter
             </button>
           </div>
         );
