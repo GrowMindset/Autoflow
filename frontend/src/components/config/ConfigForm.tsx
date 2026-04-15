@@ -68,22 +68,73 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
   ],
   // Action Schemas
   get_gmail_message: [
-    { key: 'query', label: 'Search Query', type: 'text', placeholder: 'e.g. from:support@google.com' },
-    { key: 'limit', label: 'Max Messages', type: 'text', placeholder: 'e.g. 10' }
+    {
+      key: 'credential_id',
+      label: 'Gmail Credential',
+      type: 'credential_selector',
+      appName: 'gmail',
+      credentialLabel: 'Gmail App Password + Email',
+      credentialPlaceholder: 'Gmail App Password (16 chars)',
+      credentialKey: 'app_password',
+      requiresEmail: true,
+    },
+    { key: 'folder', label: 'Mailbox Folder', type: 'text', placeholder: 'e.g. INBOX' },
+    { key: 'query', label: 'Search Query', type: 'text', placeholder: 'e.g. invoice OR from:billing@example.com' },
+    { key: 'limit', label: 'Max Messages', type: 'text', placeholder: 'e.g. 10' },
+    { key: 'unread_only', label: 'Unread Only', type: 'boolean' },
+    { key: 'include_body', label: 'Include Body', type: 'boolean' },
+    { key: 'mark_as_read', label: 'Mark As Read', type: 'boolean' },
   ],
   send_gmail_message: [
+    {
+      key: 'credential_id',
+      label: 'Gmail Credential',
+      type: 'credential_selector',
+      appName: 'gmail',
+      credentialLabel: 'Gmail App Password + Email',
+      credentialPlaceholder: 'Gmail App Password (16 chars)',
+      credentialKey: 'app_password',
+      requiresEmail: true,
+    },
     { key: 'to', label: 'Recipient Email', type: 'text', placeholder: 'e.g. user@example.com' },
+    { key: 'cc', label: 'CC', type: 'text', placeholder: 'e.g. manager@example.com' },
+    { key: 'bcc', label: 'BCC', type: 'text', placeholder: 'e.g. audit@example.com' },
+    { key: 'reply_to', label: 'Reply-To', type: 'text', placeholder: 'e.g. support@example.com' },
     { key: 'subject', label: 'Subject', type: 'text', placeholder: 'e.g. Hello from Autoflow' },
-    { key: 'body', label: 'Message Body', type: 'text', placeholder: 'Type your message here...' }
+    { key: 'body', label: 'Message Body', type: 'textarea', placeholder: 'Type your message here...' },
+    { key: 'is_html', label: 'Send As HTML', type: 'boolean' },
   ],
   create_google_sheets: [
-    { key: 'title', label: 'Spreadsheet Title', type: 'text', placeholder: 'e.g. New Outreach List' }
+    {
+      key: 'credential_id',
+      label: 'Google Sheets Credential',
+      type: 'credential_selector',
+      appName: 'sheets',
+      credentialLabel: 'Service Account JSON',
+      credentialPlaceholder: 'Paste service-account JSON',
+      credentialKey: 'service_account_json',
+      requiresServiceAccountJson: true,
+    },
+    { key: 'title', label: 'Spreadsheet Title', type: 'text', placeholder: 'e.g. New Outreach List' },
+    { key: 'sheet_name', label: 'First Sheet Name', type: 'text', placeholder: 'e.g. Leads' }
   ],
   search_update_google_sheets: [
+    {
+      key: 'credential_id',
+      label: 'Google Sheets Credential',
+      type: 'credential_selector',
+      appName: 'sheets',
+      credentialLabel: 'Service Account JSON',
+      credentialPlaceholder: 'Paste service-account JSON',
+      credentialKey: 'service_account_json',
+      requiresServiceAccountJson: true,
+    },
     { key: 'spreadsheet_id', label: 'Spreadsheet ID', type: 'text', placeholder: 'e.g. 1aBC...xyz' },
     { key: 'sheet_name', label: 'Sheet Name', type: 'text', placeholder: 'e.g. Sheet1' },
-    { key: 'search_column', label: 'Column to Search', type: 'text', placeholder: 'e.g. Email' },
-    { key: 'search_value', label: 'Value to Find', type: 'text', placeholder: 'e.g. {{ $json.email }}' }
+    { key: 'search_column', label: 'Column to Search', type: 'text', placeholder: 'e.g. Email or A or 1' },
+    { key: 'search_value', label: 'Value to Find', type: 'text', placeholder: 'e.g. {{ $json.email }}' },
+    { key: 'update_column', label: 'Column to Update', type: 'text', placeholder: 'e.g. Status or D or 4' },
+    { key: 'update_value', label: 'New Value', type: 'text', placeholder: 'e.g. Processed' }
   ],
   telegram: [
     {
@@ -165,7 +216,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   const [loading, setLoading] = useState(false);
   const [activeCredentialForm, setActiveCredentialForm] = useState<string | null>(null);
   const [newKey, setNewKey] = useState('');
+  const [newEmail, setNewEmail] = useState('');
   const [newChatId, setNewChatId] = useState('');
+  const [newServiceAccountJson, setNewServiceAccountJson] = useState('');
   const [dragOverField, setDragOverField] = useState<string | null>(null);
 
   // ── Drag-and-drop handlers for text/textarea fields ──────────────────────
@@ -253,7 +306,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   useEffect(() => {
     if (activeCredentialForm) {
       setNewKey('');
+      setNewEmail('');
       setNewChatId('');
+      setNewServiceAccountJson('');
     }
   }, [activeCredentialForm]);
 
@@ -271,11 +326,32 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
     credentialKey: string = 'api_key',
     targetConfigKey: string = 'credential_id',
     extraTokenData: Record<string, string> = {},
+    credentialValue?: string,
   ) => {
-    const trimmed = newKey.trim();
+    const trimmed = String(credentialValue ?? newKey).trim();
     if (!trimmed) {
       toast.error('Please enter a credential value.');
       return;
+    }
+    if (credentialKey === 'service_account_json') {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (!parsed || typeof parsed !== 'object') {
+          toast.error('Service account JSON must be a valid JSON object.');
+          return;
+        }
+        if (!String((parsed as any).client_email || '').trim()) {
+          toast.error('Service account JSON is missing client_email.');
+          return;
+        }
+        if (!String((parsed as any).private_key || '').trim()) {
+          toast.error('Service account JSON is missing private_key.');
+          return;
+        }
+      } catch {
+        toast.error('Please paste valid service account JSON.');
+        return;
+      }
     }
 
     setLoading(true);
@@ -287,7 +363,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
 
       onChange(targetConfigKey, created.id);
       setNewKey('');
+      setNewEmail('');
       setNewChatId('');
+      setNewServiceAccountJson('');
       setActiveCredentialForm(null);
       await fetchCredentials();
       toast.success('Credential saved and selected.');
@@ -537,6 +615,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
         const filteredCreds = credentials.filter(c => c.app_name === field.appName);
         const credentialFormId = `${field.appName}:${field.key}`;
         const requiresChatId = Boolean(field.requiresChatId);
+        const requiresEmail = Boolean(field.requiresEmail);
+        const requiresServiceAccountJson = Boolean(field.requiresServiceAccountJson);
+        const secretValue = requiresServiceAccountJson ? newServiceAccountJson : newKey;
         return (
           <div className="space-y-2">
             <div className="flex gap-2">
@@ -554,7 +635,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                 onClick={() => {
                   void fetchCredentials();
                   setNewKey('');
+                  setNewEmail('');
                   setNewChatId('');
+                  setNewServiceAccountJson('');
                   setActiveCredentialForm((current) => (
                     current === credentialFormId ? null : credentialFormId
                   ));
@@ -570,16 +653,41 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                   Add {field.appName} {field.credentialLabel || 'API Key'}
                 </label>
                 <div className="space-y-2">
-                  <input
-                    type="password"
-                    name={`credential-secret-${credentialFormId}`}
-                    autoComplete="new-password"
-                    spellCheck={false}
-                    placeholder={field.credentialPlaceholder || 'sk-...'}
-                    value={newKey}
-                    onChange={(e) => setNewKey(e.target.value)}
-                    className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
-                  />
+                  {requiresServiceAccountJson ? (
+                    <textarea
+                      name={`credential-service-account-${credentialFormId}`}
+                      autoComplete="off"
+                      spellCheck={false}
+                      rows={6}
+                      placeholder={field.credentialPlaceholder || 'Paste Google service account JSON'}
+                      value={newServiceAccountJson}
+                      onChange={(e) => setNewServiceAccountJson(e.target.value)}
+                      className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 font-mono resize-y"
+                    />
+                  ) : (
+                    <input
+                      type="password"
+                      name={`credential-secret-${credentialFormId}`}
+                      autoComplete="new-password"
+                      spellCheck={false}
+                      placeholder={field.credentialPlaceholder || 'sk-...'}
+                      value={newKey}
+                      onChange={(e) => setNewKey(e.target.value)}
+                      className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
+                    />
+                  )}
+                  {requiresEmail && (
+                    <input
+                      type="email"
+                      name={`credential-email-${credentialFormId}`}
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="Gmail Address (e.g. yourname@gmail.com)"
+                      value={newEmail}
+                      onChange={(e) => setNewEmail(e.target.value)}
+                      className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
+                    />
+                  )}
                   {requiresChatId && (
                     <input
                       type="text"
@@ -593,9 +701,12 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                     />
                   )}
                   <button
-                    disabled={loading || !newKey || (requiresChatId && !newChatId.trim())}
+                    disabled={loading || !secretValue.trim() || (requiresEmail && !newEmail.trim()) || (requiresChatId && !newChatId.trim())}
                     onClick={() => {
                       const extraData: Record<string, string> = {};
+                      if (requiresEmail) {
+                        extraData.email = newEmail.trim();
+                      }
                       if (requiresChatId) {
                         extraData.chat_id = newChatId.trim();
                       }
@@ -604,6 +715,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                         field.credentialKey || 'api_key',
                         field.key,
                         extraData,
+                        secretValue,
                       );
                     }}
                     className="px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded-lg disabled:opacity-50 hover:bg-blue-700 transition-colors"

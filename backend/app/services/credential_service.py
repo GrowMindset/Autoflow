@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import UUID
 from sqlalchemy import select
@@ -10,7 +11,22 @@ from app.schemas.credentials import AppCredentialCreate
 from app.core.security import encrypt_data, decrypt_data
 
 
-SENSITIVE_TOKEN_FIELDS = {"api_key", "bot_token", "chat_id", "botToken", "chatId"}
+SENSITIVE_TOKEN_FIELDS = {
+    "api_key",
+    "bot_token",
+    "chat_id",
+    "botToken",
+    "chatId",
+    "app_password",
+    "password",
+    "email",
+    "user_email",
+    "username",
+    "service_account_json",
+    "serviceAccountJson",
+    "private_key",
+    "privateKey",
+}
 
 
 class CredentialService:
@@ -42,6 +58,72 @@ class CredentialService:
             token_data["chat_id"] = chat_id.strip()
             token_data.pop("botToken", None)
             token_data.pop("chatId", None)
+        elif payload.app_name == "gmail":
+            email = (
+                token_data.get("email")
+                or token_data.get("user_email")
+                or token_data.get("username")
+            )
+            app_password = (
+                token_data.get("app_password")
+                or token_data.get("password")
+                or token_data.get("api_key")
+            )
+
+            if not isinstance(email, str) or not email.strip():
+                raise ValueError(
+                    "Gmail credential requires email (token_data.email)."
+                )
+            if not isinstance(app_password, str) or not app_password.strip():
+                raise ValueError(
+                    "Gmail credential requires app_password (token_data.app_password)."
+                )
+
+            token_data["email"] = email.strip()
+            token_data["app_password"] = app_password.strip()
+            token_data["user_email"] = email.strip()
+            token_data["username"] = email.strip()
+            token_data["password"] = app_password.strip()
+        elif payload.app_name == "sheets":
+            raw_sa_json = (
+                token_data.get("service_account_json")
+                or token_data.get("serviceAccountJson")
+            )
+
+            if not isinstance(raw_sa_json, str) or not raw_sa_json.strip():
+                raise ValueError(
+                    "Google Sheets credential requires service account JSON (token_data.service_account_json)."
+                )
+
+            try:
+                service_account_info = json.loads(raw_sa_json)
+            except Exception as exc:
+                raise ValueError("Google Sheets service account JSON is invalid.") from exc
+
+            if not isinstance(service_account_info, dict):
+                raise ValueError("Google Sheets service account JSON must be an object.")
+
+            client_email = str(service_account_info.get("client_email") or "").strip()
+            private_key = str(service_account_info.get("private_key") or "").strip()
+            token_uri = str(service_account_info.get("token_uri") or "").strip()
+
+            if not client_email:
+                raise ValueError("Google Sheets service account JSON is missing client_email.")
+            if not private_key:
+                raise ValueError("Google Sheets service account JSON is missing private_key.")
+
+            # Keep a normalized minimal shape so runners don't rely on many alias keys.
+            normalized_info = {
+                "type": "service_account",
+                "client_email": client_email,
+                "private_key": private_key,
+                "token_uri": token_uri or "https://oauth2.googleapis.com/token",
+                "project_id": service_account_info.get("project_id") or "",
+                "private_key_id": service_account_info.get("private_key_id") or "",
+                "client_id": service_account_info.get("client_id") or "",
+            }
+            token_data["service_account_json"] = json.dumps(normalized_info)
+            token_data.pop("serviceAccountJson", None)
 
         for key in SENSITIVE_TOKEN_FIELDS:
             value = token_data.get(key)

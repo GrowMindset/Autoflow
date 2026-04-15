@@ -20,6 +20,10 @@ class RunnerRegistry:
             "ai_agent": self._build_ai_agent,
             "chat_model_openai": self._build_chat_model_openai,
             "chat_model_groq": self._build_chat_model_groq,
+            "get_gmail_message": self._build_get_gmail_message,
+            "send_gmail_message": self._build_send_gmail_message,
+            "create_google_sheets": self._build_create_google_sheets,
+            "search_update_google_sheets": self._build_search_update_google_sheets,
             "telegram": self._build_telegram,
         }
         self._cache: dict[str, Any] = {}
@@ -138,6 +142,32 @@ class RunnerRegistry:
         )
 
         return ChatModelGroqRunner()
+
+    @staticmethod
+    def _build_get_gmail_message() -> Any:
+        from app.execution.runners.nodes.get_gmail_message import GetGmailMessageRunner
+
+        return GetGmailMessageRunner()
+
+    @staticmethod
+    def _build_send_gmail_message() -> Any:
+        from app.execution.runners.nodes.send_gmail_message import SendGmailMessageRunner
+
+        return SendGmailMessageRunner()
+
+    @staticmethod
+    def _build_create_google_sheets() -> Any:
+        from app.execution.runners.nodes.create_google_sheets import CreateGoogleSheetsRunner
+
+        return CreateGoogleSheetsRunner()
+
+    @staticmethod
+    def _build_search_update_google_sheets() -> Any:
+        from app.execution.runners.nodes.search_update_google_sheets import (
+            SearchUpdateGoogleSheetsRunner,
+        )
+
+        return SearchUpdateGoogleSheetsRunner()
 
     @staticmethod
     def _build_telegram() -> Any:

@@ -55,19 +55,36 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "get_gmail_message": {
         "category": "action",
-        "description": "Dummy action node for Gmail fetch. Use empty strings for unresolved user-specific values.",
+        "description": "Fetches emails from Gmail via IMAP. Requires credential_id.",
+        "rules": [
+            "Use config keys: credential_id, folder, query, limit, unread_only, include_body, mark_as_read.",
+            "limit should be a small positive integer as a string (for example '10').",
+        ],
     },
     "send_gmail_message": {
         "category": "action",
-        "description": "Dummy action node for Gmail send. Use empty strings for to, subject, and body when the prompt does not supply exact values.",
+        "description": "Sends email through Gmail SMTP. Requires credential_id, to, subject, and body.",
+        "rules": [
+            "Use config keys: credential_id, to, cc, bcc, reply_to, subject, body, is_html.",
+            "Use comma-separated emails in to/cc/bcc when multiple recipients are needed.",
+        ],
     },
     "create_google_sheets": {
         "category": "action",
-        "description": "Dummy action node for creating a spreadsheet.",
+        "description": "Creates a new Google Spreadsheet using a Sheets service-account credential.",
+        "rules": [
+            "Use config keys: credential_id, title, sheet_name.",
+            "credential_id must point to app_credentials with app_name=sheets.",
+            "title is required. sheet_name is optional.",
+        ],
     },
     "search_update_google_sheets": {
         "category": "action",
-        "description": "Dummy action node for spreadsheet lookup/update operations.",
+        "description": "Searches rows in Google Sheets and updates one column on the first matched row.",
+        "rules": [
+            "Use config keys: credential_id, spreadsheet_id, sheet_name, search_column, search_value, update_column, update_value.",
+            "search_column and update_column can be header names, column letters (A/B/C), or column numbers.",
+        ],
     },
     "telegram": {
         "category": "action",

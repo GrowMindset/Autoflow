@@ -162,6 +162,20 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             delete nextConfig.bot_token;
             delete nextConfig.chat_id;
           }
+          if (node.data.type === 'get_gmail_message' || node.data.type === 'send_gmail_message') {
+            delete nextConfig.app_password;
+            delete nextConfig.password;
+            delete nextConfig.api_key;
+            delete nextConfig.email;
+            delete nextConfig.user_email;
+            delete nextConfig.username;
+          }
+          if (node.data.type === 'create_google_sheets' || node.data.type === 'search_update_google_sheets') {
+            delete nextConfig.service_account_json;
+            delete nextConfig.serviceAccountJson;
+            delete nextConfig.private_key;
+            delete nextConfig.privateKey;
+          }
           return nextConfig;
         })(),
         id: node.id,

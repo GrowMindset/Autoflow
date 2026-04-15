@@ -200,6 +200,22 @@ class WorkflowService:
                 config.pop("bot_token", None)
                 config.pop("chat_id", None)
                 node_copy["config"] = config
+            if node_copy.get("type") in {"get_gmail_message", "send_gmail_message"} and isinstance(node_copy.get("config"), dict):
+                config = dict(node_copy["config"])
+                config.pop("app_password", None)
+                config.pop("password", None)
+                config.pop("api_key", None)
+                config.pop("email", None)
+                config.pop("user_email", None)
+                config.pop("username", None)
+                node_copy["config"] = config
+            if node_copy.get("type") in {"create_google_sheets", "search_update_google_sheets"} and isinstance(node_copy.get("config"), dict):
+                config = dict(node_copy["config"])
+                config.pop("service_account_json", None)
+                config.pop("serviceAccountJson", None)
+                config.pop("private_key", None)
+                config.pop("privateKey", None)
+                node_copy["config"] = config
             sanitized_nodes.append(node_copy)
 
         return {

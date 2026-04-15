@@ -58,7 +58,20 @@ async def _resolve_credentials(
             if not isinstance(value, str):
                 decrypted[key] = value
                 continue
-            if key in {"api_key", "bot_token", "chat_id"}:
+            if key in {
+                "api_key",
+                "bot_token",
+                "chat_id",
+                "app_password",
+                "password",
+                "email",
+                "user_email",
+                "username",
+                "service_account_json",
+                "serviceAccountJson",
+                "private_key",
+                "privateKey",
+            }:
                 try:
                     decrypted[key] = decrypt_data(value)
                 except Exception:
@@ -76,6 +89,24 @@ async def _resolve_credentials(
             decrypted["chat_id"] = decrypted["chatId"]
         if "chatId" not in decrypted and isinstance(decrypted.get("chat_id"), str):
             decrypted["chatId"] = decrypted["chat_id"]
+        if "app_password" not in decrypted and isinstance(decrypted.get("password"), str):
+            decrypted["app_password"] = decrypted["password"]
+        if "password" not in decrypted and isinstance(decrypted.get("app_password"), str):
+            decrypted["password"] = decrypted["app_password"]
+        if "email" not in decrypted and isinstance(decrypted.get("user_email"), str):
+            decrypted["email"] = decrypted["user_email"]
+        if "user_email" not in decrypted and isinstance(decrypted.get("email"), str):
+            decrypted["user_email"] = decrypted["email"]
+        if "username" not in decrypted and isinstance(decrypted.get("email"), str):
+            decrypted["username"] = decrypted["email"]
+        if "service_account_json" not in decrypted and isinstance(
+            decrypted.get("serviceAccountJson"), str
+        ):
+            decrypted["service_account_json"] = decrypted["serviceAccountJson"]
+        if "serviceAccountJson" not in decrypted and isinstance(
+            decrypted.get("service_account_json"), str
+        ):
+            decrypted["serviceAccountJson"] = decrypted["service_account_json"]
 
         resolved[str(cred_id)] = decrypted
     return resolved

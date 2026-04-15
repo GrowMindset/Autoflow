@@ -24,6 +24,16 @@ const APP_SECRET_FIELD: Record<string, { key: string; label: string; placeholder
     label: 'Bot Token',
     placeholder: 'Telegram Bot Token (e.g. 123456789:AA...)',
   },
+  gmail: {
+    key: 'app_password',
+    label: 'App Password',
+    placeholder: 'Gmail App Password (16 characters)',
+  },
+  sheets: {
+    key: 'service_account_json',
+    label: 'Service Account JSON',
+    placeholder: 'Paste Google service account JSON',
+  },
   default: {
     key: 'api_key',
     label: 'API Key / Token',
@@ -37,6 +47,7 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   const [isSaving, setIsSaving] = useState(false);
   const [appName, setAppName] = useState('openai');
   const [secret, setSecret] = useState('');
+  const [gmailEmail, setGmailEmail] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -50,6 +61,8 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   );
   const secretField = APP_SECRET_FIELD[appName] || APP_SECRET_FIELD.default;
   const isTelegram = appName === 'telegram';
+  const isGmail = appName === 'gmail';
+  const isSheets = appName === 'sheets';
 
   const fetchCredentials = async () => {
     setIsLoading(true);
@@ -66,6 +79,7 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   useEffect(() => {
     if (!isOpen) return;
     setSecret('');
+    setGmailEmail('');
     setTelegramChatId('');
     void fetchCredentials();
   }, [isOpen]);
@@ -79,6 +93,9 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   useEffect(() => {
     if (appName !== 'telegram') {
       setTelegramChatId('');
+    }
+    if (appName !== 'gmail') {
+      setGmailEmail('');
     }
     setSecret('');
   }, [appName]);
@@ -94,6 +111,31 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
       toast.error('Please enter Telegram Chat ID');
       return;
     }
+    const trimmedGmailEmail = gmailEmail.trim();
+    if (isGmail && !trimmedGmailEmail) {
+      toast.error('Please enter Gmail address');
+      return;
+    }
+    if (isSheets) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (!parsed || typeof parsed !== 'object') {
+          toast.error('Service account JSON must be a valid JSON object');
+          return;
+        }
+        if (!String((parsed as any).client_email || '').trim()) {
+          toast.error('service_account_json is missing client_email');
+          return;
+        }
+        if (!String((parsed as any).private_key || '').trim()) {
+          toast.error('service_account_json is missing private_key');
+          return;
+        }
+      } catch {
+        toast.error('Please paste valid service account JSON');
+        return;
+      }
+    }
 
     setIsSaving(true);
     try {
@@ -101,10 +143,12 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
         app_name: appName,
         token_data: {
           [secretField.key]: trimmed,
+          ...(isGmail ? { email: trimmedGmailEmail } : {}),
           ...(isTelegram ? { chat_id: trimmedChatId } : {}),
         },
       });
       setSecret('');
+      setGmailEmail('');
       setTelegramChatId('');
       await fetchCredentials();
       toast.success('Credential saved');
@@ -192,16 +236,46 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
             <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
               {secretField.label}
             </label>
-            <input
-              type="password"
-              name="credential-manager-secret"
-              autoComplete="new-password"
-              spellCheck={false}
-              value={secret}
-              onChange={(event) => setSecret(event.target.value)}
-              placeholder={secretField.placeholder}
-              className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
-            />
+            {isSheets ? (
+              <textarea
+                name="credential-manager-service-account"
+                autoComplete="off"
+                spellCheck={false}
+                rows={7}
+                value={secret}
+                onChange={(event) => setSecret(event.target.value)}
+                placeholder={secretField.placeholder}
+                className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-mono text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40 resize-y"
+              />
+            ) : (
+              <input
+                type="password"
+                name="credential-manager-secret"
+                autoComplete="new-password"
+                spellCheck={false}
+                value={secret}
+                onChange={(event) => setSecret(event.target.value)}
+                placeholder={secretField.placeholder}
+                className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
+              />
+            )}
+            {isGmail && (
+              <>
+                <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
+                  Gmail Address
+                </label>
+                <input
+                  type="email"
+                  name="credential-manager-gmail-email"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={gmailEmail}
+                  onChange={(event) => setGmailEmail(event.target.value)}
+                  placeholder="e.g. yourname@gmail.com"
+                  className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
+                />
+              </>
+            )}
             {isTelegram && (
               <>
                 <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">

@@ -9,6 +9,10 @@ from .dummy import DummyNodeRunner
 from .ai_agent import AIAgentRunner
 from .chat_model_openai import ChatModelOpenAIRunner
 from .chat_model_groq import ChatModelGroqRunner
+from .get_gmail_message import GetGmailMessageRunner
+from .send_gmail_message import SendGmailMessageRunner
+from .create_google_sheets import CreateGoogleSheetsRunner
+from .search_update_google_sheets import SearchUpdateGoogleSheetsRunner
 from .telegram import TelegramRunner
 
 try:
@@ -28,6 +32,10 @@ __all__ = [
     "AIAgentRunner",
     "ChatModelOpenAIRunner",
     "ChatModelGroqRunner",
+    "GetGmailMessageRunner",
+    "SendGmailMessageRunner",
+    "CreateGoogleSheetsRunner",
+    "SearchUpdateGoogleSheetsRunner",
     "TelegramRunner",
 ]
 
