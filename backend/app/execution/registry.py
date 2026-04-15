@@ -25,6 +25,7 @@ class RunnerRegistry:
             "create_google_sheets": self._build_create_google_sheets,
             "search_update_google_sheets": self._build_search_update_google_sheets,
             "telegram": self._build_telegram,
+            "whatsapp": self._build_whatsapp,
         }
         self._cache: dict[str, Any] = {}
 
@@ -174,3 +175,9 @@ class RunnerRegistry:
         from app.execution.runners.nodes.telegram import TelegramRunner
 
         return TelegramRunner()
+
+    @staticmethod
+    def _build_whatsapp() -> Any:
+        from app.execution.runners.nodes.whatsapp import WhatsAppRunner
+
+        return WhatsAppRunner()

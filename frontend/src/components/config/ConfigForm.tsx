@@ -157,8 +157,19 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     { key: 'parse_mode', label: 'Parse Mode', type: 'select', options: ['', 'HTML', 'Markdown', 'MarkdownV2'] },
   ],
   whatsapp: [
-    { key: 'phone_number', label: 'Phone Number', type: 'text', placeholder: 'e.g. +1234567890' },
-    { key: 'template_name', label: 'Message Template', type: 'text', placeholder: 'e.g. hello_world' }
+    {
+      key: 'credential_id',
+      label: 'WhatsApp Credential',
+      type: 'credential_selector',
+      appName: 'whatsapp',
+      credentialLabel: 'Access Token',
+      credentialPlaceholder: 'EAAxxxx...',
+      credentialKey: 'access_token',
+      requiresPhoneNumberId: true,
+    },
+    { key: 'to_number', label: 'Recipient Phone', type: 'text', placeholder: 'e.g. +919876543210' },
+    { key: 'template_name', label: 'Template Name', type: 'text', placeholder: 'e.g. hello_world' },
+    { key: 'language_code', label: 'Language Code', type: 'text', placeholder: 'e.g. en_US' },
   ],
   linkedin: [
     { key: 'content', label: 'Post Content', type: 'text', placeholder: 'What do you want to share?' },
@@ -218,6 +229,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   const [newKey, setNewKey] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newChatId, setNewChatId] = useState('');
+  const [newPhoneNumberId, setNewPhoneNumberId] = useState('');
   const [newServiceAccountJson, setNewServiceAccountJson] = useState('');
   const [dragOverField, setDragOverField] = useState<string | null>(null);
 
@@ -308,6 +320,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
       setNewKey('');
       setNewEmail('');
       setNewChatId('');
+      setNewPhoneNumberId('');
       setNewServiceAccountJson('');
     }
   }, [activeCredentialForm]);
@@ -616,6 +629,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
         const credentialFormId = `${field.appName}:${field.key}`;
         const requiresChatId = Boolean(field.requiresChatId);
         const requiresEmail = Boolean(field.requiresEmail);
+        const requiresPhoneNumberId = Boolean(field.requiresPhoneNumberId);
         const requiresServiceAccountJson = Boolean(field.requiresServiceAccountJson);
         const secretValue = requiresServiceAccountJson ? newServiceAccountJson : newKey;
         return (
@@ -637,6 +651,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                   setNewKey('');
                   setNewEmail('');
                   setNewChatId('');
+                  setNewPhoneNumberId('');
                   setNewServiceAccountJson('');
                   setActiveCredentialForm((current) => (
                     current === credentialFormId ? null : credentialFormId
@@ -700,8 +715,20 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                       className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
                     />
                   )}
+                  {requiresPhoneNumberId && (
+                    <input
+                      type="text"
+                      name={`credential-phone-number-id-${credentialFormId}`}
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="Phone Number ID (from Meta Business Suite)"
+                      value={newPhoneNumberId}
+                      onChange={(e) => setNewPhoneNumberId(e.target.value)}
+                      className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
+                    />
+                  )}
                   <button
-                    disabled={loading || !secretValue.trim() || (requiresEmail && !newEmail.trim()) || (requiresChatId && !newChatId.trim())}
+                    disabled={loading || !secretValue.trim() || (requiresEmail && !newEmail.trim()) || (requiresChatId && !newChatId.trim()) || (requiresPhoneNumberId && !newPhoneNumberId.trim())}
                     onClick={() => {
                       const extraData: Record<string, string> = {};
                       if (requiresEmail) {
@@ -709,6 +736,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                       }
                       if (requiresChatId) {
                         extraData.chat_id = newChatId.trim();
+                      }
+                      if (requiresPhoneNumberId) {
+                        extraData.phone_number_id = newPhoneNumberId.trim();
                       }
                       void handleCreateCredential(
                         field.appName,

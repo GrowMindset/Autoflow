@@ -65,8 +65,11 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "parse_mode": "",
     },
     "whatsapp": {
-        "phone_number": "",
+        "credential_id": "",
+        "to_number": "",
         "template_name": "",
+        "template_params": [],
+        "language_code": "en_US",
     },
     "linkedin": {
         "content": "",

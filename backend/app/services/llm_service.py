@@ -95,7 +95,15 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "whatsapp": {
         "category": "action",
-        "description": "Dummy action node for WhatsApp send. Use phone_number and template_name exactly.",
+        "description": "Sends a WhatsApp template message via the Meta Cloud API.",
+        "rules": [
+            "Use config keys: credential_id, to_number, template_name, template_params, language_code.",
+            "credential_id must point to app_credentials with app_name=whatsapp.",
+            "to_number is the recipient phone in E.164 format (e.g. +919876543210).",
+            "template_name must be a Meta-approved template (e.g. hello_world).",
+            "template_params is an optional list of string values for body placeholders.",
+            "language_code defaults to en_US.",
+        ],
     },
     "linkedin": {
         "category": "action",

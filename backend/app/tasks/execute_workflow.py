@@ -60,6 +60,7 @@ async def _resolve_credentials(
                 continue
             if key in {
                 "api_key",
+                "access_token",
                 "bot_token",
                 "chat_id",
                 "app_password",
@@ -231,10 +232,10 @@ async def _run_execution(
                 )
                 resolved_credentials = {
                     credential_id: (
-                        str(token_data.get("api_key") or token_data.get("bot_token") or "")
+                        str(token_data.get("api_key") or token_data.get("bot_token") or token_data.get("access_token") or "")
                     )
                     for credential_id, token_data in resolved_credential_data.items()
-                    if token_data.get("api_key") or token_data.get("bot_token")
+                    if token_data.get("api_key") or token_data.get("bot_token") or token_data.get("access_token")
                 }
 
                 result = DagExecutor().execute(
@@ -420,10 +421,10 @@ async def _run_node_test(
             )
             resolved_credentials = {
                 credential_id: (
-                    str(token_data.get("api_key") or token_data.get("bot_token") or "")
+                    str(token_data.get("api_key") or token_data.get("bot_token") or token_data.get("access_token") or "")
                 )
                 for credential_id, token_data in resolved_credential_data.items()
-                if token_data.get("api_key") or token_data.get("bot_token")
+                if token_data.get("api_key") or token_data.get("bot_token") or token_data.get("access_token")
             }
 
             subnode_configs = _find_inline_subnode_configs(

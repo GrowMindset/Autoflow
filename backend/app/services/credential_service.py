@@ -13,6 +13,7 @@ from app.core.security import encrypt_data, decrypt_data
 
 SENSITIVE_TOKEN_FIELDS = {
     "api_key",
+    "access_token",
     "bot_token",
     "chat_id",
     "botToken",
@@ -124,6 +125,28 @@ class CredentialService:
             }
             token_data["service_account_json"] = json.dumps(normalized_info)
             token_data.pop("serviceAccountJson", None)
+        elif payload.app_name == "whatsapp":
+            access_token = (
+                token_data.get("access_token")
+                or token_data.get("api_key")
+            )
+            phone_number_id = token_data.get("phone_number_id")
+
+            if not isinstance(access_token, str) or not access_token.strip():
+                raise ValueError(
+                    "WhatsApp credential requires access_token (token_data.access_token)."
+                )
+            if not isinstance(phone_number_id, str) or not phone_number_id.strip():
+                raise ValueError(
+                    "WhatsApp credential requires phone_number_id (token_data.phone_number_id)."
+                )
+
+            token_data["access_token"] = access_token.strip()
+            token_data["api_key"] = access_token.strip()  # alias for resolved_credentials
+            token_data["phone_number_id"] = phone_number_id.strip()
+            waba_id = token_data.get("waba_id")
+            if isinstance(waba_id, str) and waba_id.strip():
+                token_data["waba_id"] = waba_id.strip()
 
         for key in SENSITIVE_TOKEN_FIELDS:
             value = token_data.get(key)

@@ -14,6 +14,7 @@ from .send_gmail_message import SendGmailMessageRunner
 from .create_google_sheets import CreateGoogleSheetsRunner
 from .search_update_google_sheets import SearchUpdateGoogleSheetsRunner
 from .telegram import TelegramRunner
+from .whatsapp import WhatsAppRunner
 
 try:
     from .datetime_format import DateTimeFormatRunner
@@ -37,6 +38,7 @@ __all__ = [
     "CreateGoogleSheetsRunner",
     "SearchUpdateGoogleSheetsRunner",
     "TelegramRunner",
+    "WhatsAppRunner",
 ]
 
 if DateTimeFormatRunner is not None:
