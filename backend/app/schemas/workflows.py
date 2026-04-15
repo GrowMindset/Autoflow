@@ -21,7 +21,10 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
             }
         ],
     },
-    "webhook_trigger": {},
+    "webhook_trigger": {
+        "path": "",
+        "method": "POST",
+    },
     "workflow_trigger": {},
     "get_gmail_message": {
         "query": "",
@@ -43,8 +46,6 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "telegram": {
         "credential_id": "",
-        "bot_token": "",
-        "chat_id": "",
         "message": "",
         "parse_mode": "",
     },
@@ -238,3 +239,16 @@ class WorkflowListResponse(BaseModel):
 
 class WorkflowDeleteResponse(BaseModel):
     message: str
+
+
+class WorkflowWebhookEndpoint(BaseModel):
+    node_id: str
+    path_token: str
+    is_active: bool
+    method: str
+    path: str
+    url: str
+
+
+class WorkflowWebhookListResponse(BaseModel):
+    webhooks: list[WorkflowWebhookEndpoint]

@@ -23,3 +23,7 @@ class AppCredentialResponse(BaseModel):
 
 class AppCredentialListResponse(BaseModel):
     credentials: list[AppCredentialResponse]
+
+
+class AppCredentialDeleteResponse(BaseModel):
+    message: str

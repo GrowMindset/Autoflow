@@ -3,7 +3,10 @@ class WebhookTriggerRunner:
     Emits a webhook trigger payload for in-memory workflow execution.
 
     Config shape:
-    {}
+    {
+        "path": "orders/new",
+        "method": "POST"
+    }
 
     Input shape:
     None or {"key": "value"}

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import toast from 'react-hot-toast';
+import { CredentialItem, credentialService } from '../../services/credentialService';
 
 /**
  * Schema defining the fields available for each node type.
@@ -55,7 +56,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
   // Trigger Schemas
   webhook_trigger: [
     { key: 'path', label: 'Webhook Path', type: 'text', placeholder: 'e.g. /my-webhook' },
-    { key: 'method', label: 'HTTP Method', type: 'select', options: ['GET', 'POST', 'PUT', 'DELETE'] }
+    { key: 'method', label: 'HTTP Method', type: 'select', options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'] }
   ],
   form_trigger: [
     { key: 'form_title', label: 'Form Title', type: 'text', placeholder: 'e.g. User Feedback' },
@@ -87,15 +88,14 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
   telegram: [
     {
       key: 'credential_id',
-      label: 'Credential',
+      label: 'Telegram Credential',
       type: 'credential_selector',
       appName: 'telegram',
-      credentialLabel: 'Bot Token',
-      credentialPlaceholder: '123456789:AA...',
+      credentialLabel: 'Bot Token + Chat ID',
+      credentialPlaceholder: 'Telegram Bot Token (e.g. 123456789:AA...)',
       credentialKey: 'api_key',
+      requiresChatId: true,
     },
-    { key: 'bot_token', label: 'Bot Token (optional override)', type: 'password', placeholder: '123456789:AA...' },
-    { key: 'chat_id', label: 'Chat ID', type: 'text', placeholder: 'e.g. 123456789 or -1001234567890' },
     {
       key: 'message',
       label: 'Message Text',
@@ -161,10 +161,11 @@ interface ConfigFormProps {
 }
 
 const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) => {
-  const [credentials, setCredentials] = useState<any[]>([]);
+  const [credentials, setCredentials] = useState<CredentialItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const [showCredentialForm, setShowCredentialForm] = useState(false);
+  const [activeCredentialForm, setActiveCredentialForm] = useState<string | null>(null);
   const [newKey, setNewKey] = useState('');
+  const [newChatId, setNewChatId] = useState('');
   const [dragOverField, setDragOverField] = useState<string | null>(null);
 
   // ── Drag-and-drop handlers for text/textarea fields ──────────────────────
@@ -246,34 +247,53 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   };
 
   useEffect(() => {
-    fetchCredentials();
-  }, []);
+    void fetchCredentials();
+  }, [nodeType]);
+
+  useEffect(() => {
+    if (activeCredentialForm) {
+      setNewKey('');
+      setNewChatId('');
+    }
+  }, [activeCredentialForm]);
 
   const fetchCredentials = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/credentials', {
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
-      });
-      setCredentials(response.data.credentials);
+      const list = await credentialService.list();
+      setCredentials(list);
     } catch (err) {
       console.error('Failed to fetch credentials', err);
     }
   };
 
-  const handleCreateCredential = async (appName: string, credentialKey: string = 'api_key') => {
+  const handleCreateCredential = async (
+    appName: string,
+    credentialKey: string = 'api_key',
+    targetConfigKey: string = 'credential_id',
+    extraTokenData: Record<string, string> = {},
+  ) => {
+    const trimmed = newKey.trim();
+    if (!trimmed) {
+      toast.error('Please enter a credential value.');
+      return;
+    }
+
     setLoading(true);
     try {
-      await axios.post('http://localhost:8000/credentials', {
+      const created = await credentialService.create({
         app_name: appName,
-        token_data: { [credentialKey]: newKey }
-      }, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+        token_data: { [credentialKey]: trimmed, ...extraTokenData },
       });
+
+      onChange(targetConfigKey, created.id);
       setNewKey('');
-      setShowCredentialForm(false);
+      setNewChatId('');
+      setActiveCredentialForm(null);
       await fetchCredentials();
+      toast.success('Credential saved and selected.');
     } catch (err) {
-      alert('Failed to save credential');
+      console.error('Failed to save credential', err);
+      toast.error('Failed to save credential.');
     } finally {
       setLoading(false);
     }
@@ -515,6 +535,8 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
 
       case 'credential_selector':
         const filteredCreds = credentials.filter(c => c.app_name === field.appName);
+        const credentialFormId = `${field.appName}:${field.key}`;
+        const requiresChatId = Boolean(field.requiresChatId);
         return (
           <div className="space-y-2">
             <div className="flex gap-2">
@@ -529,28 +551,61 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                 ))}
               </select>
               <button
-                onClick={() => setShowCredentialForm(!showCredentialForm)}
+                onClick={() => {
+                  void fetchCredentials();
+                  setNewKey('');
+                  setNewChatId('');
+                  setActiveCredentialForm((current) => (
+                    current === credentialFormId ? null : credentialFormId
+                  ));
+                }}
                 className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
               </button>
             </div>
-            {showCredentialForm && (
+            {activeCredentialForm === credentialFormId && (
               <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
                 <label className="text-[9px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
                   Add {field.appName} {field.credentialLabel || 'API Key'}
                 </label>
-                <div className="flex gap-2">
+                <div className="space-y-2">
                   <input
                     type="password"
+                    name={`credential-secret-${credentialFormId}`}
+                    autoComplete="new-password"
+                    spellCheck={false}
                     placeholder={field.credentialPlaceholder || 'sk-...'}
                     value={newKey}
                     onChange={(e) => setNewKey(e.target.value)}
-                    className="flex-1 bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
+                    className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
                   />
+                  {requiresChatId && (
+                    <input
+                      type="text"
+                      name={`credential-chat-id-${credentialFormId}`}
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="Telegram Chat ID (e.g. 123456789 or -1001234567890)"
+                      value={newChatId}
+                      onChange={(e) => setNewChatId(e.target.value)}
+                      className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
+                    />
+                  )}
                   <button
-                    disabled={loading || !newKey}
-                    onClick={() => handleCreateCredential(field.appName, field.credentialKey || 'api_key')}
+                    disabled={loading || !newKey || (requiresChatId && !newChatId.trim())}
+                    onClick={() => {
+                      const extraData: Record<string, string> = {};
+                      if (requiresChatId) {
+                        extraData.chat_id = newChatId.trim();
+                      }
+                      void handleCreateCredential(
+                        field.appName,
+                        field.credentialKey || 'api_key',
+                        field.key,
+                        extraData,
+                      );
+                    }}
                     className="px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded-lg disabled:opacity-50 hover:bg-blue-700 transition-colors"
                   >
                     {loading ? '...' : 'Save'}

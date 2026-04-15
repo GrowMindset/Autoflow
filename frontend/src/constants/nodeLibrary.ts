@@ -42,8 +42,11 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       type: 'webhook_trigger',
       label: 'Webhook Trigger',
       category: 'trigger',
-      description: 'Trigger the workflow via an HTTP POST request.',
-      default_config: {},
+      description: 'Trigger the workflow via an HTTP request.',
+      default_config: {
+        path: '',
+        method: 'POST',
+      },
       is_dummy: false,
     },
     {
@@ -103,8 +106,6 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       description: 'Send a message via Telegram.',
       default_config: {
         credential_id: '',
-        bot_token: '',
-        chat_id: '',
         message: '',
         parse_mode: '',
       },

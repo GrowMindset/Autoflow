@@ -12,7 +12,7 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     'if_else': ['field', 'operator', 'value'],
     'switch': ['field'],
     'filter': ['condition'],
-    'telegram': ['chat_id', 'message'],
+    'telegram': ['credential_id', 'message'],
     'ai_agent': ['command'],
     'chat_model_openai': ['credential_id', 'model'],
     'chat_model_groq': ['credential_id', 'model'],
@@ -27,14 +27,6 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
 
   if (type === 'ai_agent' && !isChatModelConnected) {
     missing.push('Requires a Chat Model node connected to its bottom handle');
-  }
-
-  if (type === 'telegram') {
-    const hasCredential = Boolean(config.credential_id);
-    const hasInlineToken = Boolean(config.bot_token);
-    if (!hasCredential && !hasInlineToken) {
-      missing.push("Either 'credential_id' or 'bot_token' is required");
-    }
   }
 
   return missing;

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
@@ -27,6 +28,30 @@ router = APIRouter(tags=["executions"])
 
 def get_execution_service(db: AsyncSession = Depends(get_db)) -> ExecutionService:
     return ExecutionService(db)
+
+
+async def _build_webhook_payload(request: Request) -> dict[str, Any]:
+    raw_body = await request.body()
+    content_type = (request.headers.get("content-type") or "").lower()
+    parsed_body: Any = {}
+
+    if raw_body:
+        if "application/json" in content_type:
+            try:
+                parsed_body = json.loads(raw_body.decode("utf-8"))
+            except Exception:
+                parsed_body = raw_body.decode("utf-8", errors="replace")
+        else:
+            parsed_body = raw_body.decode("utf-8", errors="replace")
+
+    return {
+        "body": parsed_body,
+        "headers": dict(request.headers),
+        "query": dict(request.query_params),
+        "method": request.method.upper(),
+        "path": request.url.path,
+        "url": str(request.url),
+    }
 
 
 @router.post(
@@ -233,25 +258,67 @@ async def list_executions(
     )
 
 
-@router.post(
+@router.api_route(
+    "/webhook/{path_token}",
+    response_model=WebhookEnqueueResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+)
+async def trigger_webhook_by_token(
+    path_token: str,
+    request: Request,
+    execution_service: ExecutionService = Depends(get_execution_service),
+) -> WebhookEnqueueResponse:
+    payload = await _build_webhook_payload(request)
+    try:
+        execution = await execution_service.create_webhook_execution_by_token(
+            path_token=path_token,
+            payload=payload,
+            request_method=request.method.upper(),
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = (
+            status.HTTP_405_METHOD_NOT_ALLOWED
+            if "method not allowed" in detail.lower()
+            else status.HTTP_404_NOT_FOUND
+        )
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    return WebhookEnqueueResponse(
+        execution_id=execution.id,
+        message="Workflow execution enqueued",
+    )
+
+
+@router.api_route(
     "/webhook/{workflow_id}/{path:path}",
     response_model=WebhookEnqueueResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
 )
-async def trigger_webhook(
+async def trigger_webhook_legacy(
     workflow_id: UUID,
     path: str,
-    payload: dict[str, Any] = Body(default_factory=dict),
+    request: Request,
     execution_service: ExecutionService = Depends(get_execution_service),
 ) -> WebhookEnqueueResponse:
+    payload = await _build_webhook_payload(request)
     try:
         execution = await execution_service.create_webhook_execution(
             workflow_id=workflow_id,
             path=path,
             payload=payload,
+            request_method=request.method.upper(),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        detail = str(exc)
+        status_code = (
+            status.HTTP_405_METHOD_NOT_ALLOWED
+            if "method not allowed" in detail.lower()
+            else status.HTTP_404_NOT_FOUND
+        )
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
     return WebhookEnqueueResponse(
         execution_id=execution.id,

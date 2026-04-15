@@ -3,18 +3,19 @@
 Credential resolution
 ---------------------
 The ``execute_workflow`` task pre-resolves every ``credential_id`` found in node
-configs into a decrypted API key/token and stores them in
-``runner_context["resolved_credentials"]`` as  ``str(credential_id) → token``.
+configs and stores them in:
+- ``runner_context["resolved_credentials"]``       : ``str(credential_id) → api_key``
+- ``runner_context["resolved_credential_data"]``   : ``str(credential_id) → token_data``
 
-This runner reads the bot token from that dict (or falls back to a ``bot_token``
-value injected directly into ``config`` for quick testing).
+This runner reads bot token + chat id from credential data when possible, with
+legacy config-field fallback for backward compatibility.
 
 Config keys
 -----------
-- ``chat_id``       : str — Target Telegram chat / group / channel ID.
+- ``chat_id``       : str — Optional legacy override. Preferred source is credential token_data.chat_id.
 - ``message``       : str — Text to send. Supports ``{{ }}`` template expressions.
 - ``credential_id`` : str — UUID of an ``app_credentials`` row (app_name="telegram").
-- ``bot_token``     : str — Optional override; skips credential lookup if set.
+- ``bot_token``     : str — Optional legacy override; skips credential lookup if set.
 - ``parse_mode``    : str — Optional parse mode: "HTML", "Markdown", or "MarkdownV2".
 """
 
@@ -41,26 +42,39 @@ class TelegramRunner:
         context = context or {}
 
         # ── Resolve bot token ────────────────────────────────────────────────
-        bot_token = config.get("bot_token")
-        if not bot_token:
-            cred_id = config.get("credential_id")
+        cred_id = config.get("credential_id")
+        credential_data = {}
+        if cred_id:
+            all_credential_data: dict[str, Any] = context.get("resolved_credential_data") or {}
+            raw_data = all_credential_data.get(str(cred_id))
+            if isinstance(raw_data, dict):
+                credential_data = raw_data
+
+        bot_token = (
+            config.get("bot_token")
+            or credential_data.get("bot_token")
+            or credential_data.get("api_key")
+        )
+        if not bot_token and cred_id:
             resolved: dict[str, str] = context.get("resolved_credentials") or {}
-            if cred_id:
-                bot_token = resolved.get(str(cred_id))
-            if not bot_token:
-                raise ValueError(
-                    "Telegram: No bot token available. "
-                    "Add a credential (app_name='telegram') with "
-                    "token_data = {\"api_key\": \"<your-bot-token>\"} and set "
-                    "the credential_id on the node config."
-                )
+            bot_token = resolved.get(str(cred_id))
+        if not bot_token:
+            raise ValueError(
+                "Telegram: No bot token available. "
+                "Add a credential (app_name='telegram') with "
+                'token_data = {"api_key": "<your-bot-token>", "chat_id": "<target-chat-id>"} '
+                "and set the credential_id on the node config."
+            )
 
         # ── Read message parameters ─────────────────────────────────────────
-        chat_id = config.get("chat_id", "")
+        chat_id = config.get("chat_id") or credential_data.get("chat_id") or ""
         message = config.get("message", "")
 
         if not chat_id:
-            raise ValueError("Telegram: 'chat_id' is required but was not set.")
+            raise ValueError(
+                "Telegram: Chat ID is missing. "
+                "Set token_data.chat_id in the selected credential or provide legacy chat_id in node config."
+            )
         if not message:
             raise ValueError("Telegram: 'message' is required but was not set.")
 

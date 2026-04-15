@@ -28,11 +28,11 @@ async def _resolve_credentials(
     definition: dict[str, Any],
     db: AsyncSession,
     user_id: Any,
-) -> dict[str, str]:
+) -> dict[str, dict[str, Any]]:
     """
     Scans every node config in the workflow definition for a 'credential_id',
-    fetches the AppCredential row, decrypts the API key, and returns a mapping
-    of  str(credential_id) -> decrypted_api_key.
+    fetches the AppCredential row, decrypts sensitive fields, and returns:
+    str(credential_id) -> token_data dict (decrypted where applicable).
 
     This must be called in the async context so we can use the async DB session
     safely. The returned plain dict is passed into runner_context so sync runners
@@ -41,7 +41,7 @@ async def _resolve_credentials(
     from app.models.credential import AppCredential
     from app.core.security import decrypt_data
 
-    resolved: dict[str, str] = {}
+    resolved: dict[str, dict[str, Any]] = {}
     for node in definition.get("nodes", []):
         cred_id = node.get("config", {}).get("credential_id")
         if not cred_id or str(cred_id) in resolved:
@@ -52,12 +52,32 @@ async def _resolve_credentials(
             continue
         if row is None or str(row.user_id) != str(user_id):
             continue
-        encrypted = row.token_data.get("api_key")
-        if encrypted:
-            try:
-                resolved[str(cred_id)] = decrypt_data(encrypted)
-            except Exception:
-                pass
+        token_data = dict(row.token_data or {})
+        decrypted: dict[str, Any] = {}
+        for key, value in token_data.items():
+            if not isinstance(value, str):
+                decrypted[key] = value
+                continue
+            if key in {"api_key", "bot_token", "chat_id"}:
+                try:
+                    decrypted[key] = decrypt_data(value)
+                except Exception:
+                    # Backward compatibility for older plaintext rows
+                    decrypted[key] = value
+                continue
+            decrypted[key] = value
+
+        # Normalize token aliases for integrations that may use either key.
+        if "api_key" not in decrypted and isinstance(decrypted.get("bot_token"), str):
+            decrypted["api_key"] = decrypted["bot_token"]
+        if "bot_token" not in decrypted and isinstance(decrypted.get("api_key"), str):
+            decrypted["bot_token"] = decrypted["api_key"]
+        if "chat_id" not in decrypted and isinstance(decrypted.get("chatId"), str):
+            decrypted["chat_id"] = decrypted["chatId"]
+        if "chatId" not in decrypted and isinstance(decrypted.get("chat_id"), str):
+            decrypted["chatId"] = decrypted["chat_id"]
+
+        resolved[str(cred_id)] = decrypted
     return resolved
 
 
@@ -173,11 +193,18 @@ async def _run_execution(
             await db.commit()
 
             try:
-                resolved_credentials = await _resolve_credentials(
+                resolved_credential_data = await _resolve_credentials(
                     definition=workflow.definition,
                     db=db,
                     user_id=execution.user_id,
                 )
+                resolved_credentials = {
+                    credential_id: (
+                        str(token_data.get("api_key") or token_data.get("bot_token") or "")
+                    )
+                    for credential_id, token_data in resolved_credential_data.items()
+                    if token_data.get("api_key") or token_data.get("bot_token")
+                }
 
                 result = DagExecutor().execute(
                     definition=workflow.definition,
@@ -186,6 +213,7 @@ async def _run_execution(
                     runner_context={
                         "user_id": execution.user_id,
                         "resolved_credentials": resolved_credentials,
+                        "resolved_credential_data": resolved_credential_data,
                     }
                 )
 
@@ -354,11 +382,18 @@ async def _run_node_test(
 
             # Pre-resolve credentials from the whole workflow definition
             # (so chat_model nodes' credentials are also available)
-            resolved_credentials = await _resolve_credentials(
+            resolved_credential_data = await _resolve_credentials(
                 definition=workflow.definition,
                 db=db,
                 user_id=execution.user_id,
             )
+            resolved_credentials = {
+                credential_id: (
+                    str(token_data.get("api_key") or token_data.get("bot_token") or "")
+                )
+                for credential_id, token_data in resolved_credential_data.items()
+                if token_data.get("api_key") or token_data.get("bot_token")
+            }
 
             subnode_configs = _find_inline_subnode_configs(
                 definition=workflow.definition,
@@ -374,6 +409,7 @@ async def _run_node_test(
                 runner_context={
                     "user_id": execution.user_id,
                     "resolved_credentials": resolved_credentials,
+                    "resolved_credential_data": resolved_credential_data,
                 },
                 subnode_configs=subnode_configs,
             )

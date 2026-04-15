@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from secrets import token_urlsafe
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -16,11 +17,14 @@ class WorkflowService:
         self.db = db
 
     async def create_workflow(self, *, user_id: UUID, payload: WorkflowCreate) -> Workflow:
+        definition = self._sanitize_definition_for_storage(
+            payload.definition.model_dump(mode="python")
+        )
         workflow = Workflow(
             user_id=user_id,
             name=payload.name,
             description=payload.description,
-            definition=payload.definition.model_dump(mode="python"),
+            definition=definition,
             is_published=False,
         )
         self.db.add(workflow)
@@ -67,7 +71,9 @@ class WorkflowService:
 
         updates = payload.model_dump(exclude_unset=True, mode="python")
         if "definition" in updates and updates["definition"] is not None:
-            updates["definition"] = payload.definition.model_dump(mode="python")
+            updates["definition"] = self._sanitize_definition_for_storage(
+                payload.definition.model_dump(mode="python")
+            )
 
         for field, value in updates.items():
             setattr(workflow, field, value)
@@ -99,14 +105,59 @@ class WorkflowService:
         await self.db.commit()
         return True
 
+    async def get_webhook_endpoints(
+        self,
+        *,
+        workflow_id: UUID,
+        user_id: UUID,
+        base_url: str,
+    ) -> list[dict[str, Any]]:
+        workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
+        if workflow is None:
+            return []
+
+        webhook_rows = (
+            await self.db.scalars(
+                select(WebhookEndpoint).where(WebhookEndpoint.workflow_id == workflow.id)
+            )
+        ).all()
+        rows_by_node_id = {row.node_id: row for row in webhook_rows}
+        if not rows_by_node_id:
+            return []
+
+        stripped_base = base_url.rstrip("/")
+        webhooks: list[dict[str, Any]] = []
+        for node in workflow.definition.get("nodes", []):
+            if node.get("type") != "webhook_trigger":
+                continue
+            node_id = str(node.get("id") or "")
+            row = rows_by_node_id.get(node_id)
+            if row is None:
+                continue
+
+            config = node.get("config", {}) if isinstance(node.get("config"), dict) else {}
+            method = str(config.get("method") or "POST").upper()
+            path = str(config.get("path") or "").lstrip("/")
+
+            webhooks.append(
+                {
+                    "node_id": node_id,
+                    "path_token": row.path_token,
+                    "is_active": bool(row.is_active),
+                    "method": method,
+                    "path": path,
+                    "url": f"{stripped_base}/webhook/{row.path_token}",
+                }
+            )
+
+        return webhooks
+
     async def _ensure_webhook_endpoints(self, workflow: Workflow) -> None:
-        trigger_node_ids = [
+        trigger_node_ids = {
             node["id"]
             for node in workflow.definition.get("nodes", [])
             if node.get("type") == "webhook_trigger"
-        ]
-        if not trigger_node_ids:
-            return
+        }
 
         existing = (
             await self.db.scalars(
@@ -117,6 +168,7 @@ class WorkflowService:
 
         for node_id in trigger_node_ids:
             if node_id in existing_by_node_id:
+                existing_by_node_id[node_id].is_active = workflow.is_published
                 continue
             self.db.add(
                 WebhookEndpoint(
@@ -128,4 +180,29 @@ class WorkflowService:
                 )
             )
 
+        for node_id, webhook in existing_by_node_id.items():
+            if node_id in trigger_node_ids:
+                continue
+            webhook.is_active = False
+
         await self.db.commit()
+
+    @staticmethod
+    def _sanitize_definition_for_storage(definition: dict[str, Any]) -> dict[str, Any]:
+        sanitized_nodes: list[dict[str, Any]] = []
+        for node in definition.get("nodes", []):
+            if not isinstance(node, dict):
+                continue
+
+            node_copy = dict(node)
+            if node_copy.get("type") == "telegram" and isinstance(node_copy.get("config"), dict):
+                config = dict(node_copy["config"])
+                config.pop("bot_token", None)
+                config.pop("chat_id", None)
+                node_copy["config"] = config
+            sanitized_nodes.append(node_copy)
+
+        return {
+            "nodes": sanitized_nodes,
+            "edges": list(definition.get("edges", [])),
+        }

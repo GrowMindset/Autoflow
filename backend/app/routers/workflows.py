@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
@@ -13,6 +13,8 @@ from app.schemas.workflows import (
     WorkflowDeleteResponse,
     WorkflowListItem,
     WorkflowListResponse,
+    WorkflowWebhookEndpoint,
+    WorkflowWebhookListResponse,
     WorkflowResponse,
     WorkflowUpdate,
 )
@@ -101,3 +103,27 @@ async def delete_workflow(
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     return WorkflowDeleteResponse(message="Workflow deleted successfully")
+
+
+@router.get("/{workflow_id}/webhooks", response_model=WorkflowWebhookListResponse)
+async def list_workflow_webhooks(
+    workflow_id: UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowWebhookListResponse:
+    workflow = await workflow_service.get_workflow(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+    )
+    if workflow is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+
+    webhooks = await workflow_service.get_webhook_endpoints(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+        base_url=str(request.base_url),
+    )
+    return WorkflowWebhookListResponse(
+        webhooks=[WorkflowWebhookEndpoint(**item) for item in webhooks]
+    )

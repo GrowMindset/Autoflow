@@ -22,7 +22,7 @@ const APP_SECRET_FIELD: Record<string, { key: string; label: string; placeholder
   telegram: {
     key: 'api_key',
     label: 'Bot Token',
-    placeholder: '123456789:AA...',
+    placeholder: 'Telegram Bot Token (e.g. 123456789:AA...)',
   },
   default: {
     key: 'api_key',
@@ -37,6 +37,7 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   const [isSaving, setIsSaving] = useState(false);
   const [appName, setAppName] = useState('openai');
   const [secret, setSecret] = useState('');
+  const [telegramChatId, setTelegramChatId] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const sortedCredentials = useMemo(
@@ -48,6 +49,7 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
     [credentials],
   );
   const secretField = APP_SECRET_FIELD[appName] || APP_SECRET_FIELD.default;
+  const isTelegram = appName === 'telegram';
 
   const fetchCredentials = async () => {
     setIsLoading(true);
@@ -63,6 +65,8 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
 
   useEffect(() => {
     if (!isOpen) return;
+    setSecret('');
+    setTelegramChatId('');
     void fetchCredentials();
   }, [isOpen]);
 
@@ -72,10 +76,22 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
     return () => window.clearTimeout(timer);
   }, [copiedId]);
 
+  useEffect(() => {
+    if (appName !== 'telegram') {
+      setTelegramChatId('');
+    }
+    setSecret('');
+  }, [appName]);
+
   const handleCreate = async () => {
     const trimmed = secret.trim();
     if (!trimmed) {
       toast.error('Please enter API key / token');
+      return;
+    }
+    const trimmedChatId = telegramChatId.trim();
+    if (isTelegram && !trimmedChatId) {
+      toast.error('Please enter Telegram Chat ID');
       return;
     }
 
@@ -83,9 +99,13 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
     try {
       await credentialService.create({
         app_name: appName,
-        token_data: { [secretField.key]: trimmed },
+        token_data: {
+          [secretField.key]: trimmed,
+          ...(isTelegram ? { chat_id: trimmedChatId } : {}),
+        },
       });
       setSecret('');
+      setTelegramChatId('');
       await fetchCredentials();
       toast.success('Credential saved');
     } catch (error) {
@@ -174,11 +194,31 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
             </label>
             <input
               type="password"
+              name="credential-manager-secret"
+              autoComplete="new-password"
+              spellCheck={false}
               value={secret}
               onChange={(event) => setSecret(event.target.value)}
               placeholder={secretField.placeholder}
               className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
             />
+            {isTelegram && (
+              <>
+                <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
+                  Chat ID
+                </label>
+                <input
+                  type="text"
+                  name="credential-manager-telegram-chat-id"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={telegramChatId}
+                  onChange={(event) => setTelegramChatId(event.target.value)}
+                  placeholder="e.g. 123456789 or -1001234567890"
+                  className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
+                />
+              </>
+            )}
 
             <button
               type="button"

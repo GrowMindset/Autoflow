@@ -43,7 +43,11 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "webhook_trigger": {
         "category": "trigger",
-        "description": "Starts from an incoming webhook. Keep config as {} unless a path is explicitly needed later.",
+        "description": "Starts from an incoming webhook.",
+        "rules": [
+            "Use config keys: path and method.",
+            "method should be one of GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD.",
+        ],
     },
     "workflow_trigger": {
         "category": "trigger",
@@ -67,7 +71,7 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "telegram": {
         "category": "action",
-        "description": "Sends a Telegram message. Use chat_id and message, plus credential_id (or bot_token override).",
+        "description": "Sends a Telegram message. Use credential_id and message. The credential stores bot token + chat_id.",
         "rules": [
             "Optional parse_mode can be one of: HTML, Markdown, MarkdownV2.",
         ],

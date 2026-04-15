@@ -154,11 +154,20 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const buildWorkflowDefinition = useCallback((sourceNodes: WorkflowNode[], sourceEdges: WorkflowEdge[]) => {
     return {
       nodes: sourceNodes.map((node) => ({
+        // Never persist inline Telegram secrets in workflow JSON.
+        // Telegram bot token + chat ID must come from saved credentials.
+        config: (() => {
+          const nextConfig = { ...(node.data.config || {}) };
+          if (node.data.type === 'telegram') {
+            delete nextConfig.bot_token;
+            delete nextConfig.chat_id;
+          }
+          return nextConfig;
+        })(),
         id: node.id,
         type: node.data.type,
         label: node.data.label,
         position: node.position,
-        config: node.data.config,
       })),
       edges: sourceEdges.map((edge: any) => ({
         id: edge.id,
@@ -927,7 +936,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               toast(`Popup blocked. Open this form URL manually: ${formUrl}`, { duration: 7000 });
             }
           } else if (trigger.data.type === 'webhook_trigger') {
-            toast.success('Webhook trigger: Use HTTP POST to the webhook endpoint to trigger this workflow', { duration: 5000 });
+            const method = String(trigger.data?.config?.method || 'POST').toUpperCase();
+            toast.success(`Webhook trigger: Use HTTP ${method} to the webhook endpoint to trigger this workflow`, { duration: 5000 });
           } else {
             toast.error(`Unsupported trigger type: ${trigger.data.type}`);
           }
@@ -972,7 +982,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         }
       } else if (trigger.data.type === 'webhook_trigger') {
         // For webhook triggers, show information about webhook usage
-        toast.success('Webhook trigger: Use HTTP POST to the webhook endpoint to trigger this workflow', { duration: 5000 });
+        const method = String(trigger.data?.config?.method || 'POST').toUpperCase();
+        toast.success(`Webhook trigger: Use HTTP ${method} to the webhook endpoint to trigger this workflow`, { duration: 5000 });
       } else {
         toast.error(`Unsupported trigger type: ${trigger.data.type}`);
       }

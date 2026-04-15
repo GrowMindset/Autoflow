@@ -3,9 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
-from typing import Any
 from uuid import UUID
-from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,37 +67,107 @@ class ExecutionService:
             start_node_id=start_node_id,
         )
 
-    async def create_webhook_execution(
+    async def create_webhook_execution_by_token(
         self,
         *,
-        workflow_id: UUID,
-        path: str,
-        payload: dict,
+        path_token: str,
+        payload: dict[str, Any],
+        request_method: str,
     ) -> Execution:
-        workflow = await self.db.scalar(select(Workflow).where(Workflow.id == workflow_id))
-        
+        webhook = await self.db.scalar(
+            select(WebhookEndpoint).where(
+                WebhookEndpoint.path_token == path_token,
+                WebhookEndpoint.is_active.is_(True),
+            )
+        )
+        if webhook is None:
+            raise ValueError("Webhook not found")
+
+        workflow = await self.db.scalar(
+            select(Workflow).where(
+                Workflow.id == webhook.workflow_id,
+                Workflow.user_id == webhook.user_id,
+            )
+        )
         if workflow is None or not workflow.is_published:
             raise ValueError("Webhook not found or workflow not published")
 
-        # Find the trigger node
-        target_node_id = None
-        for node in workflow.definition.get("nodes", []):
-            if node.get("type") == "webhook_trigger":
-                node_path = node.get("config", {}).get("path", "your-path").lstrip("/")
-                if node_path == path.lstrip("/"):
-                    target_node_id = node.get("id")
-                    break
+        node = next(
+            (
+                item
+                for item in workflow.definition.get("nodes", [])
+                if item.get("id") == webhook.node_id and item.get("type") == "webhook_trigger"
+            ),
+            None,
+        )
+        if node is None:
+            raise ValueError("Webhook trigger node not found in workflow")
 
-        if not target_node_id:
-            raise ValueError("Webhook path not found in workflow")
+        expected_method = self._normalize_webhook_method(node.get("config", {}))
+        incoming_method = (request_method or "POST").upper()
+        if incoming_method != expected_method:
+            raise ValueError(
+                f"Webhook method not allowed. Expected {expected_method}, received {incoming_method}"
+            )
 
         user = await self.db.get(User, workflow.user_id)
+        if user is None:
+            raise ValueError("Webhook owner not found")
 
         return await self._create_and_enqueue_execution(
             workflow=workflow,
             user=user,
             triggered_by="webhook",
-            initial_payload={"body": payload},
+            initial_payload=payload,
+            start_node_id=webhook.node_id,
+        )
+
+    async def create_webhook_execution(
+        self,
+        *,
+        workflow_id: UUID,
+        path: str,
+        payload: dict[str, Any],
+        request_method: str,
+    ) -> Execution:
+        workflow = await self.db.scalar(select(Workflow).where(Workflow.id == workflow_id))
+
+        if workflow is None or not workflow.is_published:
+            raise ValueError("Webhook not found or workflow not published")
+
+        incoming_method = (request_method or "POST").upper()
+        normalized_path = path.lstrip("/")
+        target_node_id = None
+        allowed_methods_for_path: set[str] = set()
+        for node in workflow.definition.get("nodes", []):
+            if node.get("type") == "webhook_trigger":
+                config = node.get("config", {}) if isinstance(node.get("config"), dict) else {}
+                node_path = str(config.get("path") or "").lstrip("/")
+                node_method = self._normalize_webhook_method(config)
+                if node_path != normalized_path:
+                    continue
+                allowed_methods_for_path.add(node_method)
+                if node_method == incoming_method:
+                    target_node_id = node.get("id")
+                    break
+
+        if not target_node_id:
+            if allowed_methods_for_path:
+                allowed = ", ".join(sorted(allowed_methods_for_path))
+                raise ValueError(
+                    f"Webhook method not allowed. Allowed methods for this path: {allowed}. Received {incoming_method}"
+                )
+            raise ValueError("Webhook path not found in workflow")
+
+        user = await self.db.get(User, workflow.user_id)
+        if user is None:
+            raise ValueError("Webhook owner not found")
+
+        return await self._create_and_enqueue_execution(
+            workflow=workflow,
+            user=user,
+            triggered_by="webhook",
+            initial_payload=payload,
             start_node_id=target_node_id,
         )
 
@@ -353,3 +421,9 @@ class ExecutionService:
 
         # Otherwise just return the first valid trigger found (allows testing form/webhook flows)
         return candidates[0]["id"]
+
+    @staticmethod
+    def _normalize_webhook_method(config: dict[str, Any] | None) -> str:
+        if not isinstance(config, dict):
+            return "POST"
+        return str(config.get("method") or "POST").upper()

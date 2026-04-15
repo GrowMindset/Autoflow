@@ -22,6 +22,14 @@ interface ConfigPanelProps {
   onNavigateNode: (nodeId: string) => void;
 }
 
+interface WebhookMeta {
+  node_id: string;
+  path_token: string;
+  is_active: boolean;
+  method: string;
+  path: string;
+  url: string;
+}
 
 
 const ConfigPanel: React.FC<ConfigPanelProps> = ({
@@ -42,6 +50,8 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [isSubmittingForm, setIsSubmittingForm] = useState(false);
+  const [webhookMeta, setWebhookMeta] = useState<WebhookMeta | null>(null);
+  const [webhookMetaLoading, setWebhookMetaLoading] = useState(false);
   const [openNavMenu, setOpenNavMenu] = useState<'prev' | 'next' | null>(null);
   const resizingSideRef = React.useRef<'left' | 'right' | null>(null);
   const resizeStartXRef = React.useRef(0);
@@ -82,12 +92,15 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
     return `${origin}/app/forms/${workflowId}?nodeId=${node.id}`;
   }, [workflowId, node.id]);
 
-  const webhookUrl = useMemo(() => {
+  const webhookConfiguredUrl = useMemo(() => {
     if (!workflowId || workflowId === 'new') return '';
     const baseUrl = String(api.defaults.baseURL || '').replace(/\/$/, '');
     const path = node.data.config?.path || 'your-path';
     return `${baseUrl}/webhook/${workflowId}/${path.replace(/^\//, '')}`;
   }, [workflowId, node.data.config?.path]);
+
+  const webhookProductionUrl = webhookMeta?.url || '';
+  const copyableWebhookUrl = webhookConfiguredUrl || webhookProductionUrl;
 
   const aiResponseText = useMemo(() => {
     if (node.data.type !== 'ai_agent') return null;
@@ -143,6 +156,34 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
       document.body.style.userSelect = '';
     };
   }, []);
+
+  useEffect(() => {
+    if (node.data.type !== 'webhook_trigger') {
+      setWebhookMeta(null);
+      return;
+    }
+    if (!workflowId || workflowId === 'new') {
+      setWebhookMeta(null);
+      return;
+    }
+
+    const fetchWebhookMeta = async () => {
+      setWebhookMetaLoading(true);
+      try {
+        const response = await api.get(`/workflows/${workflowId}/webhooks`);
+        const webhooks = Array.isArray(response.data?.webhooks) ? response.data.webhooks : [];
+        const current = webhooks.find((item: WebhookMeta) => item.node_id === node.id) || null;
+        setWebhookMeta(current);
+      } catch (error) {
+        console.error('Failed to fetch webhook metadata', error);
+        setWebhookMeta(null);
+      } finally {
+        setWebhookMetaLoading(false);
+      }
+    };
+
+    void fetchWebhookMeta();
+  }, [workflowId, node.id, node.data.type]);
 
   const handleResizeStart = (event: React.MouseEvent<HTMLDivElement>, side: 'left' | 'right') => {
     resizingSideRef.current = side;
@@ -505,25 +546,43 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                   <div className="mt-10 space-y-8 animate-in fade-in slide-in-from-bottom-4">
                     <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 flex flex-col gap-4">
                       <div>
-                        <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Webhook URL</h3>
-                        <p className="text-xs text-slate-500 dark:text-slate-500">Send an HTTP {node.data.config?.method || 'POST'} request to this endpoint to trigger the workflow.</p>
+                        <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Configured Webhook URL</h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-500">
+                          Send an HTTP {node.data.config?.method || webhookMeta?.method || 'POST'} request to this endpoint. This URL updates when you change the webhook path.
+                        </p>
                       </div>
                       <div className="flex items-center gap-2">
                         <div className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-600 break-all select-all">
-                          {webhookUrl || 'Save the workflow to generate the Webhook URL.'}
+                          {webhookConfiguredUrl || 'Save the workflow to generate a webhook URL from the configured path.'}
                         </div>
                         <button 
                           type="button"
                           onClick={() => {
-                            navigator.clipboard.writeText(webhookUrl);
+                            navigator.clipboard.writeText(copyableWebhookUrl);
                             toast.success('Copied to clipboard');
                           }}
-                          disabled={!webhookUrl}
+                          disabled={!copyableWebhookUrl}
                           className="px-4 py-3 bg-white border border-slate-200 rounded-2xl text-slate-500 hover:text-slate-800 transition-colors disabled:opacity-50 font-bold text-xs"
                         >
                           Copy
                         </button>
                       </div>
+                      {webhookMeta && (
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                          Status: <span className={webhookMeta.is_active ? 'text-emerald-600 font-semibold' : 'text-amber-600 font-semibold'}>
+                            {webhookMeta.is_active ? 'Active' : 'Inactive (publish workflow)'}
+                          </span>
+                        </div>
+                      )}
+                      {webhookMetaLoading && (
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400">Loading production webhook metadata...</div>
+                      )}
+                      {webhookProductionUrl && webhookProductionUrl !== webhookConfiguredUrl && (
+                        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Stable Production URL</p>
+                          <p className="font-mono text-xs text-slate-500 break-all">{webhookProductionUrl}</p>
+                        </div>
+                      )}
                     </section>
                   </div>
                 )}
