@@ -78,9 +78,19 @@ class TelegramRunner:
             raise ValueError(f"Telegram: Failed to send message — {exc}") from exc
 
         # ── Build output ─────────────────────────────────────────────────────
+        # Forward clean upstream data, stripping dummy runner artifacts and
+        # internal execution fields that should not leak into outputs.
+        _STRIP_PREFIXES = ("dummy_node_",)
+        _STRIP_KEYS = {"_branch", "_split_index"}
+
         result: dict[str, Any] = {}
         if isinstance(input_data, dict):
-            result.update(input_data)
+            for key, value in input_data.items():
+                if key in _STRIP_KEYS:
+                    continue
+                if any(key.startswith(prefix) for prefix in _STRIP_PREFIXES):
+                    continue
+                result[key] = value
 
         result["telegram_sent"] = True
         result["telegram_response"] = response_data
