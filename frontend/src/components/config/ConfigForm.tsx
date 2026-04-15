@@ -74,10 +74,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       label: 'Gmail Credential',
       type: 'credential_selector',
       appName: 'gmail',
-      credentialLabel: 'Gmail App Password + Email',
-      credentialPlaceholder: 'Gmail App Password (16 chars)',
-      credentialKey: 'app_password',
-      requiresEmail: true,
+      helperText: 'OAuth only: connect Gmail in Credential Manager, then select it here.',
     },
     { key: 'folder', label: 'Mailbox Folder', type: 'text', placeholder: 'e.g. INBOX' },
     { key: 'query', label: 'Search Query', type: 'text', placeholder: 'e.g. invoice OR from:billing@example.com' },
@@ -92,10 +89,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       label: 'Gmail Credential',
       type: 'credential_selector',
       appName: 'gmail',
-      credentialLabel: 'Gmail App Password + Email',
-      credentialPlaceholder: 'Gmail App Password (16 chars)',
-      credentialKey: 'app_password',
-      requiresEmail: true,
+      helperText: 'OAuth only: connect Gmail in Credential Manager, then select it here.',
     },
     { key: 'to', label: 'Recipient Email', type: 'text', placeholder: 'e.g. user@example.com' },
     { key: 'cc', label: 'CC', type: 'text', placeholder: 'e.g. manager@example.com' },
@@ -111,10 +105,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       label: 'Google Sheets Credential',
       type: 'credential_selector',
       appName: 'sheets',
-      credentialLabel: 'Service Account JSON',
-      credentialPlaceholder: 'Paste service-account JSON',
-      credentialKey: 'service_account_json',
-      requiresServiceAccountJson: true,
+      helperText: 'OAuth only: connect Google Sheets in Credential Manager, then select it here.',
     },
     { key: 'title', label: 'Spreadsheet Title', type: 'text', placeholder: 'e.g. New Outreach List' },
     { key: 'sheet_name', label: 'First Sheet Name', type: 'text', placeholder: 'e.g. Leads' }
@@ -125,10 +116,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       label: 'Google Sheets Credential',
       type: 'credential_selector',
       appName: 'sheets',
-      credentialLabel: 'Service Account JSON',
-      credentialPlaceholder: 'Paste service-account JSON',
-      credentialKey: 'service_account_json',
-      requiresServiceAccountJson: true,
+      helperText: 'OAuth only: connect Google Sheets in Credential Manager, then select it here.',
     },
     { key: 'spreadsheet_id', label: 'Spreadsheet ID', type: 'text', placeholder: 'e.g. 1aBC...xyz' },
     { key: 'sheet_name', label: 'Sheet Name', type: 'text', placeholder: 'e.g. Sheet1' },
@@ -136,6 +124,36 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     { key: 'search_value', label: 'Value to Find', type: 'text', placeholder: 'e.g. {{ $json.email }}' },
     { key: 'update_column', label: 'Column to Update', type: 'text', placeholder: 'e.g. Status or D or 4' },
     { key: 'update_value', label: 'New Value', type: 'text', placeholder: 'e.g. Processed' }
+  ],
+  create_google_docs: [
+    {
+      key: 'credential_id',
+      label: 'Google Docs Credential',
+      type: 'credential_selector',
+      appName: 'docs',
+      helperText: 'OAuth only: connect Google Docs in Credential Manager, then select it here.',
+    },
+    { key: 'title', label: 'Document Title', type: 'text', placeholder: 'e.g. Daily Report' },
+    { key: 'initial_content', label: 'Initial Content', type: 'textarea', placeholder: 'Optional initial content...' },
+  ],
+  update_google_docs: [
+    {
+      key: 'credential_id',
+      label: 'Google Docs Credential',
+      type: 'credential_selector',
+      appName: 'docs',
+      helperText: 'OAuth only: connect Google Docs in Credential Manager, then select it here.',
+    },
+    { key: 'document_id', label: 'Document ID', type: 'text', placeholder: 'e.g. 1AbCdEf...' },
+    {
+      key: 'operation',
+      label: 'Operation',
+      type: 'select',
+      options: ['append_text', 'replace_all_text'],
+    },
+    { key: 'text', label: 'Text', type: 'textarea', placeholder: 'Text to append or replace with...' },
+    { key: 'match_text', label: 'Match Text (for replace)', type: 'text', placeholder: 'Required when operation=replace_all_text' },
+    { key: 'match_case', label: 'Match Case', type: 'boolean' },
   ],
   telegram: [
     {
@@ -229,10 +247,8 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   const [loading, setLoading] = useState(false);
   const [activeCredentialForm, setActiveCredentialForm] = useState<string | null>(null);
   const [newKey, setNewKey] = useState('');
-  const [newEmail, setNewEmail] = useState('');
   const [newChatId, setNewChatId] = useState('');
   const [newPhoneNumberId, setNewPhoneNumberId] = useState('');
-  const [newServiceAccountJson, setNewServiceAccountJson] = useState('');
   const [dragOverField, setDragOverField] = useState<string | null>(null);
 
   // ── Drag-and-drop handlers for text/textarea fields ──────────────────────
@@ -320,10 +336,8 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   useEffect(() => {
     if (activeCredentialForm) {
       setNewKey('');
-      setNewEmail('');
       setNewChatId('');
       setNewPhoneNumberId('');
-      setNewServiceAccountJson('');
     }
   }, [activeCredentialForm]);
 
@@ -348,26 +362,6 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
       toast.error('Please enter a credential value.');
       return;
     }
-    if (credentialKey === 'service_account_json') {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (!parsed || typeof parsed !== 'object') {
-          toast.error('Service account JSON must be a valid JSON object.');
-          return;
-        }
-        if (!String((parsed as any).client_email || '').trim()) {
-          toast.error('Service account JSON is missing client_email.');
-          return;
-        }
-        if (!String((parsed as any).private_key || '').trim()) {
-          toast.error('Service account JSON is missing private_key.');
-          return;
-        }
-      } catch {
-        toast.error('Please paste valid service account JSON.');
-        return;
-      }
-    }
 
     setLoading(true);
     try {
@@ -378,10 +372,8 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
 
       onChange(targetConfigKey, created.id);
       setNewKey('');
-      setNewEmail('');
       setNewChatId('');
       setNewPhoneNumberId('');
-      setNewServiceAccountJson('');
       setActiveCredentialForm(null);
       await fetchCredentials();
       toast.success('Credential saved and selected.');
@@ -700,10 +692,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
         const filteredCreds = credentials.filter(c => c.app_name === field.appName);
         const credentialFormId = `${field.appName}:${field.key}`;
         const requiresChatId = Boolean(field.requiresChatId);
-        const requiresEmail = Boolean(field.requiresEmail);
         const requiresPhoneNumberId = Boolean(field.requiresPhoneNumberId);
-        const requiresServiceAccountJson = Boolean(field.requiresServiceAccountJson);
-        const secretValue = requiresServiceAccountJson ? newServiceAccountJson : newKey;
+        const isGoogleOAuthOnlyApp = ['gmail', 'sheets', 'docs'].includes(String(field.appName || '').toLowerCase());
+        const secretValue = newKey;
         return (
           <div className="space-y-2">
             <div className="flex gap-2">
@@ -714,67 +705,49 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
               >
                 <option value="">Select credential...</option>
                 {filteredCreds.map((c: any) => (
-                  <option key={c.id} value={c.id}>{c.app_name} - {c.id.substring(0, 8)}...</option>
+                  <option key={c.id} value={c.id}>
+                    {(c.display_name || c.app_name)} - {c.id.substring(0, 8)}...
+                  </option>
                 ))}
               </select>
-              <button
-                onClick={() => {
-                  void fetchCredentials();
-                  setNewKey('');
-                  setNewEmail('');
-                  setNewChatId('');
-                  setNewPhoneNumberId('');
-                  setNewServiceAccountJson('');
-                  setActiveCredentialForm((current) => (
-                    current === credentialFormId ? null : credentialFormId
-                  ));
-                }}
-                className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
-              </button>
+              {!isGoogleOAuthOnlyApp && (
+                <button
+                  onClick={() => {
+                    void fetchCredentials();
+                    setNewKey('');
+                    setNewChatId('');
+                    setNewPhoneNumberId('');
+                    setActiveCredentialForm((current) => (
+                      current === credentialFormId ? null : credentialFormId
+                    ));
+                  }}
+                  className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
+                </button>
+              )}
             </div>
-            {activeCredentialForm === credentialFormId && (
+            {isGoogleOAuthOnlyApp && (
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                OAuth only. Create this credential from Credential Manager using Google OAuth, then select it here.
+              </p>
+            )}
+            {!isGoogleOAuthOnlyApp && activeCredentialForm === credentialFormId && (
               <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
                 <label className="text-[9px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
                   Add {field.appName} {field.credentialLabel || 'API Key'}
                 </label>
                 <div className="space-y-2">
-                  {requiresServiceAccountJson ? (
-                    <textarea
-                      name={`credential-service-account-${credentialFormId}`}
-                      autoComplete="off"
-                      spellCheck={false}
-                      rows={6}
-                      placeholder={field.credentialPlaceholder || 'Paste Google service account JSON'}
-                      value={newServiceAccountJson}
-                      onChange={(e) => setNewServiceAccountJson(e.target.value)}
-                      className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 font-mono resize-y"
-                    />
-                  ) : (
-                    <input
-                      type="password"
-                      name={`credential-secret-${credentialFormId}`}
-                      autoComplete="new-password"
-                      spellCheck={false}
-                      placeholder={field.credentialPlaceholder || 'sk-...'}
-                      value={newKey}
-                      onChange={(e) => setNewKey(e.target.value)}
-                      className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
-                    />
-                  )}
-                  {requiresEmail && (
-                    <input
-                      type="email"
-                      name={`credential-email-${credentialFormId}`}
-                      autoComplete="off"
-                      spellCheck={false}
-                      placeholder="Gmail Address (e.g. yourname@gmail.com)"
-                      value={newEmail}
-                      onChange={(e) => setNewEmail(e.target.value)}
-                      className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
-                    />
-                  )}
+                  <input
+                    type="password"
+                    name={`credential-secret-${credentialFormId}`}
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    placeholder={field.credentialPlaceholder || 'sk-...'}
+                    value={newKey}
+                    onChange={(e) => setNewKey(e.target.value)}
+                    className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
+                  />
                   {requiresChatId && (
                     <input
                       type="text"
@@ -800,12 +773,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                     />
                   )}
                   <button
-                    disabled={loading || !secretValue.trim() || (requiresEmail && !newEmail.trim()) || (requiresChatId && !newChatId.trim()) || (requiresPhoneNumberId && !newPhoneNumberId.trim())}
+                    disabled={loading || !secretValue.trim() || (requiresChatId && !newChatId.trim()) || (requiresPhoneNumberId && !newPhoneNumberId.trim())}
                     onClick={() => {
                       const extraData: Record<string, string> = {};
-                      if (requiresEmail) {
-                        extraData.email = newEmail.trim();
-                      }
                       if (requiresChatId) {
                         extraData.chat_id = newChatId.trim();
                       }

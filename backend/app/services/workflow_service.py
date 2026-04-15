@@ -216,6 +216,13 @@ class WorkflowService:
                 config.pop("private_key", None)
                 config.pop("privateKey", None)
                 node_copy["config"] = config
+            if node_copy.get("type") in {"create_google_docs", "update_google_docs"} and isinstance(node_copy.get("config"), dict):
+                config = dict(node_copy["config"])
+                config.pop("service_account_json", None)
+                config.pop("serviceAccountJson", None)
+                config.pop("private_key", None)
+                config.pop("privateKey", None)
+                node_copy["config"] = config
             sanitized_nodes.append(node_copy)
 
         return {

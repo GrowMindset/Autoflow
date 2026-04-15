@@ -71,6 +71,11 @@ async def run_workflow(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
     return ExecutionEnqueueResponse(
         execution_id=execution.id,
@@ -105,6 +110,11 @@ async def run_workflow_form(
             else status.HTTP_400_BAD_REQUEST
         )
         raise HTTPException(status_code=status_code, detail=detail) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
     return ExecutionEnqueueResponse(
         execution_id=execution.id,
@@ -135,6 +145,11 @@ async def run_node_execute(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
     return ExecutionEnqueueResponse(
         execution_id=execution.id,
@@ -284,6 +299,11 @@ async def trigger_webhook_by_token(
             else status.HTTP_404_NOT_FOUND
         )
         raise HTTPException(status_code=status_code, detail=detail) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
     return WebhookEnqueueResponse(
         execution_id=execution.id,
@@ -319,6 +339,11 @@ async def trigger_webhook_legacy(
             else status.HTTP_404_NOT_FOUND
         )
         raise HTTPException(status_code=status_code, detail=detail) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
     return WebhookEnqueueResponse(
         execution_id=execution.id,

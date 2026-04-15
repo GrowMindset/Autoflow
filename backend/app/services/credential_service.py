@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 from uuid import UUID
 from sqlalchemy import select
@@ -27,6 +26,9 @@ SENSITIVE_TOKEN_FIELDS = {
     "serviceAccountJson",
     "private_key",
     "privateKey",
+    "access_token",
+    "refresh_token",
+    "id_token",
 }
 
 
@@ -57,74 +59,51 @@ class CredentialService:
             token_data["api_key"] = bot_token.strip()
             token_data["bot_token"] = bot_token.strip()
             token_data["chat_id"] = chat_id.strip()
+            token_data["provider"] = "telegram_bot_token"
             token_data.pop("botToken", None)
             token_data.pop("chatId", None)
-        elif payload.app_name == "gmail":
-            email = (
+        elif payload.app_name in {"gmail", "sheets", "docs"}:
+            app_label = {
+                "gmail": "Gmail",
+                "sheets": "Google Sheets",
+                "docs": "Google Docs",
+            }[payload.app_name]
+            provider = str(token_data.get("provider") or "").strip().lower()
+            access_token = str(token_data.get("access_token") or "").strip()
+            refresh_token = str(token_data.get("refresh_token") or "").strip()
+
+            if provider and provider != "google_oauth":
+                raise ValueError(
+                    f"{app_label} supports OAuth-only credentials. Connect via Google OAuth."
+                )
+            if not access_token and not refresh_token:
+                raise ValueError(
+                    f"{app_label} OAuth credential requires access_token or refresh_token."
+                )
+
+            email = str(
                 token_data.get("email")
                 or token_data.get("user_email")
                 or token_data.get("username")
-            )
-            app_password = (
-                token_data.get("app_password")
-                or token_data.get("password")
-                or token_data.get("api_key")
-            )
+                or ""
+            ).strip()
 
-            if not isinstance(email, str) or not email.strip():
-                raise ValueError(
-                    "Gmail credential requires email (token_data.email)."
-                )
-            if not isinstance(app_password, str) or not app_password.strip():
-                raise ValueError(
-                    "Gmail credential requires app_password (token_data.app_password)."
-                )
+            normalized: dict[str, Any] = {"provider": "google_oauth"}
+            if access_token:
+                normalized["access_token"] = access_token
+            if refresh_token:
+                normalized["refresh_token"] = refresh_token
 
-            token_data["email"] = email.strip()
-            token_data["app_password"] = app_password.strip()
-            token_data["user_email"] = email.strip()
-            token_data["username"] = email.strip()
-            token_data["password"] = app_password.strip()
-        elif payload.app_name == "sheets":
-            raw_sa_json = (
-                token_data.get("service_account_json")
-                or token_data.get("serviceAccountJson")
-            )
+            for passthrough_key in ("token_type", "scope", "expiry_epoch", "id_token"):
+                value = token_data.get(passthrough_key)
+                if isinstance(value, str) and value.strip():
+                    normalized[passthrough_key] = value.strip()
+            if email:
+                normalized["email"] = email
+                normalized["user_email"] = email
+                normalized["username"] = email
 
-            if not isinstance(raw_sa_json, str) or not raw_sa_json.strip():
-                raise ValueError(
-                    "Google Sheets credential requires service account JSON (token_data.service_account_json)."
-                )
-
-            try:
-                service_account_info = json.loads(raw_sa_json)
-            except Exception as exc:
-                raise ValueError("Google Sheets service account JSON is invalid.") from exc
-
-            if not isinstance(service_account_info, dict):
-                raise ValueError("Google Sheets service account JSON must be an object.")
-
-            client_email = str(service_account_info.get("client_email") or "").strip()
-            private_key = str(service_account_info.get("private_key") or "").strip()
-            token_uri = str(service_account_info.get("token_uri") or "").strip()
-
-            if not client_email:
-                raise ValueError("Google Sheets service account JSON is missing client_email.")
-            if not private_key:
-                raise ValueError("Google Sheets service account JSON is missing private_key.")
-
-            # Keep a normalized minimal shape so runners don't rely on many alias keys.
-            normalized_info = {
-                "type": "service_account",
-                "client_email": client_email,
-                "private_key": private_key,
-                "token_uri": token_uri or "https://oauth2.googleapis.com/token",
-                "project_id": service_account_info.get("project_id") or "",
-                "private_key_id": service_account_info.get("private_key_id") or "",
-                "client_id": service_account_info.get("client_id") or "",
-            }
-            token_data["service_account_json"] = json.dumps(normalized_info)
-            token_data.pop("serviceAccountJson", None)
+            token_data = normalized
         elif payload.app_name == "whatsapp":
             access_token = (
                 token_data.get("access_token")
@@ -194,3 +173,52 @@ class CredentialService:
                 # Backward compatibility for older plaintext records
                 return api_key_encrypted
         return None
+
+    def summarize_credential(self, credential: AppCredential) -> dict[str, str | None]:
+        token_data = dict(credential.token_data or {})
+        provider = str(token_data.get("provider") or "").strip() or None
+        email = self._safe_read_token_value(token_data, "email")
+        app_name = str(credential.app_name or "").strip().lower()
+
+        display_name = None
+        description = None
+
+        if provider == "google_oauth":
+            display_name = "Google OAuth"
+            description = f"Connected Google account ({email})" if email else "Connected Google account"
+        elif provider == "google_service_account":
+            display_name = "Service Account JSON (Legacy)"
+            description = "Legacy Google service account key"
+        elif provider == "gmail_app_password":
+            display_name = "Gmail App Password (Legacy)"
+            description = f"Legacy Gmail app password ({email})" if email else "Legacy Gmail app password"
+        elif provider == "telegram_bot_token":
+            display_name = "Telegram Bot Token"
+            description = "Telegram bot token + chat ID"
+        elif provider == "api_key":
+            display_name = "API Key"
+            description = f"{app_name.title()} API key" if app_name else "API key"
+        elif provider:
+            display_name = provider.replace("_", " ").title()
+            description = f"{app_name.title()} credential" if app_name else "Credential"
+        else:
+            display_name = app_name.title() if app_name else "Credential"
+            description = f"{display_name} credential"
+
+        return {
+            "provider": provider,
+            "display_name": display_name,
+            "description": description,
+        }
+
+    @staticmethod
+    def _safe_read_token_value(token_data: dict[str, Any], key: str) -> str | None:
+        raw_value = token_data.get(key)
+        if not isinstance(raw_value, str) or not raw_value:
+            return None
+        try:
+            value = decrypt_data(raw_value)
+        except Exception:
+            value = raw_value
+        value = str(value).strip()
+        return value or None

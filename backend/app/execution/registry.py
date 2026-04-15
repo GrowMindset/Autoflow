@@ -24,6 +24,8 @@ class RunnerRegistry:
             "send_gmail_message": self._build_send_gmail_message,
             "create_google_sheets": self._build_create_google_sheets,
             "search_update_google_sheets": self._build_search_update_google_sheets,
+            "create_google_docs": self._build_create_google_docs,
+            "update_google_docs": self._build_update_google_docs,
             "telegram": self._build_telegram,
             "whatsapp": self._build_whatsapp,
         }
@@ -169,6 +171,18 @@ class RunnerRegistry:
         )
 
         return SearchUpdateGoogleSheetsRunner()
+
+    @staticmethod
+    def _build_create_google_docs() -> Any:
+        from app.execution.runners.nodes.create_google_docs import CreateGoogleDocsRunner
+
+        return CreateGoogleDocsRunner()
+
+    @staticmethod
+    def _build_update_google_docs() -> Any:
+        from app.execution.runners.nodes.update_google_docs import UpdateGoogleDocsRunner
+
+        return UpdateGoogleDocsRunner()
 
     @staticmethod
     def _build_telegram() -> Any:

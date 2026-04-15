@@ -176,6 +176,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             delete nextConfig.private_key;
             delete nextConfig.privateKey;
           }
+          if (node.data.type === 'create_google_docs' || node.data.type === 'update_google_docs') {
+            delete nextConfig.service_account_json;
+            delete nextConfig.serviceAccountJson;
+            delete nextConfig.private_key;
+            delete nextConfig.privateKey;
+          }
           return nextConfig;
         })(),
         id: node.id,
@@ -1017,11 +1023,27 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [workflowId, stopPolling]);
 
   const isValidConnection = useCallback((connection: Connection) => {
-    // Only allow one connection per source handle
-    const existingEdge = edges.find(
-      (edge) => edge.source === connection.source && edge.sourceHandle === connection.sourceHandle
+    if (!connection.source || !connection.target) {
+      return false;
+    }
+
+    // Prevent self-loop connections.
+    if (connection.source === connection.target) {
+      return false;
+    }
+
+    // Allow multiple edges from the same source handle (fan-out),
+    // but prevent exact duplicate connections.
+    const sourceHandle = connection.sourceHandle ?? null;
+    const targetHandle = connection.targetHandle ?? null;
+    const duplicateEdge = edges.some(
+      (edge) =>
+        edge.source === connection.source &&
+        edge.target === connection.target &&
+        (edge.sourceHandle ?? null) === sourceHandle &&
+        (edge.targetHandle ?? null) === targetHandle
     );
-    return !existingEdge;
+    return !duplicateEdge;
   }, [edges]);
 
   const onConnect = useCallback((params: Connection) => {

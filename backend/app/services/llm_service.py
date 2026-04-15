@@ -55,7 +55,7 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "get_gmail_message": {
         "category": "action",
-        "description": "Fetches emails from Gmail via IMAP. Requires credential_id.",
+        "description": "Fetches emails from Gmail API using OAuth credential. Requires credential_id.",
         "rules": [
             "Use config keys: credential_id, folder, query, limit, unread_only, include_body, mark_as_read.",
             "limit should be a small positive integer as a string (for example '10').",
@@ -63,7 +63,7 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "send_gmail_message": {
         "category": "action",
-        "description": "Sends email through Gmail SMTP. Requires credential_id, to, subject, and body.",
+        "description": "Sends email through Gmail API using OAuth credential. Requires credential_id, to, subject, and body.",
         "rules": [
             "Use config keys: credential_id, to, cc, bcc, reply_to, subject, body, is_html.",
             "Use comma-separated emails in to/cc/bcc when multiple recipients are needed.",
@@ -71,7 +71,7 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "create_google_sheets": {
         "category": "action",
-        "description": "Creates a new Google Spreadsheet using a Sheets service-account credential.",
+        "description": "Creates a new Google Spreadsheet using a Sheets credential.",
         "rules": [
             "Use config keys: credential_id, title, sheet_name.",
             "credential_id must point to app_credentials with app_name=sheets.",
@@ -84,6 +84,24 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "rules": [
             "Use config keys: credential_id, spreadsheet_id, sheet_name, search_column, search_value, update_column, update_value.",
             "search_column and update_column can be header names, column letters (A/B/C), or column numbers.",
+        ],
+    },
+    "create_google_docs": {
+        "category": "action",
+        "description": "Creates a Google Doc using a Docs credential.",
+        "rules": [
+            "Use config keys: credential_id, title, initial_content.",
+            "credential_id must point to app_credentials with app_name=docs.",
+            "title is required. initial_content is optional.",
+        ],
+    },
+    "update_google_docs": {
+        "category": "action",
+        "description": "Updates a Google Doc by appending text or replacing text.",
+        "rules": [
+            "Use config keys: credential_id, document_id, operation, text, match_text, match_case.",
+            "operation must be append_text or replace_all_text.",
+            "match_text is required when operation is replace_all_text.",
         ],
     },
     "telegram": {

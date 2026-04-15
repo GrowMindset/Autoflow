@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from app.models.webhook import WebhookEndpoint
 from app.models.workflows import Workflow
 from app.schemas.executions import ExecutionStatus, TriggeredBy
 from app.tasks.execute_workflow import run_execution, run_node_test
+from celery_config import WORKFLOW_EXECUTION_QUEUE, WORKFLOW_NODE_TEST_QUEUE
 
 
 class ExecutionService:
@@ -28,6 +30,8 @@ class ExecutionService:
         workflow_id: UUID,
         user: User,
     ) -> Execution:
+        await self._mark_stale_running_executions(user_id=user.id)
+
         workflow = await self._get_owned_workflow(workflow_id=workflow_id, user_id=user.id)
         if workflow is None:
             raise ValueError("Workflow not found")
@@ -51,6 +55,8 @@ class ExecutionService:
         user: User,
         form_data: dict[str, Any],
     ) -> Execution:
+        await self._mark_stale_running_executions(user_id=user.id)
+
         workflow = await self._get_owned_workflow(workflow_id=workflow_id, user_id=user.id)
         if workflow is None:
             raise ValueError("Workflow not found")
@@ -114,6 +120,8 @@ class ExecutionService:
         if user is None:
             raise ValueError("Webhook owner not found")
 
+        await self._mark_stale_running_executions(user_id=user.id)
+
         return await self._create_and_enqueue_execution(
             workflow=workflow,
             user=user,
@@ -163,6 +171,8 @@ class ExecutionService:
         if user is None:
             raise ValueError("Webhook owner not found")
 
+        await self._mark_stale_running_executions(user_id=user.id)
+
         return await self._create_and_enqueue_execution(
             workflow=workflow,
             user=user,
@@ -179,6 +189,8 @@ class ExecutionService:
         user: User,
         input_data: dict[str, Any] | None = None,
     ) -> Execution:
+        await self._mark_stale_running_executions(user_id=user.id)
+
         workflow = await self._get_owned_workflow(workflow_id=workflow_id, user_id=user.id)
         if workflow is None:
             raise ValueError("Workflow not found")
@@ -220,11 +232,19 @@ class ExecutionService:
         await self.db.commit()
         await self.db.refresh(execution)
 
-        run_node_test.delay(
-            execution_id=str(execution.id),
-            node_id=node_id,
-            input_data=input_data,
-        )
+        try:
+            self._enqueue_task(
+                run_node_test,
+                queue=WORKFLOW_NODE_TEST_QUEUE,
+                kwargs={
+                    "execution_id": str(execution.id),
+                    "node_id": node_id,
+                    "input_data": input_data,
+                },
+            )
+        except Exception as exc:
+            await self._mark_enqueue_failure(execution=execution, exc=exc)
+            raise RuntimeError("Failed to enqueue node test execution") from exc
         return execution
 
     async def get_execution_detail(
@@ -233,6 +253,8 @@ class ExecutionService:
         execution_id: UUID,
         user_id: UUID,
     ) -> tuple[Execution, list[NodeExecution]]:
+        await self._mark_stale_running_executions(user_id=user_id)
+
         execution = await self.db.scalar(
             select(Execution)
             .options(
@@ -287,6 +309,8 @@ class ExecutionService:
         workflow_id: UUID,
         user_id: UUID,
     ) -> tuple[Execution, list[NodeExecution]] | None:
+        await self._mark_stale_running_executions(user_id=user_id)
+
         execution = await self.db.scalar(
             select(Execution)
             .where(
@@ -312,6 +336,8 @@ class ExecutionService:
         workflow_id: UUID | None = None,
         status: ExecutionStatus | None = None,
     ) -> tuple[int, Sequence[tuple[Execution, str]]]:
+        await self._mark_stale_running_executions(user_id=user_id)
+
         filters = [Execution.user_id == user_id]
         if workflow_id is not None:
             filters.append(Execution.workflow_id == workflow_id)
@@ -373,11 +399,19 @@ class ExecutionService:
         await self.db.commit()
         await self.db.refresh(execution)
 
-        run_execution.delay(
-            execution_id=str(execution.id),
-            initial_payload=initial_payload,
-            start_node_id=start_node_id,
-        )
+        try:
+            self._enqueue_task(
+                run_execution,
+                queue=WORKFLOW_EXECUTION_QUEUE,
+                kwargs={
+                    "execution_id": str(execution.id),
+                    "initial_payload": initial_payload,
+                    "start_node_id": start_node_id,
+                },
+            )
+        except Exception as exc:
+            await self._mark_enqueue_failure(execution=execution, exc=exc)
+            raise RuntimeError("Failed to enqueue workflow execution") from exc
         return execution
 
     async def _get_owned_workflow(self, *, workflow_id: UUID, user_id: UUID) -> Workflow | None:
@@ -427,3 +461,104 @@ class ExecutionService:
         if not isinstance(config, dict):
             return "POST"
         return str(config.get("method") or "POST").upper()
+
+    @staticmethod
+    def _enqueue_task(task, *, queue: str, kwargs: dict[str, Any]) -> None:
+        inspector = task.app.control.inspect(timeout=1.0)
+        active_queues = inspector.active_queues() if inspector is not None else None
+        target_queue = queue
+        if isinstance(active_queues, dict) and active_queues:
+            queue_consumers = [
+                worker_name
+                for worker_name, queues in active_queues.items()
+                if any((q or {}).get("name") == queue for q in (queues or []))
+            ]
+            if not queue_consumers:
+                legacy_consumers = [
+                    worker_name
+                    for worker_name, queues in active_queues.items()
+                    if any((q or {}).get("name") == "celery" for q in (queues or []))
+                ]
+                if legacy_consumers:
+                    # Backward-compatible fallback for deployments still running
+                    # workers on the default Celery queue.
+                    target_queue = "celery"
+                else:
+                    raise RuntimeError(
+                        f"No Celery worker is consuming queue '{queue}'. "
+                        f"Start a worker with '-Q {queue}' (or include this queue in worker startup)."
+                    )
+
+        task.apply_async(
+            kwargs=kwargs,
+            queue=target_queue,
+            retry=True,
+            retry_policy={
+                "max_retries": 3,
+                "interval_start": 0,
+                "interval_step": 0.5,
+                "interval_max": 2,
+            },
+        )
+
+    async def _mark_enqueue_failure(self, *, execution: Execution, exc: Exception) -> None:
+        execution.status = "FAILED"
+        execution.finished_at = datetime.now(timezone.utc)
+        execution.error_message = f"Failed to enqueue background task: {exc}"
+        await self.db.commit()
+
+    async def _mark_stale_running_executions(self, *, user_id: UUID) -> None:
+        timeout_minutes = self._stale_running_timeout_minutes()
+        if timeout_minutes <= 0:
+            return
+
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(minutes=timeout_minutes)
+        stale_rows = (
+            await self.db.scalars(
+                select(Execution).where(
+                    Execution.user_id == user_id,
+                    Execution.status == "RUNNING",
+                    Execution.started_at.is_not(None),
+                    Execution.started_at < cutoff,
+                )
+            )
+        ).all()
+        if not stale_rows:
+            return
+
+        stale_execution_ids = [row.id for row in stale_rows]
+        message = (
+            "Execution timed out or worker was interrupted. "
+            "Marked as failed by stale-execution recovery."
+        )
+
+        for execution in stale_rows:
+            execution.status = "FAILED"
+            execution.finished_at = now
+            if not execution.error_message:
+                execution.error_message = message
+
+        stale_node_rows = (
+            await self.db.scalars(
+                select(NodeExecution).where(
+                    NodeExecution.execution_id.in_(stale_execution_ids),
+                    NodeExecution.status.in_(["PENDING", "RUNNING"]),
+                )
+            )
+        ).all()
+        for node_row in stale_node_rows:
+            node_row.status = "FAILED"
+            node_row.finished_at = now
+            if not node_row.error_message:
+                node_row.error_message = message
+
+        await self.db.commit()
+
+    @staticmethod
+    def _stale_running_timeout_minutes() -> int:
+        raw_value = os.getenv("EXECUTION_STALE_TIMEOUT_MINUTES", "30")
+        try:
+            return max(0, int(raw_value))
+        except Exception:
+            return 30

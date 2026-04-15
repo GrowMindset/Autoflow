@@ -1,14 +1,25 @@
-"""Gmail send runner using SMTP + app password credentials."""
+"""Gmail send runner using Google OAuth credentials."""
 
 from __future__ import annotations
 
-import smtplib
+import base64
 from email.message import EmailMessage
 from typing import Any
 
+from google.auth.exceptions import RefreshError
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+from .google_oauth_utils import build_google_user_credentials, is_google_oauth_credential
+
+
+GMAIL_SEND_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.send",
+]
+
 
 class SendGmailMessageRunner:
-    """Sends an email through Gmail SMTP."""
+    """Sends an email through Gmail."""
 
     def run(
         self,
@@ -18,23 +29,6 @@ class SendGmailMessageRunner:
     ) -> dict[str, Any]:
         context = context or {}
         credential_data = self._resolve_credential_data(config, context)
-
-        sender_email = (
-            credential_data.get("email")
-            or credential_data.get("user_email")
-            or credential_data.get("username")
-            or ""
-        )
-        app_password = (
-            credential_data.get("app_password")
-            or credential_data.get("password")
-            or credential_data.get("api_key")
-            or ""
-        )
-        if not sender_email:
-            raise ValueError("Gmail Send: Sender email is missing in selected credential.")
-        if not app_password:
-            raise ValueError("Gmail Send: App password is missing in selected credential.")
 
         to_list = self._split_emails(config.get("to"))
         cc_list = self._split_emails(config.get("cc"))
@@ -51,8 +45,12 @@ class SendGmailMessageRunner:
         if not body:
             raise ValueError("Gmail Send: 'body' is required.")
 
+        sender_email = (
+            str(credential_data.get("email") or credential_data.get("user_email") or credential_data.get("username") or "").strip()
+        )
         message = EmailMessage()
-        message["From"] = sender_email
+        if sender_email:
+            message["From"] = sender_email
         message["To"] = ", ".join(to_list)
         if cc_list:
             message["Cc"] = ", ".join(cc_list)
@@ -66,11 +64,15 @@ class SendGmailMessageRunner:
         else:
             message.set_content(body)
 
-        recipients = to_list + cc_list + bcc_list
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as smtp:
-            smtp.starttls()
-            smtp.login(sender_email, app_password)
-            smtp.send_message(message, from_addr=sender_email, to_addrs=recipients)
+        if not is_google_oauth_credential(credential_data):
+            raise ValueError(
+                "Gmail Send: selected credential is not Google OAuth. Reconnect using Google OAuth."
+            )
+
+        self._send_via_gmail_api(
+            credential_data=credential_data,
+            message=message,
+        )
 
         result: dict[str, Any] = {}
         if isinstance(input_data, dict):
@@ -87,6 +89,33 @@ class SendGmailMessageRunner:
             }
         )
         return result
+
+    def _send_via_gmail_api(
+        self,
+        *,
+        credential_data: dict[str, Any],
+        message: EmailMessage,
+    ) -> None:
+        credentials = build_google_user_credentials(
+            credential_data=credential_data,
+            required_scopes=GMAIL_SEND_SCOPES,
+            integration_name="Gmail Send",
+        )
+        service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+        try:
+            (
+                service.users()
+                .messages()
+                .send(userId="me", body={"raw": raw})
+                .execute()
+            )
+        except RefreshError as exc:
+            raise ValueError(
+                "Gmail Send: OAuth token refresh failed. Reconnect Google OAuth credential."
+            ) from exc
+        except HttpError as exc:
+            raise ValueError(f"Gmail Send: Gmail API send failed: {exc}") from exc
 
     @staticmethod
     def _split_emails(value: Any) -> list[str]:
@@ -107,4 +136,3 @@ class SendGmailMessageRunner:
                 "Gmail Send: Credential data not found. Save a Gmail credential and select it in this node."
             )
         return raw_data
-

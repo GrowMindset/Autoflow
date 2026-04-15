@@ -59,6 +59,19 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "update_column": "",
         "update_value": "",
     },
+    "create_google_docs": {
+        "credential_id": "",
+        "title": "",
+        "initial_content": "",
+    },
+    "update_google_docs": {
+        "credential_id": "",
+        "document_id": "",
+        "operation": "append_text",
+        "text": "",
+        "match_text": "",
+        "match_case": False,
+    },
     "telegram": {
         "credential_id": "",
         "message": "",

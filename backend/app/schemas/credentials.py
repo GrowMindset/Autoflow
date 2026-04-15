@@ -19,6 +19,9 @@ class AppCredentialResponse(BaseModel):
     user_id: UUID
     app_name: str
     created_at: datetime
+    provider: str | None = None
+    display_name: str | None = None
+    description: str | None = None
 
 
 class AppCredentialListResponse(BaseModel):
@@ -27,3 +30,17 @@ class AppCredentialListResponse(BaseModel):
 
 class AppCredentialDeleteResponse(BaseModel):
     message: str
+
+
+class GoogleOAuthStartResponse(BaseModel):
+    auth_url: str
+    state: str
+    redirect_uri: str
+    app_name: str
+    scopes: list[str]
+
+
+class GoogleOAuthExchangeRequest(BaseModel):
+    code: str = Field(min_length=1)
+    state: str = Field(min_length=1)
+    redirect_uri: str | None = None

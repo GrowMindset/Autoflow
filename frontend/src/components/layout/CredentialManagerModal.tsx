@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, RefreshCw, Plus, KeyRound, Copy, Check, Trash2 } from 'lucide-react';
+import { X, RefreshCw, Plus, KeyRound, Copy, Check, Trash2, Link as LinkIcon } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { credentialService, CredentialItem } from '../../services/credentialService';
 
@@ -16,6 +16,7 @@ const APP_OPTIONS = [
   { value: 'linkedin', label: 'LinkedIn' },
   { value: 'gmail', label: 'Gmail' },
   { value: 'sheets', label: 'Google Sheets' },
+  { value: 'docs', label: 'Google Docs' },
 ];
 
 const APP_SECRET_FIELD: Record<string, { key: string; label: string; placeholder: string }> = {
@@ -23,16 +24,6 @@ const APP_SECRET_FIELD: Record<string, { key: string; label: string; placeholder
     key: 'api_key',
     label: 'Bot Token',
     placeholder: 'Telegram Bot Token (e.g. 123456789:AA...)',
-  },
-  gmail: {
-    key: 'app_password',
-    label: 'App Password',
-    placeholder: 'Gmail App Password (16 characters)',
-  },
-  sheets: {
-    key: 'service_account_json',
-    label: 'Service Account JSON',
-    placeholder: 'Paste Google service account JSON',
   },
   default: {
     key: 'api_key',
@@ -45,9 +36,9 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   const [credentials, setCredentials] = useState<CredentialItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isOAuthConnecting, setIsOAuthConnecting] = useState(false);
   const [appName, setAppName] = useState('openai');
   const [secret, setSecret] = useState('');
-  const [gmailEmail, setGmailEmail] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -63,6 +54,8 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   const isTelegram = appName === 'telegram';
   const isGmail = appName === 'gmail';
   const isSheets = appName === 'sheets';
+  const isDocs = appName === 'docs';
+  const isGoogleOAuthCapable = isGmail || isSheets || isDocs;
 
   const fetchCredentials = async () => {
     setIsLoading(true);
@@ -79,8 +72,8 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   useEffect(() => {
     if (!isOpen) return;
     setSecret('');
-    setGmailEmail('');
     setTelegramChatId('');
+    setIsOAuthConnecting(false);
     void fetchCredentials();
   }, [isOpen]);
 
@@ -94,13 +87,14 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
     if (appName !== 'telegram') {
       setTelegramChatId('');
     }
-    if (appName !== 'gmail') {
-      setGmailEmail('');
-    }
     setSecret('');
   }, [appName]);
 
   const handleCreate = async () => {
+    if (isGoogleOAuthCapable) {
+      toast.error('Google credentials are OAuth-only. Use "Connect With Google OAuth".');
+      return;
+    }
     const trimmed = secret.trim();
     if (!trimmed) {
       toast.error('Please enter API key / token');
@@ -111,44 +105,16 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
       toast.error('Please enter Telegram Chat ID');
       return;
     }
-    const trimmedGmailEmail = gmailEmail.trim();
-    if (isGmail && !trimmedGmailEmail) {
-      toast.error('Please enter Gmail address');
-      return;
-    }
-    if (isSheets) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (!parsed || typeof parsed !== 'object') {
-          toast.error('Service account JSON must be a valid JSON object');
-          return;
-        }
-        if (!String((parsed as any).client_email || '').trim()) {
-          toast.error('service_account_json is missing client_email');
-          return;
-        }
-        if (!String((parsed as any).private_key || '').trim()) {
-          toast.error('service_account_json is missing private_key');
-          return;
-        }
-      } catch {
-        toast.error('Please paste valid service account JSON');
-        return;
-      }
-    }
-
     setIsSaving(true);
     try {
       await credentialService.create({
         app_name: appName,
         token_data: {
           [secretField.key]: trimmed,
-          ...(isGmail ? { email: trimmedGmailEmail } : {}),
           ...(isTelegram ? { chat_id: trimmedChatId } : {}),
         },
       });
       setSecret('');
-      setGmailEmail('');
       setTelegramChatId('');
       await fetchCredentials();
       toast.success('Credential saved');
@@ -156,6 +122,23 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
       console.error('Failed to create credential:', error);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleGoogleOAuthConnect = async () => {
+    if (!isGoogleOAuthCapable) return;
+    setIsOAuthConnecting(true);
+    try {
+      const redirectUri = `${window.location.origin}/app/oauth/google/callback`;
+      const result = await credentialService.startGoogleOAuth(
+        isGmail ? 'gmail' : (isSheets ? 'sheets' : 'docs'),
+        redirectUri,
+      );
+      window.location.href = result.auth_url;
+    } catch (error) {
+      console.error('Failed to start Google OAuth:', error);
+      toast.error('Could not start Google OAuth flow.');
+      setIsOAuthConnecting(false);
     }
   };
 
@@ -232,46 +215,35 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
                 </option>
               ))}
             </select>
-
-            <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
-              {secretField.label}
-            </label>
-            {isSheets ? (
-              <textarea
-                name="credential-manager-service-account"
-                autoComplete="off"
-                spellCheck={false}
-                rows={7}
-                value={secret}
-                onChange={(event) => setSecret(event.target.value)}
-                placeholder={secretField.placeholder}
-                className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-mono text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40 resize-y"
-              />
-            ) : (
-              <input
-                type="password"
-                name="credential-manager-secret"
-                autoComplete="new-password"
-                spellCheck={false}
-                value={secret}
-                onChange={(event) => setSecret(event.target.value)}
-                placeholder={secretField.placeholder}
-                className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
-              />
+            {isGoogleOAuthCapable && (
+              <button
+                type="button"
+                onClick={() => void handleGoogleOAuthConnect()}
+                disabled={isOAuthConnecting}
+                className="w-full mb-4 flex items-center justify-center gap-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:text-slate-500 text-white px-4 py-2 text-sm font-black uppercase tracking-[0.08em] transition-colors"
+              >
+                <LinkIcon size={14} />
+                {isOAuthConnecting ? 'Connecting...' : 'Connect With Google OAuth'}
+              </button>
             )}
-            {isGmail && (
+            {isGoogleOAuthCapable && (
+              <p className="mb-3 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                Google credentials are OAuth-only. Click the button above to connect your Google account.
+              </p>
+            )}
+            {!isGoogleOAuthCapable && (
               <>
                 <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
-                  Gmail Address
+                  {secretField.label}
                 </label>
                 <input
-                  type="email"
-                  name="credential-manager-gmail-email"
-                  autoComplete="off"
+                  type="password"
+                  name="credential-manager-secret"
+                  autoComplete="new-password"
                   spellCheck={false}
-                  value={gmailEmail}
-                  onChange={(event) => setGmailEmail(event.target.value)}
-                  placeholder="e.g. yourname@gmail.com"
+                  value={secret}
+                  onChange={(event) => setSecret(event.target.value)}
+                  placeholder={secretField.placeholder}
                   className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
                 />
               </>
@@ -294,15 +266,17 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
               </>
             )}
 
-            <button
-              type="button"
-              onClick={handleCreate}
-              disabled={isSaving}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:text-slate-500 text-white px-4 py-2 text-sm font-black uppercase tracking-[0.08em] transition-colors"
-            >
-              <Plus size={14} />
-              {isSaving ? 'Saving...' : 'Save Credential'}
-            </button>
+            {!isGoogleOAuthCapable && (
+              <button
+                type="button"
+                onClick={handleCreate}
+                disabled={isSaving}
+                className="w-full flex items-center justify-center gap-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:text-slate-500 text-white px-4 py-2 text-sm font-black uppercase tracking-[0.08em] transition-colors"
+              >
+                <Plus size={14} />
+                {isSaving ? 'Saving...' : 'Save Credential'}
+              </button>
+            )}
 
             <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
               Use saved credential IDs in node config where `credential_id` is required.
@@ -346,6 +320,16 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
                       <span className="text-[10px] text-slate-500 dark:text-slate-400">
                         {new Date(item.created_at).toLocaleString()}
                       </span>
+                    </div>
+                    <div className="mt-1">
+                      <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                        {item.display_name || 'Credential'}
+                      </p>
+                      {item.description && (
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                          {item.description}
+                        </p>
+                      )}
                     </div>
                     <div className="mt-2 flex items-center justify-between gap-2">
                       <code className="text-[11px] text-slate-600 dark:text-slate-300 break-all">

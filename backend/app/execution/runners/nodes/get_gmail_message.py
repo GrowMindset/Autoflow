@@ -1,11 +1,22 @@
-"""Gmail fetch runner using IMAP + app password credentials."""
+"""Gmail fetch runner using Google OAuth credentials."""
 
 from __future__ import annotations
 
+import base64
 import email
-import imaplib
 from email import policy
 from typing import Any
+
+from google.auth.exceptions import RefreshError
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+from .google_oauth_utils import build_google_user_credentials, is_google_oauth_credential
+
+
+GMAIL_READ_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+]
 
 
 class GetGmailMessageRunner:
@@ -20,91 +31,26 @@ class GetGmailMessageRunner:
         context = context or {}
         credential_data = self._resolve_credential_data(config, context)
 
-        user_email = (
-            credential_data.get("email")
-            or credential_data.get("user_email")
-            or credential_data.get("username")
-            or ""
-        )
-        app_password = (
-            credential_data.get("app_password")
-            or credential_data.get("password")
-            or credential_data.get("api_key")
-            or ""
-        )
-        if not user_email:
-            raise ValueError("Gmail Get: Email is missing in selected credential.")
-        if not app_password:
-            raise ValueError("Gmail Get: App password is missing in selected credential.")
-
         folder = str(config.get("folder") or "INBOX")
-        query = str(config.get("query") or "").strip().lower()
+        query = str(config.get("query") or "").strip()
         limit = self._parse_limit(config.get("limit"))
         unread_only = bool(config.get("unread_only", False))
         include_body = bool(config.get("include_body", False))
         mark_as_read = bool(config.get("mark_as_read", False))
+        if not is_google_oauth_credential(credential_data):
+            raise ValueError(
+                "Gmail Get: selected credential is not Google OAuth. Reconnect using Google OAuth."
+            )
 
-        messages: list[dict[str, Any]] = []
-        with imaplib.IMAP4_SSL("imap.gmail.com", 993) as mailbox:
-            mailbox.login(user_email, app_password)
-
-            status, _ = mailbox.select(folder, readonly=not mark_as_read)
-            if status != "OK":
-                raise ValueError(f"Gmail Get: Could not open folder '{folder}'.")
-
-            criteria = ["UNSEEN"] if unread_only else ["ALL"]
-            status, data = mailbox.search(None, *criteria)
-            if status != "OK":
-                raise ValueError("Gmail Get: Failed to search mailbox.")
-
-            ids = data[0].split() if data and data[0] else []
-            ids = list(reversed(ids))
-
-            for raw_id in ids:
-                if len(messages) >= limit:
-                    break
-                status, msg_data = mailbox.fetch(raw_id, "(RFC822)")
-                if status != "OK" or not msg_data:
-                    continue
-
-                message_bytes = None
-                for part in msg_data:
-                    if isinstance(part, tuple) and len(part) >= 2:
-                        message_bytes = part[1]
-                        break
-                if not message_bytes:
-                    continue
-
-                parsed = email.message_from_bytes(message_bytes, policy=policy.default)
-                message_item = {
-                    "id": raw_id.decode(errors="ignore"),
-                    "from": str(parsed.get("From") or ""),
-                    "to": str(parsed.get("To") or ""),
-                    "subject": str(parsed.get("Subject") or ""),
-                    "date": str(parsed.get("Date") or ""),
-                    "message_id": str(parsed.get("Message-Id") or ""),
-                }
-                body_text = self._extract_body_text(parsed)
-                message_item["snippet"] = body_text[:240]
-                if include_body:
-                    message_item["body"] = body_text
-
-                # local query filter to support flexible search text
-                if query:
-                    haystack = " ".join(
-                        [
-                            message_item.get("from", ""),
-                            message_item.get("to", ""),
-                            message_item.get("subject", ""),
-                            body_text,
-                        ]
-                    ).lower()
-                    if query not in haystack:
-                        continue
-
-                messages.append(message_item)
-                if mark_as_read:
-                    mailbox.store(raw_id, "+FLAGS", "\\Seen")
+        messages = self._fetch_via_gmail_api(
+            credential_data=credential_data,
+            folder=folder,
+            query=query,
+            limit=limit,
+            unread_only=unread_only,
+            include_body=include_body,
+            mark_as_read=mark_as_read,
+        )
 
         result: dict[str, Any] = {}
         if isinstance(input_data, dict):
@@ -120,6 +66,98 @@ class GetGmailMessageRunner:
         )
         return result
 
+    def _fetch_via_gmail_api(
+        self,
+        *,
+        credential_data: dict[str, Any],
+        folder: str,
+        query: str,
+        limit: int,
+        unread_only: bool,
+        include_body: bool,
+        mark_as_read: bool,
+    ) -> list[dict[str, Any]]:
+        credentials = build_google_user_credentials(
+            credential_data=credential_data,
+            required_scopes=GMAIL_READ_SCOPES,
+            integration_name="Gmail Get",
+        )
+        service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
+
+        q_parts: list[str] = []
+        if query:
+            q_parts.append(query)
+        if unread_only:
+            q_parts.append("is:unread")
+        q_value = " ".join(q_parts).strip()
+
+        list_kwargs: dict[str, Any] = {
+            "userId": "me",
+            "maxResults": limit,
+        }
+        if q_value:
+            list_kwargs["q"] = q_value
+        normalized_folder = folder.strip().upper()
+        if normalized_folder and normalized_folder != "ALL":
+            list_kwargs["labelIds"] = [normalized_folder]
+
+        try:
+            list_response = service.users().messages().list(**list_kwargs).execute()
+        except RefreshError as exc:
+            raise ValueError(
+                "Gmail Get: OAuth token refresh failed. Reconnect Google OAuth credential."
+            ) from exc
+        except HttpError as exc:
+            raise ValueError(f"Gmail Get: Gmail API list failed: {exc}") from exc
+
+        messages: list[dict[str, Any]] = []
+        for item in list_response.get("messages", []) or []:
+            message_id = str(item.get("id") or "")
+            if not message_id:
+                continue
+            try:
+                detail = (
+                    service.users()
+                    .messages()
+                    .get(userId="me", id=message_id, format="full")
+                    .execute()
+                )
+            except HttpError:
+                continue
+
+            headers = self._header_map((detail.get("payload") or {}).get("headers") or [])
+            body_text = self._extract_gmail_payload_text(detail.get("payload") or {})
+
+            message_item = {
+                "id": message_id,
+                "from": headers.get("from", ""),
+                "to": headers.get("to", ""),
+                "subject": headers.get("subject", ""),
+                "date": headers.get("date", ""),
+                "message_id": headers.get("message-id", ""),
+                "snippet": str(detail.get("snippet") or body_text[:240]),
+            }
+            if include_body:
+                message_item["body"] = body_text
+            messages.append(message_item)
+
+            if mark_as_read:
+                try:
+                    (
+                        service.users()
+                        .messages()
+                        .modify(
+                            userId="me",
+                            id=message_id,
+                            body={"removeLabelIds": ["UNREAD"]},
+                        )
+                        .execute()
+                    )
+                except HttpError:
+                    pass
+
+        return messages
+
     @staticmethod
     def _parse_limit(raw_limit: Any) -> int:
         try:
@@ -129,7 +167,7 @@ class GetGmailMessageRunner:
         return min(max(value, 1), 100)
 
     @staticmethod
-    def _extract_body_text(message: Any) -> str:
+    def _extract_email_body_text(message: Any) -> str:
         if message.is_multipart():
             # Prefer plain text parts first.
             for part in message.walk():
@@ -160,6 +198,59 @@ class GetGmailMessageRunner:
             return str(message.get_payload() or "")
         charset = message.get_content_charset() or "utf-8"
         return payload.decode(charset, errors="replace")
+
+    @staticmethod
+    def _header_map(headers: list[dict[str, Any]]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for header in headers:
+            if not isinstance(header, dict):
+                continue
+            name = str(header.get("name") or "").strip().lower()
+            value = str(header.get("value") or "")
+            if name:
+                result[name] = value
+        return result
+
+    @classmethod
+    def _extract_gmail_payload_text(cls, payload: dict[str, Any]) -> str:
+        body_data = (
+            (payload.get("body") or {}).get("data")
+            if isinstance(payload.get("body"), dict)
+            else None
+        )
+        if isinstance(body_data, str) and body_data:
+            decoded = cls._decode_gmail_base64(body_data)
+            if decoded:
+                return decoded
+
+        for part in payload.get("parts", []) or []:
+            if not isinstance(part, dict):
+                continue
+            mime = str(part.get("mimeType") or "").lower()
+            if mime == "text/plain":
+                part_data = (part.get("body") or {}).get("data")
+                decoded = cls._decode_gmail_base64(part_data)
+                if decoded:
+                    return decoded
+
+        for part in payload.get("parts", []) or []:
+            if not isinstance(part, dict):
+                continue
+            decoded = cls._extract_gmail_payload_text(part)
+            if decoded:
+                return decoded
+        return ""
+
+    @staticmethod
+    def _decode_gmail_base64(value: Any) -> str:
+        if not isinstance(value, str) or not value:
+            return ""
+        try:
+            padded = value + ("=" * ((4 - len(value) % 4) % 4))
+            raw = base64.urlsafe_b64decode(padded.encode("utf-8"))
+            return raw.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
 
     @staticmethod
     def _resolve_credential_data(config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

@@ -13,6 +13,8 @@ from .get_gmail_message import GetGmailMessageRunner
 from .send_gmail_message import SendGmailMessageRunner
 from .create_google_sheets import CreateGoogleSheetsRunner
 from .search_update_google_sheets import SearchUpdateGoogleSheetsRunner
+from .create_google_docs import CreateGoogleDocsRunner
+from .update_google_docs import UpdateGoogleDocsRunner
 from .telegram import TelegramRunner
 from .whatsapp import WhatsAppRunner
 
@@ -37,6 +39,8 @@ __all__ = [
     "SendGmailMessageRunner",
     "CreateGoogleSheetsRunner",
     "SearchUpdateGoogleSheetsRunner",
+    "CreateGoogleDocsRunner",
+    "UpdateGoogleDocsRunner",
     "TelegramRunner",
     "WhatsAppRunner",
 ]

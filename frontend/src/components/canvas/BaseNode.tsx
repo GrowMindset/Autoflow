@@ -16,6 +16,8 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     'send_gmail_message': ['credential_id', 'to', 'subject', 'body'],
     'create_google_sheets': ['credential_id', 'title'],
     'search_update_google_sheets': ['credential_id', 'spreadsheet_id', 'sheet_name', 'search_column', 'search_value', 'update_column', 'update_value'],
+    'create_google_docs': ['credential_id', 'title'],
+    'update_google_docs': ['credential_id', 'document_id', 'operation', 'text'],
     'telegram': ['credential_id', 'message'],
     'whatsapp': ['credential_id', 'to_number', 'template_name'],
     'ai_agent': ['command'],
@@ -28,6 +30,10 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     if (!config[field]) {
       missing.push(`Required field '${field}' is missing`);
     }
+  }
+
+  if (type === 'update_google_docs' && config.operation === 'replace_all_text' && !config.match_text) {
+    missing.push("Required field 'match_text' is missing for replace_all_text operation");
   }
 
   if (type === 'ai_agent' && !isChatModelConnected) {
@@ -119,7 +125,9 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
     className?: string;
     connectionType?: 'source' | 'target';
   }) => {
-    if (isHandleConnected(handleId, connectionType)) return null;
+    // Keep "+" visible on source handles so users can fan-out to multiple nodes.
+    // For target handles, keep the previous behavior (hide once connected).
+    if (connectionType === 'target' && isHandleConnected(handleId, connectionType)) return null;
     
     return (
       <button

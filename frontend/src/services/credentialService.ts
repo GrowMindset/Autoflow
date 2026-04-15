@@ -5,6 +5,9 @@ export interface CredentialItem {
   user_id: string;
   app_name: string;
   created_at: string;
+  provider?: string | null;
+  display_name?: string | null;
+  description?: string | null;
 }
 
 interface CredentialListResponse {
@@ -14,6 +17,20 @@ interface CredentialListResponse {
 interface CreateCredentialPayload {
   app_name: string;
   token_data: Record<string, any>;
+}
+
+interface GoogleOAuthStartResponse {
+  auth_url: string;
+  state: string;
+  redirect_uri: string;
+  app_name: string;
+  scopes: string[];
+}
+
+interface GoogleOAuthExchangePayload {
+  code: string;
+  state: string;
+  redirect_uri?: string;
 }
 
 export const credentialService = {
@@ -31,5 +48,20 @@ export const credentialService = {
 
   async remove(id: string): Promise<void> {
     await api.delete(`/credentials/${id}`);
+  },
+
+  async startGoogleOAuth(appName: 'gmail' | 'sheets' | 'docs', redirectUri?: string): Promise<GoogleOAuthStartResponse> {
+    const response = await api.get<GoogleOAuthStartResponse>('/credentials/oauth/google/start', {
+      params: {
+        app_name: appName,
+        ...(redirectUri ? { redirect_uri: redirectUri } : {}),
+      },
+    });
+    return response.data;
+  },
+
+  async exchangeGoogleOAuth(payload: GoogleOAuthExchangePayload): Promise<CredentialItem> {
+    const response = await api.post<CredentialItem>('/credentials/oauth/google/exchange', payload);
+    return response.data;
   },
 };

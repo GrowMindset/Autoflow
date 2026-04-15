@@ -1,4 +1,4 @@
-"""Google Sheets search + update runner using a service account credential."""
+"""Google Sheets search + update runner using Google OAuth credentials."""
 
 from __future__ import annotations
 
@@ -6,11 +6,17 @@ import json
 import re
 from typing import Any
 
-from google.oauth2.service_account import Credentials
+from google.auth.exceptions import RefreshError
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+from .google_oauth_utils import build_google_user_credentials, is_google_oauth_credential
 
 
-GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
+GOOGLE_SHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 
 class SearchUpdateGoogleSheetsRunner:
@@ -24,6 +30,10 @@ class SearchUpdateGoogleSheetsRunner:
     ) -> dict[str, Any]:
         context = context or {}
         credential_data = self._resolve_credential_data(config, context)
+        if not is_google_oauth_credential(credential_data):
+            raise ValueError(
+                "Google Sheets Search/Update: selected credential is not Google OAuth. Reconnect using Google OAuth."
+            )
 
         spreadsheet_id = str(config.get("spreadsheet_id") or "").strip()
         sheet_name = str(config.get("sheet_name") or "Sheet1").strip()
@@ -49,6 +59,22 @@ class SearchUpdateGoogleSheetsRunner:
 
         try:
             headers = self._fetch_header_row(service, spreadsheet_id, sheet_name)
+        except RefreshError as exc:
+            raise ValueError(
+                "Google Sheets Search/Update: Google credential authentication failed. "
+                "Reconnect OAuth credential."
+            ) from exc
+        except HttpError as exc:
+            google_error = self._extract_google_error(exc)
+            if exc.resp is not None and int(getattr(exc.resp, "status", 0) or 0) == 403:
+                raise ValueError(
+                    "Google Sheets Search/Update: Permission denied (403) while using Google OAuth. "
+                    f"Google said: {google_error}. "
+                    "Reconnect Sheets OAuth credential, ensure this account is allowed in OAuth test users, and verify Sheets/Drive APIs are enabled."
+                ) from exc
+            raise ValueError(
+                f"Google Sheets Search/Update: Could not read sheet headers: {exc}"
+            ) from exc
         except Exception as exc:
             raise ValueError(
                 f"Google Sheets Search/Update: Could not read sheet headers: {exc}"
@@ -65,6 +91,22 @@ class SearchUpdateGoogleSheetsRunner:
                 .get(spreadsheetId=spreadsheet_id, range=data_range)
                 .execute()
             )
+        except RefreshError as exc:
+            raise ValueError(
+                "Google Sheets Search/Update: Google credential authentication failed. "
+                "Reconnect OAuth credential."
+            ) from exc
+        except HttpError as exc:
+            google_error = self._extract_google_error(exc)
+            if exc.resp is not None and int(getattr(exc.resp, "status", 0) or 0) == 403:
+                raise ValueError(
+                    "Google Sheets Search/Update: Permission denied (403) while using Google OAuth. "
+                    f"Google said: {google_error}. "
+                    "Reconnect Sheets OAuth credential, ensure this account is allowed in OAuth test users, and verify Sheets/Drive APIs are enabled."
+                ) from exc
+            raise ValueError(
+                f"Google Sheets Search/Update: Could not read row data: {exc}"
+            ) from exc
         except Exception as exc:
             raise ValueError(
                 f"Google Sheets Search/Update: Could not read row data: {exc}"
@@ -89,6 +131,7 @@ class SearchUpdateGoogleSheetsRunner:
                 {
                     "google_sheets_updated": False,
                     "google_sheets_found": False,
+                    "google_sheets_auth_mode": "oauth",
                     "google_sheets_spreadsheet_id": spreadsheet_id,
                     "google_sheets_sheet_name": sheet_name,
                     "google_sheets_search_column": search_column,
@@ -110,6 +153,22 @@ class SearchUpdateGoogleSheetsRunner:
                 )
                 .execute()
             )
+        except RefreshError as exc:
+            raise ValueError(
+                "Google Sheets Search/Update: Google credential authentication failed. "
+                "Reconnect OAuth credential."
+            ) from exc
+        except HttpError as exc:
+            google_error = self._extract_google_error(exc)
+            if exc.resp is not None and int(getattr(exc.resp, "status", 0) or 0) == 403:
+                raise ValueError(
+                    "Google Sheets Search/Update: Permission denied (403) while using Google OAuth. "
+                    f"Google said: {google_error}. "
+                    "Reconnect Sheets OAuth credential, ensure this account is allowed in OAuth test users, and verify Sheets/Drive APIs are enabled."
+                ) from exc
+            raise ValueError(
+                f"Google Sheets Search/Update: Failed to update matched row: {exc}"
+            ) from exc
         except Exception as exc:
             raise ValueError(
                 f"Google Sheets Search/Update: Failed to update matched row: {exc}"
@@ -119,6 +178,7 @@ class SearchUpdateGoogleSheetsRunner:
             {
                 "google_sheets_updated": True,
                 "google_sheets_found": True,
+                "google_sheets_auth_mode": "oauth",
                 "google_sheets_spreadsheet_id": spreadsheet_id,
                 "google_sheets_sheet_name": sheet_name,
                 "google_sheets_search_column": search_column,
@@ -149,40 +209,30 @@ class SearchUpdateGoogleSheetsRunner:
 
     @staticmethod
     def _build_sheets_service(credential_data: dict[str, Any]) -> Any:
-        raw_service_account = (
-            credential_data.get("service_account_json")
-            or credential_data.get("serviceAccountJson")
+        user_credentials = build_google_user_credentials(
+            credential_data=credential_data,
+            required_scopes=GOOGLE_SHEETS_SCOPES,
+            integration_name="Google Sheets Search/Update",
         )
-        if isinstance(raw_service_account, str):
-            try:
-                service_account_info = json.loads(raw_service_account)
-            except Exception as exc:
-                raise ValueError(
-                    "Google Sheets Search/Update: service_account_json is not valid JSON."
-                ) from exc
-        elif isinstance(raw_service_account, dict):
-            service_account_info = raw_service_account
-        else:
-            raise ValueError(
-                "Google Sheets Search/Update: service_account_json is missing in selected credential."
-            )
+        return build("sheets", "v4", credentials=user_credentials, cache_discovery=False)
 
-        if not isinstance(service_account_info, dict):
-            raise ValueError(
-                "Google Sheets Search/Update: service account payload must be a JSON object."
-            )
-
-        for required_key in ("client_email", "private_key"):
-            if not str(service_account_info.get(required_key) or "").strip():
-                raise ValueError(
-                    f"Google Sheets Search/Update: service account payload is missing '{required_key}'."
-                )
-
-        credentials = Credentials.from_service_account_info(
-            service_account_info,
-            scopes=[GOOGLE_SHEETS_SCOPE],
-        )
-        return build("sheets", "v4", credentials=credentials, cache_discovery=False)
+    @staticmethod
+    def _extract_google_error(exc: HttpError) -> str:
+        try:
+            raw = exc.content.decode("utf-8", "ignore")
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                err = payload.get("error")
+                if isinstance(err, dict):
+                    message = str(err.get("message") or "").strip()
+                    status = str(err.get("status") or "").strip()
+                    if message and status:
+                        return f"{status}: {message}"
+                    if message:
+                        return message
+            return raw or str(exc)
+        except Exception:
+            return str(exc)
 
     @staticmethod
     def _fetch_header_row(service: Any, spreadsheet_id: str, sheet_name: str) -> list[str]:

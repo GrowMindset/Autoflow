@@ -4,6 +4,7 @@ import MainLayout from './components/layout/MainLayout';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import WorkflowFormPage from './pages/WorkflowFormPage';
+import GoogleOAuthCallback from './pages/GoogleOAuthCallback';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import { Toaster } from 'react-hot-toast';
 import { ThemeProvider } from './context/ThemeContext';
@@ -22,6 +23,7 @@ const App: React.FC = () => {
             <Route path="/" element={<MainLayout />} />
             <Route path="/app/*" element={<MainLayout />} />
             <Route path="/app/forms/:workflowId" element={<WorkflowFormPage />} />
+            <Route path="/app/oauth/google/callback" element={<GoogleOAuthCallback />} />
           </Route>
 
           {/* Fallback */}

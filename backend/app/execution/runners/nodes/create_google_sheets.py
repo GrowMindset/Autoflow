@@ -1,15 +1,21 @@
-"""Google Sheets create runner using a service account credential."""
+"""Google Sheets create runner using Google OAuth credentials."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from google.oauth2.service_account import Credentials
+from google.auth.exceptions import RefreshError
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+from .google_oauth_utils import build_google_user_credentials, is_google_oauth_credential
 
 
-GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
+GOOGLE_SHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 
 class CreateGoogleSheetsRunner:
@@ -23,6 +29,10 @@ class CreateGoogleSheetsRunner:
     ) -> dict[str, Any]:
         context = context or {}
         credential_data = self._resolve_credential_data(config, context)
+        if not is_google_oauth_credential(credential_data):
+            raise ValueError(
+                "Google Sheets Create: selected credential is not Google OAuth. Reconnect using Google OAuth."
+            )
 
         title = str(config.get("title") or "").strip()
         if not title:
@@ -44,6 +54,20 @@ class CreateGoogleSheetsRunner:
                 )
                 .execute()
             )
+        except HttpError as exc:
+            google_error = self._extract_google_error(exc)
+            if exc.resp is not None and int(getattr(exc.resp, "status", 0) or 0) == 403:
+                raise ValueError(
+                    "Google Sheets Create: Permission denied (403) while using Google OAuth. "
+                    f"Google said: {google_error}. "
+                    "Reconnect Sheets OAuth credential, ensure this account is allowed in OAuth test users, and verify Sheets/Drive APIs are enabled."
+                ) from exc
+            raise ValueError(f"Google Sheets Create: API request failed: {exc}") from exc
+        except RefreshError as exc:
+            raise ValueError(
+                "Google Sheets Create: Google credential authentication failed. "
+                "Reconnect OAuth credential."
+            ) from exc
         except Exception as exc:
             raise ValueError(f"Google Sheets Create: API request failed: {exc}") from exc
 
@@ -63,6 +87,7 @@ class CreateGoogleSheetsRunner:
         result.update(
             {
                 "google_sheets_created": True,
+                "google_sheets_auth_mode": "oauth",
                 "google_sheets_spreadsheet_id": created_dict.get("spreadsheetId"),
                 "google_sheets_spreadsheet_url": created_dict.get("spreadsheetUrl"),
                 "google_sheets_title": created_title or title,
@@ -87,35 +112,27 @@ class CreateGoogleSheetsRunner:
 
     @staticmethod
     def _build_sheets_service(credential_data: dict[str, Any]) -> Any:
-        raw_service_account = (
-            credential_data.get("service_account_json")
-            or credential_data.get("serviceAccountJson")
+        user_credentials = build_google_user_credentials(
+            credential_data=credential_data,
+            required_scopes=GOOGLE_SHEETS_SCOPES,
+            integration_name="Google Sheets Create",
         )
-        if isinstance(raw_service_account, str):
-            try:
-                service_account_info = json.loads(raw_service_account)
-            except Exception as exc:
-                raise ValueError(
-                    "Google Sheets Create: service_account_json is not valid JSON."
-                ) from exc
-        elif isinstance(raw_service_account, dict):
-            service_account_info = raw_service_account
-        else:
-            raise ValueError(
-                "Google Sheets Create: service_account_json is missing in selected credential."
-            )
+        return build("sheets", "v4", credentials=user_credentials, cache_discovery=False)
 
-        if not isinstance(service_account_info, dict):
-            raise ValueError("Google Sheets Create: service account payload must be a JSON object.")
-
-        for required_key in ("client_email", "private_key"):
-            if not str(service_account_info.get(required_key) or "").strip():
-                raise ValueError(
-                    f"Google Sheets Create: service account payload is missing '{required_key}'."
-                )
-
-        credentials = Credentials.from_service_account_info(
-            service_account_info,
-            scopes=[GOOGLE_SHEETS_SCOPE],
-        )
-        return build("sheets", "v4", credentials=credentials, cache_discovery=False)
+    @staticmethod
+    def _extract_google_error(exc: HttpError) -> str:
+        try:
+            raw = exc.content.decode("utf-8", "ignore")
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                err = payload.get("error")
+                if isinstance(err, dict):
+                    message = str(err.get("message") or "").strip()
+                    status = str(err.get("status") or "").strip()
+                    if message and status:
+                        return f"{status}: {message}"
+                    if message:
+                        return message
+            return raw or str(exc)
+        except Exception:
+            return str(exc)
