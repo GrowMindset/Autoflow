@@ -42,8 +42,11 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "search_value": "",
     },
     "telegram": {
+        "credential_id": "",
+        "bot_token": "",
         "chat_id": "",
         "message": "",
+        "parse_mode": "",
     },
     "whatsapp": {
         "phone_number": "",

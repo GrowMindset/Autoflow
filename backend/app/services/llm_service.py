@@ -67,7 +67,10 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "telegram": {
         "category": "action",
-        "description": "Dummy action node for Telegram send. Use config keys chat_id and message exactly.",
+        "description": "Sends a Telegram message. Use chat_id and message, plus credential_id (or bot_token override).",
+        "rules": [
+            "Optional parse_mode can be one of: HTML, Markdown, MarkdownV2.",
+        ],
     },
     "whatsapp": {
         "category": "action",

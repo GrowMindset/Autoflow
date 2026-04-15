@@ -1,0 +1,270 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { X, RefreshCw, Plus, KeyRound, Copy, Check, Trash2 } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { credentialService, CredentialItem } from '../../services/credentialService';
+
+interface CredentialManagerModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+const APP_OPTIONS = [
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'groq', label: 'Groq' },
+  { value: 'telegram', label: 'Telegram' },
+  { value: 'whatsapp', label: 'WhatsApp' },
+  { value: 'linkedin', label: 'LinkedIn' },
+  { value: 'gmail', label: 'Gmail' },
+  { value: 'sheets', label: 'Google Sheets' },
+];
+
+const APP_SECRET_FIELD: Record<string, { key: string; label: string; placeholder: string }> = {
+  telegram: {
+    key: 'api_key',
+    label: 'Bot Token',
+    placeholder: '123456789:AA...',
+  },
+  default: {
+    key: 'api_key',
+    label: 'API Key / Token',
+    placeholder: 'Paste secret...',
+  },
+};
+
+const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen, onClose }) => {
+  const [credentials, setCredentials] = useState<CredentialItem[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [appName, setAppName] = useState('openai');
+  const [secret, setSecret] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const sortedCredentials = useMemo(
+    () =>
+      [...credentials].sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      ),
+    [credentials],
+  );
+  const secretField = APP_SECRET_FIELD[appName] || APP_SECRET_FIELD.default;
+
+  const fetchCredentials = async () => {
+    setIsLoading(true);
+    try {
+      const list = await credentialService.list();
+      setCredentials(list);
+    } catch (error) {
+      console.error('Failed to load credentials:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void fetchCredentials();
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!copiedId) return;
+    const timer = window.setTimeout(() => setCopiedId(null), 1400);
+    return () => window.clearTimeout(timer);
+  }, [copiedId]);
+
+  const handleCreate = async () => {
+    const trimmed = secret.trim();
+    if (!trimmed) {
+      toast.error('Please enter API key / token');
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      await credentialService.create({
+        app_name: appName,
+        token_data: { [secretField.key]: trimmed },
+      });
+      setSecret('');
+      await fetchCredentials();
+      toast.success('Credential saved');
+    } catch (error) {
+      console.error('Failed to create credential:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const copyCredentialId = async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id);
+      setCopiedId(id);
+      toast.success('Credential ID copied');
+    } catch (error) {
+      toast.error('Could not copy credential ID');
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Delete this credential?')) return;
+    try {
+      await credentialService.remove(id);
+      await fetchCredentials();
+      toast.success('Credential deleted');
+    } catch (error) {
+      console.error('Failed to delete credential:', error);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[1200] bg-slate-900/45 backdrop-blur-[2px] flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.24)] overflow-hidden"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+              Account
+            </p>
+            <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 mt-0.5">
+              Credential Manager
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-2 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-[340px_1fr]">
+          <div className="p-5 border-r border-slate-200 dark:border-slate-800">
+            <div className="flex items-center gap-2 mb-4">
+              <KeyRound size={15} className="text-blue-600 dark:text-blue-400" />
+              <p className="text-xs font-black uppercase tracking-[0.1em] text-slate-600 dark:text-slate-300">
+                Add Credential
+              </p>
+            </div>
+
+            <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
+              App
+            </label>
+            <select
+              value={appName}
+              onChange={(event) => setAppName(event.target.value)}
+              className="w-full mb-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
+            >
+              {APP_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+
+            <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
+              {secretField.label}
+            </label>
+            <input
+              type="password"
+              value={secret}
+              onChange={(event) => setSecret(event.target.value)}
+              placeholder={secretField.placeholder}
+              className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
+            />
+
+            <button
+              type="button"
+              onClick={handleCreate}
+              disabled={isSaving}
+              className="w-full flex items-center justify-center gap-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:text-slate-500 text-white px-4 py-2 text-sm font-black uppercase tracking-[0.08em] transition-colors"
+            >
+              <Plus size={14} />
+              {isSaving ? 'Saving...' : 'Save Credential'}
+            </button>
+
+            <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+              Use saved credential IDs in node config where `credential_id` is required.
+            </p>
+          </div>
+
+          <div className="p-5 min-h-[420px]">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-xs font-black uppercase tracking-[0.1em] text-slate-600 dark:text-slate-300">
+                Saved Credentials
+              </p>
+              <button
+                type="button"
+                onClick={() => void fetchCredentials()}
+                className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400"
+              >
+                <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
+                Refresh
+              </button>
+            </div>
+
+            {isLoading ? (
+              <div className="h-40 flex items-center justify-center text-sm text-slate-500 dark:text-slate-400">
+                Loading credentials...
+              </div>
+            ) : sortedCredentials.length === 0 ? (
+              <div className="h-40 flex items-center justify-center text-sm text-slate-500 dark:text-slate-400 border border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
+                No credentials yet.
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[430px] overflow-y-auto pr-1">
+                {sortedCredentials.map((item) => (
+                  <div
+                    key={item.id}
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/50 p-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-black uppercase tracking-[0.1em] text-blue-600 dark:text-blue-400">
+                        {item.app_name}
+                      </span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                        {new Date(item.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <code className="text-[11px] text-slate-600 dark:text-slate-300 break-all">
+                        {item.id}
+                      </code>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void copyCredentialId(item.id)}
+                          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-white dark:hover:bg-slate-700"
+                        >
+                          {copiedId === item.id ? <Check size={12} /> : <Copy size={12} />}
+                          {copiedId === item.id ? 'Copied' : 'Copy'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDelete(item.id)}
+                          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-rose-600 border border-rose-200 hover:bg-rose-50 dark:border-rose-900/40 dark:text-rose-300 dark:hover:bg-rose-900/20"
+                        >
+                          <Trash2 size={12} />
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default CredentialManagerModal;

@@ -85,8 +85,25 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     { key: 'search_value', label: 'Value to Find', type: 'text', placeholder: 'e.g. {{ $json.email }}' }
   ],
   telegram: [
-    { key: 'chat_id', label: 'Chat ID', type: 'text', placeholder: 'e.g. 123456789' },
-    { key: 'message', label: 'Message Text', type: 'text', placeholder: 'e.g. Order #{{ $json.id }} received!' }
+    {
+      key: 'credential_id',
+      label: 'Credential',
+      type: 'credential_selector',
+      appName: 'telegram',
+      credentialLabel: 'Bot Token',
+      credentialPlaceholder: '123456789:AA...',
+      credentialKey: 'api_key',
+    },
+    { key: 'bot_token', label: 'Bot Token (optional override)', type: 'password', placeholder: '123456789:AA...' },
+    { key: 'chat_id', label: 'Chat ID', type: 'text', placeholder: 'e.g. 123456789 or -1001234567890' },
+    {
+      key: 'message',
+      label: 'Message Text',
+      type: 'textarea',
+      placeholder: 'e.g. Order #{{ $json.id }} received!',
+      helperText: 'Supports variable mapping and Telegram formatting.',
+    },
+    { key: 'parse_mode', label: 'Parse Mode', type: 'select', options: ['', 'HTML', 'Markdown', 'MarkdownV2'] },
   ],
   whatsapp: [
     { key: 'phone_number', label: 'Phone Number', type: 'text', placeholder: 'e.g. +1234567890' },
@@ -243,12 +260,12 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
     }
   };
 
-  const handleCreateCredential = async (appName: string) => {
+  const handleCreateCredential = async (appName: string, credentialKey: string = 'api_key') => {
     setLoading(true);
     try {
       await axios.post('http://localhost:8000/credentials', {
         app_name: appName,
-        token_data: { api_key: newKey }
+        token_data: { [credentialKey]: newKey }
       }, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
       });
@@ -298,6 +315,18 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
             onChange={(e) => onChange(field.key, e.target.value)}
             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
           />
+        );
+
+      case 'boolean':
+        return (
+          <select
+            value={String(Boolean(value))}
+            onChange={(e) => onChange(field.key, e.target.value === 'true')}
+            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
+          >
+            <option value="false">false</option>
+            <option value="true">true</option>
+          </select>
         );
 
       case 'array':
@@ -508,18 +537,20 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
             </div>
             {showCredentialForm && (
               <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
-                <label className="text-[9px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">Add {field.appName} API Key</label>
+                <label className="text-[9px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
+                  Add {field.appName} {field.credentialLabel || 'API Key'}
+                </label>
                 <div className="flex gap-2">
                   <input
                     type="password"
-                    placeholder="sk-..."
+                    placeholder={field.credentialPlaceholder || 'sk-...'}
                     value={newKey}
                     onChange={(e) => setNewKey(e.target.value)}
                     className="flex-1 bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
                   />
                   <button
                     disabled={loading || !newKey}
-                    onClick={() => handleCreateCredential(field.appName)}
+                    onClick={() => handleCreateCredential(field.appName, field.credentialKey || 'api_key')}
                     className="px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded-lg disabled:opacity-50 hover:bg-blue-700 transition-colors"
                   >
                     {loading ? '...' : 'Save'}

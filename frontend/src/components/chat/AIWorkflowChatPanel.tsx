@@ -9,7 +9,7 @@ interface AIWorkflowChatPanelProps {
   onSendMessage: (content: string) => void;
   onReviewWorkflow: (workflow: any) => void;
   onAcceptReviewedWorkflow: (workflow: any) => void;
-  onDiscardReviewedWorkflow: () => void;
+  onDiscardReviewedWorkflow: (workflow: any) => void;
   reviewedWorkflowSignature: string | null;
   isLoading: boolean;
   width: number;
@@ -159,7 +159,7 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
                               <CheckCircle2 size={14} />
                             </button>
                             <button
-                              onClick={onDiscardReviewedWorkflow}
+                              onClick={() => onDiscardReviewedWorkflow(workflowPayload)}
                               className="py-2 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 hover:bg-slate-50 dark:hover:bg-slate-700"
                             >
                               Discard

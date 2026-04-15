@@ -101,10 +101,15 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       label: 'Telegram Message',
       category: 'action',
       description: 'Send a message via Telegram.',
-      default_config: {},
-      is_dummy: true,
+      default_config: {
+        credential_id: '',
+        bot_token: '',
+        chat_id: '',
+        message: '',
+        parse_mode: '',
+      },
+      is_dummy: false,
       icon: 'telegram',
-      phase: 3,
     },
     {
       type: 'whatsapp',

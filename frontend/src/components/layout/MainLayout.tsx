@@ -40,6 +40,11 @@ const MainLayout: React.FC = () => {
   const chatResizingRef = useRef(false);
   const chatStartXRef = useRef(0);
   const chatStartWidthRef = useRef(400);
+  const pendingDiscardRefinementRef = useRef<{
+    scopeId: string;
+    workflowDefinition: any;
+    suggestedName: string;
+  } | null>(null);
 
   // Save Status State
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -497,6 +502,9 @@ const MainLayout: React.FC = () => {
   const handleSendMessage = useCallback(async (content: string) => {
     clearAiReviewState();
     const scopeId = currentWorkflowId || 'new';
+    const pendingRefinement = pendingDiscardRefinementRef.current;
+    const shouldRefineReviewedWorkflow =
+      Boolean(pendingRefinement) && pendingRefinement?.scopeId === scopeId;
     const userMsg: Message = {
       id: Date.now().toString(),
       role: 'user',
@@ -513,9 +521,18 @@ const MainLayout: React.FC = () => {
     try {
       // Get current workflow state to provide context to the AI
       const currentWorkflowData = (window as any).getCanvasWorkflowData?.(currentWorkflow.name);
-      const workflowContext = currentWorkflowData?.definition;
+      let workflowContext = currentWorkflowData?.definition;
+      let promptToSend = content;
 
-      const response = await aiService.generateWorkflow(content, workflowContext);
+      if (shouldRefineReviewedWorkflow && pendingRefinement?.workflowDefinition) {
+        workflowContext = pendingRefinement.workflowDefinition;
+        promptToSend = `Refine the reviewed workflow with these requested changes:\n${content}\nKeep the original business goal, modify only what the user requested, and return full updated workflow JSON.`;
+      }
+
+      const response = await aiService.generateWorkflow(promptToSend, workflowContext);
+      if (shouldRefineReviewedWorkflow) {
+        pendingDiscardRefinementRef.current = null;
+      }
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
@@ -565,6 +582,7 @@ const MainLayout: React.FC = () => {
   }, [currentWorkflowId]);
 
   const handleApplyAiWorkflow = useCallback((workflowPayload: any) => {
+    pendingDiscardRefinementRef.current = null;
     const isDirty = (window as any).isCanvasDirty?.();
 
     if (isDirty) {
@@ -588,6 +606,7 @@ const MainLayout: React.FC = () => {
   }, [normalizeAiWorkflowPayload, applyWorkflowName, clearAiReviewState]);
 
   const handleReviewAiWorkflow = useCallback((workflowPayload: any) => {
+    pendingDiscardRefinementRef.current = null;
     const { workflowDefinition, suggestedName, signature } = normalizeAiWorkflowPayload(workflowPayload);
     if (!workflowDefinition) {
       toast.error('Cannot review empty workflow.');
@@ -607,6 +626,7 @@ const MainLayout: React.FC = () => {
   }, [normalizeAiWorkflowPayload]);
 
   const handleAcceptReviewedWorkflow = useCallback((workflowPayload: any) => {
+    pendingDiscardRefinementRef.current = null;
     const { workflowDefinition, suggestedName, signature } = normalizeAiWorkflowPayload(workflowPayload);
     if (!workflowDefinition) {
       toast.error('No workflow to accept.');
@@ -639,11 +659,37 @@ const MainLayout: React.FC = () => {
     );
   }, [normalizeAiWorkflowPayload, reviewedWorkflowSignature, handleApplyAiWorkflow, applyWorkflowName]);
 
-  const handleDiscardReviewedWorkflow = useCallback(() => {
+  const handleDiscardReviewedWorkflow = useCallback((workflowPayload?: any) => {
     (window as any).discardAiWorkflowPreview?.();
     setReviewedWorkflowSignature(null);
-    toast('AI preview discarded.', { icon: 'ℹ️' });
-  }, []);
+    setIsAiAssistantOpen(true);
+
+    const scopeId = currentWorkflowId || 'new';
+    const { workflowDefinition, suggestedName } = normalizeAiWorkflowPayload(workflowPayload);
+    const targetName = suggestedName || 'this workflow';
+
+    if (workflowDefinition) {
+      pendingDiscardRefinementRef.current = {
+        scopeId,
+        workflowDefinition,
+        suggestedName,
+      };
+    }
+
+    const assistantFollowup: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: `What should I change in ${targetName}? I will regenerate using this reviewed workflow as context.`,
+      timestamp: new Date().toISOString(),
+    };
+
+    setChatMessagesByWorkflow((prev) => ({
+      ...prev,
+      [scopeId]: [...(prev[scopeId] || []), assistantFollowup].slice(-40),
+    }));
+
+    toast('Preview discarded. Tell me the changes in chat.', { icon: 'ℹ️' });
+  }, [normalizeAiWorkflowPayload, currentWorkflowId]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-white dark:bg-slate-950 font-sans antialiased text-slate-900 dark:text-slate-100 transition-colors duration-300">

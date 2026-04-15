@@ -5,6 +5,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import ImportModal from './ImportModal';
+import CredentialManagerModal from './CredentialManagerModal';
 
 interface TopbarProps {
   workflowName: string;
@@ -44,6 +45,7 @@ const Topbar: React.FC<TopbarProps> = ({
   const [tempDesc, setTempDesc] = useState(workflowDescription);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isCredentialModalOpen, setIsCredentialModalOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const descRef = useRef<HTMLInputElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -274,6 +276,13 @@ const Topbar: React.FC<TopbarProps> = ({
           />
         )}
 
+        {isCredentialModalOpen && (
+          <CredentialManagerModal
+            isOpen={isCredentialModalOpen}
+            onClose={() => setIsCredentialModalOpen(false)}
+          />
+        )}
+
         <button
           onClick={onSave}
           disabled={saveStatus === 'saving'}
@@ -341,11 +350,17 @@ const Topbar: React.FC<TopbarProps> = ({
               Billing
             </button>
 
-            <button className="w-full flex items-center gap-3 px-4 py-2.5 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400 transition-all text-sm font-bold">
+            <button
+              onClick={() => {
+                setIsCredentialModalOpen(true);
+                setIsUserMenuOpen(false);
+              }}
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400 transition-all text-sm font-bold"
+            >
               <div className="w-8 h-8 rounded-lg bg-slate-50 dark:bg-slate-800 flex items-center justify-center">
                 <Shield size={16} />
               </div>
-              API Keys
+              Credentials
             </button>
 
             <div className="h-px bg-slate-100 dark:bg-slate-800 my-1 mx-2"></div>
