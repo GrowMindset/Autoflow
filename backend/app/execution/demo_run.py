@@ -149,7 +149,7 @@ def main() -> int:
     )
 
     print(f"Sample: {sample_name}")
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result))
     return 0
 
 
