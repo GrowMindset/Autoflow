@@ -9,6 +9,7 @@ from .nodes import (
     SplitInRunner,
     SplitOutRunner,
     SwitchRunner,
+    TelegramRunner,
 )
 from .triggers import (
     FormTriggerRunner,
@@ -32,6 +33,7 @@ __all__ = [
     "AIAgentRunner",
     "ChatModelOpenAIRunner",
     "ChatModelGroqRunner",
+    "TelegramRunner",
     "ManualTriggerRunner",
     "FormTriggerRunner",
     "WebhookTriggerRunner",

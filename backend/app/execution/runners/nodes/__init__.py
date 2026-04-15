@@ -9,6 +9,7 @@ from .dummy import DummyNodeRunner
 from .ai_agent import AIAgentRunner
 from .chat_model_openai import ChatModelOpenAIRunner
 from .chat_model_groq import ChatModelGroqRunner
+from .telegram import TelegramRunner
 
 try:
     from .datetime_format import DateTimeFormatRunner
@@ -27,6 +28,7 @@ __all__ = [
     "AIAgentRunner",
     "ChatModelOpenAIRunner",
     "ChatModelGroqRunner",
+    "TelegramRunner",
 ]
 
 if DateTimeFormatRunner is not None:

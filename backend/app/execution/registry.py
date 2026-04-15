@@ -20,6 +20,7 @@ class RunnerRegistry:
             "ai_agent": self._build_ai_agent,
             "chat_model_openai": self._build_chat_model_openai,
             "chat_model_groq": self._build_chat_model_groq,
+            "telegram": self._build_telegram,
         }
         self._cache: dict[str, Any] = {}
 
@@ -137,3 +138,9 @@ class RunnerRegistry:
         )
 
         return ChatModelGroqRunner()
+
+    @staticmethod
+    def _build_telegram() -> Any:
+        from app.execution.runners.nodes.telegram import TelegramRunner
+
+        return TelegramRunner()
