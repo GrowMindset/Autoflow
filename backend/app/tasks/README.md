@@ -20,7 +20,7 @@ Do not put here:
 
 - Queue `workflow.executions`: full workflow runs
 - Queue `workflow.node_tests`: node test runs
-- Queue `system`: small internal tasks
+- Queue `system`: small internal tasks (including schedule scans)
 
 Run workers in separate terminals/processes for better throughput:
 
@@ -28,6 +28,8 @@ Run workers in separate terminals/processes for better throughput:
 celery -A celery_config worker -l info -n wf1@%h -Q workflow.executions,celery -c 4
 celery -A celery_config worker -l info -n wf2@%h -Q workflow.executions,celery -c 4
 celery -A celery_config worker -l info -n node@%h -Q workflow.node_tests,celery -c 2
+celery -A celery_config worker -l info -n sys@%h -Q system,celery -c 2
+celery -A celery_config beat -l info
 ```
 
 This avoids node-test jobs starving full workflow executions and scales horizontally.

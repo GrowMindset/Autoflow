@@ -9,6 +9,10 @@ export interface RunWorkflowPayload {
   start_node_id?: string;
 }
 
+export interface RunSchedulePayload {
+  start_node_id?: string;
+}
+
 export interface NodeExecutionResult {
   node_id: string;
   node_type: string;
@@ -40,6 +44,11 @@ export const executionService = {
 
   runWorkflow: async (workflowId: string, payload?: RunWorkflowPayload): Promise<any> => {
     const response = await api.post(`/workflows/${workflowId}/run`, payload ?? {});
+    return response.data;
+  },
+
+  runWorkflowSchedule: async (workflowId: string, payload?: RunSchedulePayload): Promise<any> => {
+    const response = await api.post(`/workflows/${workflowId}/run-schedule`, payload ?? {});
     return response.data;
   },
 

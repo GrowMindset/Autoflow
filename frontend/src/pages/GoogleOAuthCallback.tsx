@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 
-import { credentialService } from '../services/credentialService';
+import { CredentialItem, credentialService } from '../services/credentialService';
+
+const inflightExchangeByState = new Map<string, Promise<CredentialItem>>();
 
 const GoogleOAuthCallback: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -35,9 +37,15 @@ const GoogleOAuthCallback: React.FC = () => {
     }
 
     const redirectUri = `${window.location.origin}/app/oauth/google/callback`;
-    void credentialService
-      .exchangeGoogleOAuth({ code, state, redirect_uri: redirectUri })
-      .then((credential) => {
+    const exchangeKey = `${code}:${state}:${redirectUri}`;
+    let exchangePromise = inflightExchangeByState.get(exchangeKey);
+    if (!exchangePromise) {
+      exchangePromise = credentialService.exchangeGoogleOAuth({ code, state, redirect_uri: redirectUri });
+      inflightExchangeByState.set(exchangeKey, exchangePromise);
+    }
+
+    void exchangePromise
+      .then((credential: CredentialItem) => {
         setStatusText(`Google account connected for ${credential.app_name}. Redirecting...`);
         toast.success(`Google ${credential.app_name} credential connected.`);
         window.setTimeout(() => navigate('/', { replace: true }), 700);
@@ -47,6 +55,9 @@ const GoogleOAuthCallback: React.FC = () => {
         setStatusText(`Google OAuth exchange failed: ${detail}`);
         toast.error(`Google OAuth exchange failed: ${detail}`);
         window.setTimeout(() => navigate('/', { replace: true }), 1500);
+      })
+      .finally(() => {
+        inflightExchangeByState.delete(exchangeKey);
       });
   }, [navigate, searchParams]);
 

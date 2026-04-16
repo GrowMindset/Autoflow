@@ -36,6 +36,93 @@ interface WebhookMeta {
   url: string;
 }
 
+const SCHEDULE_WEEKDAY_LABELS: Record<number, string> = {
+  0: 'Sunday',
+  1: 'Monday',
+  2: 'Tuesday',
+  3: 'Wednesday',
+  4: 'Thursday',
+  5: 'Friday',
+  6: 'Saturday',
+};
+
+const toSafeInt = (rawValue: any, fallback: number) => {
+  const value = Number.parseInt(String(rawValue ?? ''), 10);
+  return Number.isFinite(value) ? value : fallback;
+};
+
+const getSchedulePreviewLines = (config: Record<string, any> | undefined) => {
+  if (!config || typeof config !== 'object') return ['* * * * *'];
+
+  const rawRules = Array.isArray(config.rules) ? config.rules : [];
+  if (rawRules.length === 0) {
+    const legacyCron = String(config.cron || '').trim();
+    if (legacyCron) return [legacyCron];
+    const minute = String(config.minute ?? '*').trim() || '*';
+    const hour = String(config.hour ?? '*').trim() || '*';
+    const dayOfMonth = String(config.day_of_month ?? '*').trim() || '*';
+    const month = String(config.month ?? '*').trim() || '*';
+    const dayOfWeek = String(config.day_of_week ?? '*').trim() || '*';
+    return [`${minute} ${hour} ${dayOfMonth} ${month} ${dayOfWeek}`];
+  }
+
+  const lines: string[] = [];
+  rawRules.forEach((rule: any, index: number) => {
+    const interval = String(rule?.interval || '').trim().toLowerCase();
+    const enabled = rule?.enabled !== false;
+    const prefix = enabled ? `Rule ${index + 1}: ` : `Rule ${index + 1} (paused): `;
+
+    if (interval === 'custom') {
+      const cron = String(rule?.cron || '').trim() || '(missing cron)';
+      lines.push(`${prefix}${cron}`);
+      return;
+    }
+
+    if (interval === 'minutes') {
+      const every = toSafeInt(rule?.every, 1);
+      lines.push(`${prefix}Every ${every} minute(s)`);
+      return;
+    }
+
+    if (interval === 'hours') {
+      const every = toSafeInt(rule?.every, 1);
+      const minute = toSafeInt(rule?.trigger_minute, 0);
+      lines.push(`${prefix}Every ${every} hour(s) at minute ${minute}`);
+      return;
+    }
+
+    if (interval === 'days') {
+      const every = toSafeInt(rule?.every, 1);
+      const hour = toSafeInt(rule?.trigger_hour, 9);
+      const minute = toSafeInt(rule?.trigger_minute, 0);
+      lines.push(`${prefix}Every ${every} day(s) at ${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`);
+      return;
+    }
+
+    if (interval === 'weeks') {
+      const every = toSafeInt(rule?.every, 1);
+      const weekday = toSafeInt(rule?.trigger_weekday, 1);
+      const hour = toSafeInt(rule?.trigger_hour, 9);
+      const minute = toSafeInt(rule?.trigger_minute, 0);
+      const weekdayLabel = SCHEDULE_WEEKDAY_LABELS[weekday] || `Weekday ${weekday}`;
+      lines.push(`${prefix}Every ${every} week(s) on ${weekdayLabel} at ${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`);
+      return;
+    }
+
+    if (interval === 'months') {
+      const every = toSafeInt(rule?.every, 1);
+      const day = toSafeInt(rule?.trigger_day_of_month, 1);
+      const hour = toSafeInt(rule?.trigger_hour, 9);
+      const minute = toSafeInt(rule?.trigger_minute, 0);
+      lines.push(`${prefix}Every ${every} month(s) on day ${day} at ${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`);
+      return;
+    }
+
+    lines.push(`${prefix}(unsupported interval)`);
+  });
+  return lines;
+};
+
 
 const ConfigPanel: React.FC<ConfigPanelProps> = ({
   node,
@@ -65,6 +152,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
 
   const formFields = useMemo(
     () => Array.isArray(node.data.config?.fields) ? node.data.config.fields : [],
+    [node.data.config],
+  );
+  const schedulePreviewLines = useMemo(
+    () => getSchedulePreviewLines(node.data.config),
     [node.data.config],
   );
 
@@ -671,6 +762,27 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                           {isSubmittingForm ? 'Submitting...' : 'Submit Test Form'}
                         </button>
                       </form>
+                    </section>
+                  </div>
+                )}
+
+                {node.data.type === 'schedule_trigger' && (
+                  <div className="mt-10 space-y-8">
+                    <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 flex flex-col gap-3">
+                      <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Schedule Preview</h3>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        This trigger runs automatically when workflow is published and scheduler workers are running.
+                      </p>
+                      <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 space-y-1">
+                        {schedulePreviewLines.map((line, idx) => (
+                          <div key={`${line}_${idx}`} className="font-mono text-xs text-slate-600 break-all">
+                            {line}
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Timezone: {String(node.data.config?.timezone || 'UTC')}
+                      </p>
                     </section>
                   </div>
                 )}

@@ -49,6 +49,18 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
             "method should be one of GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD.",
         ],
     },
+    "schedule_trigger": {
+        "category": "trigger",
+        "description": "Starts workflow on a recurring schedule.",
+        "rules": [
+            "Preferred: use config.rules as a non-empty array.",
+            "Each rule should have interval in [minutes, hours, days, weeks, months, custom], enabled, and interval-specific fields.",
+            "For custom interval, use cron field with a 5-field cron expression.",
+            "Legacy fallback also supports config.cron or minute/hour/day_of_month/month/day_of_week.",
+            "timezone should be an IANA timezone name (for example UTC or Asia/Kolkata).",
+            "enabled can pause/resume schedule execution.",
+        ],
+    },
     "workflow_trigger": {
         "category": "trigger",
         "description": "Placeholder trigger type for future workflow-to-workflow starts.",

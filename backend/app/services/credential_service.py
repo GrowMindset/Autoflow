@@ -165,6 +165,65 @@ class CredentialService:
         await self.db.refresh(credential)
         return credential
 
+    async def upsert_google_oauth_credential(
+        self,
+        user_id: UUID,
+        *,
+        app_name: str,
+        token_data: dict[str, Any],
+    ) -> AppCredential:
+        if app_name not in {"gmail", "sheets", "docs"}:
+            raise ValueError("Google OAuth upsert supports only gmail, sheets, and docs.")
+
+        prepared = self._normalize_and_encrypt_token_data(app_name=app_name, token_data=token_data)
+        incoming_email = str(
+            token_data.get("email")
+            or token_data.get("user_email")
+            or token_data.get("username")
+            or ""
+        ).strip().lower()
+
+        query = select(AppCredential).where(
+            AppCredential.user_id == user_id,
+            AppCredential.app_name == app_name,
+        )
+        result = await self.db.execute(query)
+        candidates = list(result.scalars().all())
+
+        oauth_candidates = []
+        for credential in candidates:
+            provider = str((credential.token_data or {}).get("provider") or "").strip().lower()
+            if provider == "google_oauth":
+                oauth_candidates.append(credential)
+
+        matched_credential: AppCredential | None = None
+        if incoming_email:
+            for credential in oauth_candidates:
+                stored_email = self._safe_read_token_value(dict(credential.token_data or {}), "email")
+                if stored_email and stored_email.strip().lower() == incoming_email:
+                    matched_credential = credential
+                    break
+
+        if matched_credential is None and len(oauth_candidates) == 1:
+            matched_credential = oauth_candidates[0]
+
+        if matched_credential is not None:
+            matched_credential.token_data = prepared
+            self.db.add(matched_credential)
+            await self.db.commit()
+            await self.db.refresh(matched_credential)
+            return matched_credential
+
+        credential = AppCredential(
+            user_id=user_id,
+            app_name=app_name,
+            token_data=prepared,
+        )
+        self.db.add(credential)
+        await self.db.commit()
+        await self.db.refresh(credential)
+        return credential
+
     async def get_user_credentials(self, user_id: UUID, app_name: str | None = None) -> list[AppCredential]:
         query = select(AppCredential).where(AppCredential.user_id == user_id)
         if app_name:
@@ -248,3 +307,106 @@ class CredentialService:
             value = raw_value
         value = str(value).strip()
         return value or None
+
+    def _normalize_and_encrypt_token_data(
+        self,
+        *,
+        app_name: str,
+        token_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized_data = dict(token_data)
+
+        if app_name == "telegram":
+            bot_token = (
+                normalized_data.get("api_key")
+                or normalized_data.get("bot_token")
+                or normalized_data.get("botToken")
+            )
+            chat_id = normalized_data.get("chat_id") or normalized_data.get("chatId")
+
+            if not isinstance(bot_token, str) or not bot_token.strip():
+                raise ValueError(
+                    "Telegram credential requires bot token (token_data.api_key)."
+                )
+            if not isinstance(chat_id, str) or not chat_id.strip():
+                raise ValueError(
+                    "Telegram credential requires chat_id (token_data.chat_id)."
+                )
+
+            normalized_data["api_key"] = bot_token.strip()
+            normalized_data["bot_token"] = bot_token.strip()
+            normalized_data["chat_id"] = chat_id.strip()
+            normalized_data["provider"] = "telegram_bot_token"
+            normalized_data.pop("botToken", None)
+            normalized_data.pop("chatId", None)
+        elif app_name in {"gmail", "sheets", "docs"}:
+            app_label = {
+                "gmail": "Gmail",
+                "sheets": "Google Sheets",
+                "docs": "Google Docs",
+            }[app_name]
+            provider = str(normalized_data.get("provider") or "").strip().lower()
+            access_token = str(normalized_data.get("access_token") or "").strip()
+            refresh_token = str(normalized_data.get("refresh_token") or "").strip()
+
+            if provider and provider != "google_oauth":
+                raise ValueError(
+                    f"{app_label} supports OAuth-only credentials. Connect via Google OAuth."
+                )
+            if not access_token and not refresh_token:
+                raise ValueError(
+                    f"{app_label} OAuth credential requires access_token or refresh_token."
+                )
+
+            email = str(
+                normalized_data.get("email")
+                or normalized_data.get("user_email")
+                or normalized_data.get("username")
+                or ""
+            ).strip()
+
+            oauth_normalized: dict[str, Any] = {"provider": "google_oauth"}
+            if access_token:
+                oauth_normalized["access_token"] = access_token
+            if refresh_token:
+                oauth_normalized["refresh_token"] = refresh_token
+
+            for passthrough_key in ("token_type", "scope", "expiry_epoch", "id_token"):
+                value = normalized_data.get(passthrough_key)
+                if isinstance(value, str) and value.strip():
+                    oauth_normalized[passthrough_key] = value.strip()
+            if email:
+                oauth_normalized["email"] = email
+                oauth_normalized["user_email"] = email
+                oauth_normalized["username"] = email
+
+            normalized_data = oauth_normalized
+        elif app_name == "whatsapp":
+            access_token = (
+                normalized_data.get("access_token")
+                or normalized_data.get("api_key")
+            )
+            phone_number_id = normalized_data.get("phone_number_id")
+
+            if not isinstance(access_token, str) or not access_token.strip():
+                raise ValueError(
+                    "WhatsApp credential requires access_token (token_data.access_token)."
+                )
+            if not isinstance(phone_number_id, str) or not phone_number_id.strip():
+                raise ValueError(
+                    "WhatsApp credential requires phone_number_id (token_data.phone_number_id)."
+                )
+
+            normalized_data["access_token"] = access_token.strip()
+            normalized_data["api_key"] = access_token.strip()  # alias for resolved_credentials
+            normalized_data["phone_number_id"] = phone_number_id.strip()
+            waba_id = normalized_data.get("waba_id")
+            if isinstance(waba_id, str) and waba_id.strip():
+                normalized_data["waba_id"] = waba_id.strip()
+
+        for key in SENSITIVE_TOKEN_FIELDS:
+            value = normalized_data.get(key)
+            if isinstance(value, str) and value:
+                normalized_data[key] = encrypt_data(value)
+
+        return normalized_data

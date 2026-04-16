@@ -3,6 +3,114 @@ import toast from 'react-hot-toast';
 import { Plus } from 'lucide-react';
 import { CredentialItem, credentialService } from '../../services/credentialService';
 
+const GOOGLE_OAUTH_APPS = ['gmail', 'sheets', 'docs'] as const;
+const GOOGLE_OAUTH_NODE_USAGE: Record<string, string[]> = {
+  gmail: ['Get Gmail Message', 'Send Gmail Message'],
+  sheets: ['Create Google Sheets', 'Search/Update Google Sheets'],
+  docs: ['Create Google Docs', 'Update Google Docs'],
+};
+const GOOGLE_OAUTH_APP_LABEL: Record<string, string> = {
+  gmail: 'Gmail',
+  sheets: 'Google Sheets',
+  docs: 'Google Docs',
+};
+
+const GoogleMark: React.FC<{ className?: string }> = ({ className }) => (
+  <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.2 1.2-.9 2.2-1.8 2.9v2.4h2.9c1.7-1.6 2.7-4 2.7-7 0-.7-.1-1.4-.2-2H12z" />
+    <path fill="#34A853" d="M12 21c2.4 0 4.4-.8 5.9-2.2l-2.9-2.4c-.8.6-1.8 1-3 1-2.3 0-4.2-1.5-4.9-3.6H4v2.3C5.5 19.1 8.5 21 12 21z" />
+    <path fill="#4A90E2" d="M7.1 13.8c-.2-.6-.3-1.2-.3-1.8s.1-1.2.3-1.8V7.9H4C3.4 9.1 3 10.5 3 12s.4 2.9 1 4.1l3.1-2.3z" />
+    <path fill="#FBBC05" d="M12 6.8c1.3 0 2.5.4 3.4 1.3l2.6-2.6C16.4 4 14.4 3 12 3 8.5 3 5.5 4.9 4 7.9l3.1 2.3c.7-2.1 2.6-3.4 4.9-3.4z" />
+  </svg>
+);
+
+type ScheduleInterval = 'minutes' | 'hours' | 'days' | 'weeks' | 'months' | 'custom';
+
+type ScheduleRule = {
+  id: string;
+  interval: ScheduleInterval;
+  enabled: boolean;
+  every?: number | string;
+  trigger_minute?: number | string;
+  trigger_hour?: number | string;
+  trigger_weekday?: number | string;
+  trigger_day_of_month?: number | string;
+  cron?: string;
+};
+
+const SCHEDULE_INTERVAL_OPTIONS: Array<{ value: ScheduleInterval; label: string }> = [
+  { value: 'minutes', label: 'Minutes' },
+  { value: 'hours', label: 'Hours' },
+  { value: 'days', label: 'Days' },
+  { value: 'weeks', label: 'Weeks' },
+  { value: 'months', label: 'Months' },
+  { value: 'custom', label: 'Custom (Cron)' },
+];
+
+const SCHEDULE_WEEKDAY_OPTIONS = [
+  { value: 0, label: 'Sunday' },
+  { value: 1, label: 'Monday' },
+  { value: 2, label: 'Tuesday' },
+  { value: 3, label: 'Wednesday' },
+  { value: 4, label: 'Thursday' },
+  { value: 5, label: 'Friday' },
+  { value: 6, label: 'Saturday' },
+];
+
+const SCHEDULE_LEGACY_KEYS = ['minute', 'hour', 'day_of_month', 'month', 'day_of_week'] as const;
+
+const buildLegacyCronExpression = (rawConfig: Record<string, any>) => {
+  const minute = String(rawConfig.minute ?? '*').trim() || '*';
+  const hour = String(rawConfig.hour ?? '*').trim() || '*';
+  const dayOfMonth = String(rawConfig.day_of_month ?? '*').trim() || '*';
+  const month = String(rawConfig.month ?? '*').trim() || '*';
+  const dayOfWeek = String(rawConfig.day_of_week ?? '*').trim() || '*';
+  return `${minute} ${hour} ${dayOfMonth} ${month} ${dayOfWeek}`;
+};
+
+const isScheduleInterval = (value: string): value is ScheduleInterval =>
+  ['minutes', 'hours', 'days', 'weeks', 'months', 'custom'].includes(value);
+
+const makeScheduleRuleId = () => `rule_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+const createDefaultScheduleRule = (interval: ScheduleInterval = 'hours'): ScheduleRule => {
+  const base: ScheduleRule = {
+    id: makeScheduleRuleId(),
+    interval,
+    enabled: true,
+  };
+
+  switch (interval) {
+    case 'minutes':
+      return { ...base, every: 5 };
+    case 'hours':
+      return { ...base, every: 1, trigger_minute: 0 };
+    case 'days':
+      return { ...base, every: 1, trigger_hour: 9, trigger_minute: 0 };
+    case 'weeks':
+      return { ...base, every: 1, trigger_weekday: 1, trigger_hour: 9, trigger_minute: 0 };
+    case 'months':
+      return { ...base, every: 1, trigger_day_of_month: 1, trigger_hour: 9, trigger_minute: 0 };
+    case 'custom':
+    default:
+      return { ...base, cron: '0 * * * *' };
+  }
+};
+
+const normalizeScheduleRule = (rawRule: any, fallbackId?: string): ScheduleRule => {
+  const rawObject: Partial<ScheduleRule> = rawRule && typeof rawRule === 'object' ? rawRule : {};
+  const intervalRaw = String(rawRule?.interval || '').trim().toLowerCase();
+  const interval: ScheduleInterval = isScheduleInterval(intervalRaw) ? intervalRaw : 'hours';
+  const defaults = createDefaultScheduleRule(interval);
+  return {
+    ...defaults,
+    ...rawObject,
+    id: String(rawObject.id || fallbackId || defaults.id),
+    interval,
+    enabled: rawObject.enabled !== false,
+  };
+};
+
 /**
  * Schema defining the fields available for each node type.
  */
@@ -58,6 +166,27 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
   webhook_trigger: [
     { key: 'path', label: 'Webhook Path', type: 'text', placeholder: 'e.g. /my-webhook' },
     { key: 'method', label: 'HTTP Method', type: 'select', options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'] }
+  ],
+  schedule_trigger: [
+    {
+      key: 'enabled',
+      label: 'Enabled',
+      type: 'boolean',
+      helperText: 'Disable to pause this schedule without removing the node.',
+    },
+    {
+      key: 'rules',
+      label: 'Trigger Rules',
+      type: 'schedule_rules',
+      helperText: 'Add one or more schedule rules. Use Custom (Cron) for advanced expressions.',
+    },
+    {
+      key: 'timezone',
+      label: 'Timezone',
+      type: 'text',
+      placeholder: 'e.g. UTC, Asia/Kolkata, America/New_York',
+      helperText: 'IANA timezone name used for schedule matching.',
+    },
   ],
   form_trigger: [
     { key: 'form_title', label: 'Form Title', type: 'text', placeholder: 'e.g. User Feedback' },
@@ -279,6 +408,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   const [newPhoneNumberId, setNewPhoneNumberId] = useState('');
   const [newChannel, setNewChannel] = useState('');
   const [dragOverField, setDragOverField] = useState<string | null>(null);
+  const [oauthConnectingApp, setOauthConnectingApp] = useState<string | null>(null);
 
   // ── Drag-and-drop handlers for text/textarea fields ──────────────────────
   const handleDragOver = (e: React.DragEvent, fieldKey: string) => {
@@ -416,6 +546,72 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
     }
   };
 
+  const handleQuickGoogleOAuthConnect = async (appName: string) => {
+    const normalizedApp = String(appName || '').trim().toLowerCase();
+    if (!GOOGLE_OAUTH_APPS.includes(normalizedApp as (typeof GOOGLE_OAUTH_APPS)[number])) {
+      return;
+    }
+
+    setOauthConnectingApp(normalizedApp);
+    try {
+      const redirectUri = `${window.location.origin}/app/oauth/google/callback`;
+      const result = await credentialService.startGoogleOAuth(
+        normalizedApp as 'gmail' | 'sheets' | 'docs',
+        redirectUri,
+      );
+      window.location.href = result.auth_url;
+    } catch (error) {
+      console.error('Failed to start Google OAuth:', error);
+      toast.error(`Could not start ${GOOGLE_OAUTH_APP_LABEL[normalizedApp] || 'Google'} OAuth.`);
+      setOauthConnectingApp(null);
+    }
+  };
+
+  useEffect(() => {
+    if (nodeType !== 'schedule_trigger') return;
+
+    const patch: Record<string, any> = {};
+    const timezone = String(config.timezone || '').trim();
+    if (!timezone) {
+      patch.timezone = 'UTC';
+    }
+    if (typeof config.enabled === 'undefined') {
+      patch.enabled = true;
+    }
+
+    const rawRules = Array.isArray(config.rules) ? config.rules : [];
+    if (rawRules.length > 0) {
+      const normalizedRules = rawRules.map((rule, index) => normalizeScheduleRule(rule, `rule_${index + 1}`));
+      if (JSON.stringify(rawRules) !== JSON.stringify(normalizedRules)) {
+        patch.rules = normalizedRules;
+      }
+    } else {
+      const explicitCron = String(config.cron || '').trim();
+      const hasLegacyShape = SCHEDULE_LEGACY_KEYS.some((key) => key in config);
+      if (explicitCron) {
+        patch.rules = [normalizeScheduleRule({ interval: 'custom', cron: explicitCron, enabled: true })];
+      } else if (hasLegacyShape) {
+        patch.rules = [
+          normalizeScheduleRule({
+            interval: 'custom',
+            cron: buildLegacyCronExpression(config),
+            enabled: true,
+          }),
+        ];
+      } else {
+        patch.rules = [createDefaultScheduleRule('hours')];
+      }
+    }
+
+    Object.entries(patch).forEach(([key, value]) => {
+      onChange(key, value);
+    });
+  }, [
+    nodeType,
+    config,
+    onChange,
+  ]);
+
   const fields = CONFIG_SCHEMA[nodeType] || [];
 
 
@@ -465,6 +661,326 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
             <option value="true">true</option>
           </select>
         );
+
+      case 'schedule_rules': {
+        const rawRules = Array.isArray(value) ? value : [];
+        const normalizedRules = rawRules.length > 0
+          ? rawRules.map((rule, index) => normalizeScheduleRule(rule, `rule_${index + 1}`))
+          : [createDefaultScheduleRule('hours')];
+
+        if (JSON.stringify(rawRules) !== JSON.stringify(normalizedRules)) {
+          onChange(field.key, normalizedRules);
+        }
+
+        const updateRule = (index: number, patch: Record<string, any>) => {
+          const next = [...normalizedRules];
+          next[index] = { ...next[index], ...patch };
+          onChange(field.key, next);
+        };
+
+        return (
+          <div className="space-y-3">
+            {normalizedRules.map((rule, idx) => {
+              const interval = String(rule.interval || 'hours').toLowerCase() as ScheduleInterval;
+              return (
+                <div key={rule.id || idx} className="p-3 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                      Trigger Interval {idx + 1}
+                    </span>
+                    {normalizedRules.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = [...normalizedRules];
+                          next.splice(idx, 1);
+                          onChange(field.key, next);
+                        }}
+                        className="text-xs text-rose-500 hover:text-rose-600 dark:text-rose-400 dark:hover:text-rose-300"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        Trigger Interval
+                      </label>
+                      <select
+                        value={interval}
+                        onChange={(event) => {
+                          const nextInterval = event.target.value as ScheduleInterval;
+                          const defaults = createDefaultScheduleRule(nextInterval);
+                          updateRule(idx, {
+                            ...defaults,
+                            id: rule.id || defaults.id,
+                            enabled: rule.enabled !== false,
+                          });
+                        }}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      >
+                        {SCHEDULE_INTERVAL_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        Rule Enabled
+                      </label>
+                      <select
+                        value={String(rule.enabled !== false)}
+                        onChange={(event) => updateRule(idx, { enabled: event.target.value === 'true' })}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      >
+                        <option value="true">true</option>
+                        <option value="false">false</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {interval === 'custom' && (
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        Cron Expression
+                      </label>
+                      <input
+                        type="text"
+                        value={String(rule.cron ?? '')}
+                        placeholder="e.g. */15 9-18 * * 1-5"
+                        onChange={(event) => updateRule(idx, { cron: event.target.value })}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      />
+                    </div>
+                  )}
+
+                  {interval === 'minutes' && (
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        Minutes Between Triggers
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={59}
+                        value={String(rule.every ?? 1)}
+                        onChange={(event) => updateRule(idx, { every: event.target.value })}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      />
+                    </div>
+                  )}
+
+                  {interval === 'hours' && (
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Hours Between Triggers
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={23}
+                          value={String(rule.every ?? 1)}
+                          onChange={(event) => updateRule(idx, { every: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Trigger At Minute
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={59}
+                          value={String(rule.trigger_minute ?? 0)}
+                          onChange={(event) => updateRule(idx, { trigger_minute: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {interval === 'days' && (
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Days Between Triggers
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={31}
+                          value={String(rule.every ?? 1)}
+                          onChange={(event) => updateRule(idx, { every: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Trigger Hour
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={23}
+                          value={String(rule.trigger_hour ?? 9)}
+                          onChange={(event) => updateRule(idx, { trigger_hour: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Trigger Minute
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={59}
+                          value={String(rule.trigger_minute ?? 0)}
+                          onChange={(event) => updateRule(idx, { trigger_minute: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {interval === 'weeks' && (
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Weeks Between Triggers
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={52}
+                          value={String(rule.every ?? 1)}
+                          onChange={(event) => updateRule(idx, { every: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Trigger Weekday
+                        </label>
+                        <select
+                          value={String(rule.trigger_weekday ?? 1)}
+                          onChange={(event) => updateRule(idx, { trigger_weekday: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        >
+                          {SCHEDULE_WEEKDAY_OPTIONS.map((weekday) => (
+                            <option key={weekday.value} value={weekday.value}>
+                              {weekday.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Trigger Hour
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={23}
+                          value={String(rule.trigger_hour ?? 9)}
+                          onChange={(event) => updateRule(idx, { trigger_hour: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Trigger Minute
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={59}
+                          value={String(rule.trigger_minute ?? 0)}
+                          onChange={(event) => updateRule(idx, { trigger_minute: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {interval === 'months' && (
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Months Between Triggers
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={12}
+                          value={String(rule.every ?? 1)}
+                          onChange={(event) => updateRule(idx, { every: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Trigger Day Of Month
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={31}
+                          value={String(rule.trigger_day_of_month ?? 1)}
+                          onChange={(event) => updateRule(idx, { trigger_day_of_month: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Trigger Hour
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={23}
+                          value={String(rule.trigger_hour ?? 9)}
+                          onChange={(event) => updateRule(idx, { trigger_hour: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Trigger Minute
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={59}
+                          value={String(rule.trigger_minute ?? 0)}
+                          onChange={(event) => updateRule(idx, { trigger_minute: event.target.value })}
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            <button
+              type="button"
+              onClick={() => onChange(field.key, [...normalizedRules, createDefaultScheduleRule('hours')])}
+              className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-600 text-xs font-bold hover:border-blue-300 dark:hover:border-blue-900 hover:text-blue-500 dark:hover:text-blue-400 transition-all flex items-center justify-center gap-2"
+            >
+              <Plus size={12} strokeWidth={3} />
+              Add Rule
+            </button>
+          </div>
+        );
+      }
 
       case 'array':
         const cases = Array.isArray(value) ? value : [];
@@ -725,7 +1241,10 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
         const requiresChatId = Boolean(field.requiresChatId);
         const requiresPhoneNumberId = Boolean(field.requiresPhoneNumberId);
         const requiresChannel = Boolean(field.requiresChannel);
-        const isGoogleOAuthOnlyApp = ['gmail', 'sheets', 'docs'].includes(String(field.appName || '').toLowerCase());
+        const normalizedAppName = String(field.appName || '').toLowerCase();
+        const isGoogleOAuthOnlyApp = GOOGLE_OAUTH_APPS.includes(normalizedAppName as (typeof GOOGLE_OAUTH_APPS)[number]);
+        const oauthAppLabel = GOOGLE_OAUTH_APP_LABEL[normalizedAppName] || 'Google';
+        const oauthNodeUsage = GOOGLE_OAUTH_NODE_USAGE[normalizedAppName] || [];
         const secretValue = newKey;
         return (
           <div className="space-y-2">
@@ -760,9 +1279,25 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
               )}
             </div>
             {isGoogleOAuthOnlyApp && (
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                OAuth only. Create this credential from Credential Manager using Google OAuth, then select it here.
-              </p>
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleQuickGoogleOAuthConnect(normalizedAppName)}
+                  disabled={oauthConnectingApp === normalizedAppName}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60"
+                >
+                  <GoogleMark className="h-4 w-4" />
+                  {oauthConnectingApp === normalizedAppName ? 'Connecting...' : `Connect ${oauthAppLabel} OAuth`}
+                </button>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  OAuth only. Use the Google button above for quick verification, then select the credential.
+                </p>
+                {oauthNodeUsage.length > 0 && (
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Used by: {oauthNodeUsage.join(', ')}
+                  </p>
+                )}
+              </>
             )}
             {!isGoogleOAuthOnlyApp && activeCredentialForm === credentialFormId && (
               <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">

@@ -62,6 +62,25 @@ class ExecutionServiceStartNodeTests(unittest.TestCase):
                 preferred_node_id="form_start",
             )
 
+    def test_resolve_start_node_accepts_schedule_trigger(self) -> None:
+        definition = {
+            "nodes": [
+                {"id": "schedule_start", "type": "schedule_trigger"},
+                {"id": "task_1", "type": "filter"},
+            ],
+            "edges": [
+                {"id": "e1", "source": "schedule_start", "target": "task_1"},
+            ],
+        }
+
+        start_node_id = ExecutionService._resolve_start_node_id(
+            definition=definition,
+            expected_types={"schedule_trigger"},
+            preferred_node_id="schedule_start",
+        )
+
+        self.assertEqual(start_node_id, "schedule_start")
+
 
 if __name__ == "__main__":
     unittest.main()

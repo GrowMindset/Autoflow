@@ -20,6 +20,10 @@ class RunWorkflowRequest(BaseModel):
     start_node_id: str | None = None
 
 
+class RunScheduleRequest(BaseModel):
+    start_node_id: str | None = None
+
+
 class RunNodeTestRequest(BaseModel):
     input_data: dict[str, Any] | None = None
 

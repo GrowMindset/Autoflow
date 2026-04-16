@@ -25,6 +25,19 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "path": "",
         "method": "POST",
     },
+    "schedule_trigger": {
+        "timezone": "UTC",
+        "enabled": True,
+        "rules": [
+            {
+                "id": "rule_1",
+                "interval": "hours",
+                "every": 1,
+                "trigger_minute": 0,
+                "enabled": True,
+            }
+        ],
+    },
     "workflow_trigger": {},
     "get_gmail_message": {
         "credential_id": "",

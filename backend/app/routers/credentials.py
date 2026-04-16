@@ -142,9 +142,10 @@ async def exchange_google_oauth(
             redirect_uri=redirect_uri,
             app_name=app_name,
         )
-        credential = await credential_service.create_credential(
+        credential = await credential_service.upsert_google_oauth_credential(
             current_user.id,
-            AppCredentialCreate(app_name=app_name, token_data=token_data),
+            app_name=app_name,
+            token_data=token_data,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

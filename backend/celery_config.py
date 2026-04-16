@@ -2,6 +2,7 @@ import os
 from urllib.parse import urlparse, urlunparse
 
 from celery import Celery
+from celery.schedules import crontab
 from dotenv import load_dotenv
 from kombu import Queue
 
@@ -42,12 +43,18 @@ result_backend = os.getenv("CELERY_RESULT_BACKEND", _with_redis_db(redis_url, 1)
 WORKFLOW_EXECUTION_QUEUE = os.getenv("CELERY_WORKFLOW_QUEUE", "workflow.executions")
 WORKFLOW_NODE_TEST_QUEUE = os.getenv("CELERY_NODE_TEST_QUEUE", "workflow.node_tests")
 SYSTEM_QUEUE = os.getenv("CELERY_SYSTEM_QUEUE", "system")
+SCHEDULE_SCANNER_TASK = "app.tasks.scheduled_triggers.scan_scheduled_workflows"
+SCHEDULE_SCANNER_ENABLED = _env_bool("SCHEDULE_TRIGGER_ENABLED", True)
 
 celery_app = Celery(
     "autoflow",
     broker=broker_url,
     backend=result_backend,
-    include=["app.tasks.demo", "app.tasks.execute_workflow"],
+    include=[
+        "app.tasks.demo",
+        "app.tasks.execute_workflow",
+        "app.tasks.scheduled_triggers",
+    ],
 )
 
 celery_app.conf.update(
@@ -84,7 +91,19 @@ celery_app.conf.update(
         "app.tasks.execute_workflow.run_execution": {"queue": WORKFLOW_EXECUTION_QUEUE},
         "app.tasks.execute_workflow.run_node_test": {"queue": WORKFLOW_NODE_TEST_QUEUE},
         "app.tasks.demo.ping": {"queue": SYSTEM_QUEUE},
+        SCHEDULE_SCANNER_TASK: {"queue": SYSTEM_QUEUE},
     },
+    beat_schedule=(
+        {
+            "scan-scheduled-workflows-every-minute": {
+                "task": SCHEDULE_SCANNER_TASK,
+                "schedule": crontab(minute="*"),
+                "options": {"queue": SYSTEM_QUEUE},
+            }
+        }
+        if SCHEDULE_SCANNER_ENABLED
+        else {}
+    ),
     task_default_priority=_env_int("CELERY_TASK_DEFAULT_PRIORITY", 5),
     worker_prefetch_multiplier=_env_int("CELERY_WORKER_PREFETCH_MULTIPLIER", 1),
     worker_max_tasks_per_child=_env_int("CELERY_WORKER_MAX_TASKS_PER_CHILD", 100),

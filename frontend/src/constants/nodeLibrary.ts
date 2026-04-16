@@ -50,6 +50,26 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       is_dummy: false,
     },
     {
+      type: 'schedule_trigger',
+      label: 'Schedule Trigger',
+      category: 'trigger',
+      description: 'Trigger the workflow on a recurring schedule with simple trigger rules.',
+      default_config: {
+        timezone: 'UTC',
+        enabled: true,
+        rules: [
+          {
+            id: 'rule_1',
+            interval: 'hours',
+            every: 1,
+            trigger_minute: 0,
+            enabled: true,
+          },
+        ],
+      },
+      is_dummy: false,
+    },
+    {
       type: 'workflow_trigger',
       label: 'Workflow Trigger',
       category: 'trigger',

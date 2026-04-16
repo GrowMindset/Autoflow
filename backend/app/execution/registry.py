@@ -8,6 +8,7 @@ class RunnerRegistry:
         self._runner_factories = {
             "manual_trigger": self._build_manual_trigger,
             "form_trigger": self._build_form_trigger,
+            "schedule_trigger": self._build_schedule_trigger,
             "webhook_trigger": self._build_webhook_trigger,
             "if_else": self._build_if_else,
             "switch": self._build_switch,
@@ -65,6 +66,14 @@ class RunnerRegistry:
         from app.execution.runners.triggers.form_trigger import FormTriggerRunner
 
         return FormTriggerRunner()
+
+    @staticmethod
+    def _build_schedule_trigger() -> Any:
+        from app.execution.runners.triggers.schedule_trigger import (
+            ScheduleTriggerRunner,
+        )
+
+        return ScheduleTriggerRunner()
 
     @staticmethod
     def _build_webhook_trigger() -> Any:

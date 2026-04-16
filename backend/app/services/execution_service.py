@@ -77,6 +77,41 @@ class ExecutionService:
             start_node_id=start_node_id,
         )
 
+    async def create_schedule_execution(
+        self,
+        *,
+        workflow_id: UUID,
+        user: User,
+        start_node_id: str | None = None,
+        schedule_payload: dict[str, Any] | None = None,
+        require_published: bool = False,
+    ) -> Execution:
+        await self._mark_stale_running_executions(user_id=user.id)
+
+        workflow = await self._get_owned_workflow(workflow_id=workflow_id, user_id=user.id)
+        if workflow is None:
+            raise ValueError("Workflow not found")
+        if require_published and not workflow.is_published:
+            raise ValueError("Workflow is not published")
+
+        start_node_id = self._resolve_start_node_id(
+            definition=workflow.definition,
+            expected_types={"schedule_trigger"},
+            preferred_node_id=start_node_id,
+        )
+
+        payload = dict(schedule_payload or {})
+        payload.setdefault("scheduled_at", datetime.now(timezone.utc).isoformat())
+        payload.setdefault("source", "schedule")
+
+        return await self._create_and_enqueue_execution(
+            workflow=workflow,
+            user=user,
+            triggered_by="schedule",
+            initial_payload=payload,
+            start_node_id=start_node_id,
+        )
+
     async def create_webhook_execution_by_token(
         self,
         *,
@@ -443,7 +478,7 @@ class ExecutionService:
             if target in indegree:
                 indegree[target] += 1
 
-        default_trigger_types = {"manual_trigger", "form_trigger", "webhook_trigger", "workflow_trigger"}
+        default_trigger_types = {"manual_trigger", "form_trigger", "schedule_trigger", "webhook_trigger", "workflow_trigger"}
         allowed_types = expected_types or default_trigger_types
 
         if preferred_node_id:

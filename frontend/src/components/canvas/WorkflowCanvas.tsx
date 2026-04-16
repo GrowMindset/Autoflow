@@ -54,7 +54,7 @@ const UNDO_REDO_HISTORY_LIMIT = 100;
 const UNDO_REDO_COMMIT_DEBOUNCE_MS = 180;
 const AI_APPLY_PROCESS_MS = 950;
 const AI_APPLY_HIGHLIGHT_MS = 2200;
-const TRIGGER_NODE_TYPES = ['manual_trigger', 'form_trigger', 'webhook_trigger', 'workflow_trigger'] as const;
+const TRIGGER_NODE_TYPES = ['manual_trigger', 'form_trigger', 'schedule_trigger', 'webhook_trigger', 'workflow_trigger'] as const;
 const buildFormPageUrl = (workflowId: string, nodeId: string): string => {
   const origin = window.location.origin.replace(/\/$/, '');
   return `${origin}/app/forms/${workflowId}?nodeId=${nodeId}`;
@@ -1067,6 +1067,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       } else if (trigger.data.type === 'webhook_trigger') {
         const method = String(trigger.data?.config?.method || 'POST').toUpperCase();
         toast.success(`Webhook trigger: Use HTTP ${method} to the webhook endpoint to trigger this workflow`, { duration: 5000 });
+      } else if (trigger.data.type === 'schedule_trigger') {
+        const enqueue = await executionService.runWorkflowSchedule(workflowId, {
+          start_node_id: trigger.id,
+        });
+        toast.success('Scheduled workflow execution started!');
+        beginExecutionTracking(enqueue.execution_id, {
+          triggeredBy: enqueue.triggered_by,
+          primeNodeId: trigger.id,
+        });
       } else {
         toast.error(`Unsupported trigger type: ${trigger.data.type}`);
       }
@@ -1105,7 +1114,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
     if (rootTriggers.length === 0) {
       if (triggerCandidates.length === 0) {
-        toast.error('No trigger nodes found in workflow. Please add a Manual Trigger, Form Trigger, Webhook Trigger, or Workflow Trigger node.');
+        toast.error('No trigger nodes found in workflow. Please add a Manual Trigger, Form Trigger, Schedule Trigger, Webhook Trigger, or Workflow Trigger node.');
         return;
       }
 
@@ -1687,6 +1696,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           manual_trigger: { body: { message: "Hello world" }, user: { id: "u_123", name: "Ishika" } },
           webhook_trigger: { query: { id: 50 }, headers: { "Content-Type": "application/json" } },
           form_trigger: { submission: { name: "Test User", email: "test@example.com", priority: "high" } },
+          schedule_trigger: { scheduled_at: new Date().toISOString(), source: 'manual_preview' },
           filter: { items: [{ id: 1, name: "A" }, { id: 2, name: "B" }] },
           aggregate: { result: 500, count: 2 }
         };

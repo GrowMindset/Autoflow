@@ -15,6 +15,7 @@ from .nodes import (
 from .triggers import (
     FormTriggerRunner,
     ManualTriggerRunner,
+    ScheduleTriggerRunner,
     WebhookTriggerRunner,
 )
 
@@ -38,6 +39,7 @@ __all__ = [
     "WhatsAppRunner",
     "ManualTriggerRunner",
     "FormTriggerRunner",
+    "ScheduleTriggerRunner",
     "WebhookTriggerRunner",
 ]
 

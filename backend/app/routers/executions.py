@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from app.schemas.executions import (
     NodeExecutionResult,
     RunFormRequest,
     RunNodeTestRequest,
+    RunScheduleRequest,
     RunWorkflowRequest,
     WebhookEnqueueResponse,
 )
@@ -111,6 +113,50 @@ async def run_workflow_form(
             user=current_user,
             form_data=payload.form_data,
             start_node_id=payload.start_node_id,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if detail == "Workflow not found"
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    return ExecutionEnqueueResponse(
+        execution_id=execution.id,
+        workflow_id=execution.workflow_id,
+        status=execution.status,
+        triggered_by=execution.triggered_by,
+    )
+
+
+@router.post(
+    "/workflows/{workflow_id}/run-schedule",
+    response_model=ExecutionEnqueueResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def run_workflow_schedule(
+    workflow_id: UUID,
+    payload: RunScheduleRequest | None = None,
+    current_user: User = Depends(get_current_user),
+    execution_service: ExecutionService = Depends(get_execution_service),
+) -> ExecutionEnqueueResponse:
+    try:
+        execution = await execution_service.create_schedule_execution(
+            workflow_id=workflow_id,
+            user=current_user,
+            start_node_id=(payload.start_node_id if payload else None),
+            schedule_payload={
+                "scheduled_at": datetime.now(timezone.utc).isoformat(),
+                "source": "manual_schedule_run",
+            },
+            require_published=False,
         )
     except ValueError as exc:
         detail = str(exc)

@@ -7,7 +7,7 @@ from app.execution.context import ExecutionContext
 from app.execution.registry import RunnerRegistry
 
 
-TRIGGER_NODE_TYPES = {"manual_trigger", "form_trigger", "webhook_trigger", "workflow_trigger"}
+TRIGGER_NODE_TYPES = {"manual_trigger", "form_trigger", "schedule_trigger", "webhook_trigger", "workflow_trigger"}
 BRANCHING_NODE_TYPES = {"if_else", "switch"}
 UNSUPPORTED_RUNTIME_NODE_TYPES = set()
 
@@ -331,11 +331,11 @@ class DagExecutor:
 
             # Keep n8n-like aliases available so both {{field}} and namespaced
             # forms such as {{form.field}} resolve from the same payload.
-            for alias in ("form", "trigger", "manual", "webhook", "workflow"):
+            for alias in ("form", "trigger", "manual", "schedule", "webhook", "workflow"):
                 template_context.setdefault(alias, payload_without_trigger_meta)
 
             trigger_type = str(input_data.get("trigger_type") or "").strip().lower()
-            if trigger_type in {"form", "manual", "webhook", "workflow"}:
+            if trigger_type in {"form", "manual", "schedule", "webhook", "workflow"}:
                 template_context.setdefault(trigger_type, payload_without_trigger_meta)
 
         # Aliases for current upstream payload.

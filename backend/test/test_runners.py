@@ -15,6 +15,7 @@ from app.execution.runners.nodes.split_out import SplitOutRunner
 from app.execution.runners.nodes.switch import SwitchRunner
 from app.execution.runners.triggers.form_trigger import FormTriggerRunner
 from app.execution.runners.triggers.manual_trigger import ManualTriggerRunner
+from app.execution.runners.triggers.schedule_trigger import ScheduleTriggerRunner
 from app.execution.runners.triggers.webhook_trigger import WebhookTriggerRunner
 
 
@@ -603,10 +604,29 @@ class RunnerTests(unittest.TestCase):
             },
         )
 
+    def test_schedule_trigger_runner_sets_schedule_metadata(self):
+        runner = ScheduleTriggerRunner()
+        result = runner.run(
+            config={
+                "minute": "*/5",
+                "hour": "*",
+            },
+            input_data={"scheduled_at": "2026-01-01T00:00:00Z"},
+        )
+        self.assertEqual(
+            result,
+            {
+                "triggered": True,
+                "trigger_type": "schedule",
+                "scheduled_at": "2026-01-01T00:00:00Z",
+            },
+        )
+
     def test_trigger_runners_reject_invalid_input_types(self):
         runners = [
             ManualTriggerRunner(),
             FormTriggerRunner(),
+            ScheduleTriggerRunner(),
             WebhookTriggerRunner(),
         ]
 
