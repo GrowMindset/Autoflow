@@ -19,6 +19,7 @@ from app.schemas.executions import (
     NodeExecutionResult,
     RunFormRequest,
     RunNodeTestRequest,
+    RunWorkflowRequest,
     WebhookEnqueueResponse,
 )
 from app.services.execution_service import ExecutionService
@@ -61,6 +62,7 @@ async def _build_webhook_payload(request: Request) -> dict[str, Any]:
 )
 async def run_workflow(
     workflow_id: UUID,
+    payload: RunWorkflowRequest | None = None,
     current_user: User = Depends(get_current_user),
     execution_service: ExecutionService = Depends(get_execution_service),
 ) -> ExecutionEnqueueResponse:
@@ -68,9 +70,16 @@ async def run_workflow(
         execution = await execution_service.create_manual_execution(
             workflow_id=workflow_id,
             user=current_user,
+            start_node_id=(payload.start_node_id if payload else None),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        detail = str(exc)
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if detail == "Workflow not found"
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -101,6 +110,7 @@ async def run_workflow_form(
             workflow_id=workflow_id,
             user=current_user,
             form_data=payload.form_data,
+            start_node_id=payload.start_node_id,
         )
     except ValueError as exc:
         detail = str(exc)

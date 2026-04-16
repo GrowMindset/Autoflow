@@ -8,6 +8,8 @@ from app.execution.runners.nodes.dummy import DummyNodeRunner
 from app.execution.runners.nodes.filter import FilterRunner
 from app.execution.runners.nodes.if_else import IfElseRunner
 from app.execution.runners.nodes.merge import MergeRunner
+from app.execution.runners.nodes.search_update_google_sheets import SearchUpdateGoogleSheetsRunner
+from app.execution.runners.nodes.send_gmail_message import SendGmailMessageRunner
 from app.execution.runners.nodes.split_in import SplitInRunner
 from app.execution.runners.nodes.split_out import SplitOutRunner
 from app.execution.runners.nodes.switch import SwitchRunner
@@ -241,6 +243,53 @@ class RunnerTests(unittest.TestCase):
             input_data={"status": "paid", "amount": 500},
         )
         self.assertEqual(result, {"status": "paid", "amount": 500, "_branch": "true"})
+
+    def test_send_gmail_runner_normalizes_recipient_lists(self):
+        recipients = SendGmailMessageRunner._split_and_validate_emails(
+            'Asha <asha@example.com>; mina@example.com\nli@example.org',
+            field_name="to",
+        )
+        self.assertEqual(
+            recipients,
+            ["asha@example.com", "mina@example.com", "li@example.org"],
+        )
+
+    def test_send_gmail_runner_rejects_unresolved_recipient_templates(self):
+        with self.assertRaisesRegex(ValueError, "unresolved template"):
+            SendGmailMessageRunner._split_and_validate_emails(
+                "{{form.student_email}}",
+                field_name="to",
+            )
+
+    def test_send_gmail_runner_rejects_invalid_recipient_email(self):
+        with self.assertRaisesRegex(ValueError, "invalid email"):
+            SendGmailMessageRunner._split_and_validate_emails(
+                "not-an-email",
+                field_name="to",
+            )
+
+    def test_send_gmail_runner_accepts_dict_recipient_value(self):
+        recipients = SendGmailMessageRunner._split_and_validate_emails(
+            {"email": "student@example.com"},
+            field_name="to",
+        )
+        self.assertEqual(recipients, ["student@example.com"])
+
+    def test_send_gmail_runner_accepts_list_of_recipient_dicts(self):
+        recipients = SendGmailMessageRunner._split_and_validate_emails(
+            [{"email": "one@example.com"}, {"user_email": "two@example.com"}],
+            field_name="to",
+        )
+        self.assertEqual(recipients, ["one@example.com", "two@example.com"])
+
+    def test_sheets_search_update_prefers_header_name_over_column_letters(self):
+        headers = ["Email", "Status", "Notes"]
+        index = SearchUpdateGoogleSheetsRunner._resolve_column_index("Email", headers)
+        self.assertEqual(index, 1)
+
+    def test_sheets_search_update_resolves_column_letter_without_headers(self):
+        index = SearchUpdateGoogleSheetsRunner._resolve_column_index("B", [])
+        self.assertEqual(index, 2)
 
     def test_if_else_runner_raises_for_unknown_operator(self):
         runner = IfElseRunner()

@@ -49,11 +49,12 @@ const AI_AGENT_CHILD_STACK_GAP = 70;
 const AUTO_LAYOUT_NODE_GAP = 40;
 const AUTO_LAYOUT_RANK_GAP = 95;
 const FORM_EXECUTION_MESSAGE_TYPE = 'autoflow:form-execution-started';
-const EXECUTION_POLL_INTERVAL_MS = 700;
+const EXECUTION_POLL_INTERVAL_MS = 300;
 const UNDO_REDO_HISTORY_LIMIT = 100;
 const UNDO_REDO_COMMIT_DEBOUNCE_MS = 180;
 const AI_APPLY_PROCESS_MS = 950;
 const AI_APPLY_HIGHLIGHT_MS = 2200;
+const TRIGGER_NODE_TYPES = ['manual_trigger', 'form_trigger', 'webhook_trigger', 'workflow_trigger'] as const;
 const buildFormPageUrl = (workflowId: string, nodeId: string): string => {
   const origin = window.location.origin.replace(/\/$/, '');
   return `${origin}/app/forms/${workflowId}?nodeId=${nodeId}`;
@@ -345,6 +346,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     executionDetailCacheRef.current = {};
     executionDetailRequestIdRef.current = 0;
     setHasPickedNewWorkflowStarter(false);
+    setShowRunFlowSelector(false);
+    setRunFlowOptions([]);
+    setIsStartingSelectedFlow(false);
   }, [workflowId, clearPendingHistoryCommit, clearAiApplyTimers]);
 
   useEffect(() => {
@@ -399,6 +403,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             ...node.data,
             status: nodeResult.status,
             last_execution_result: nodeResult,
+            last_output: nodeResult.output_data ?? node.data.last_output,
           },
         };
       }),
@@ -519,6 +524,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [showTriggerForm, setShowTriggerForm] = useState(false);
   const [triggerFormData, setTriggerFormData] = useState<Record<string, string>>({});
   const [triggerNode, setTriggerNode] = useState<WorkflowNode | null>(null);
+  const [showRunFlowSelector, setShowRunFlowSelector] = useState(false);
+  const [runFlowOptions, setRunFlowOptions] = useState<WorkflowNode[]>([]);
+  const [isStartingSelectedFlow, setIsStartingSelectedFlow] = useState(false);
 
   const emitCanvasMutation = useCallback((reason: string) => {
     if (isHydratingCanvasRef.current || isApplyingHistoryRef.current) return;
@@ -793,6 +801,38 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
   }, []);
 
+  const computeUpstreamPrimePath = useCallback((targetNodeId: string) => {
+    const incomingByTarget = new Map<string, WorkflowEdge[]>();
+    edges.forEach((edge) => {
+      const current = incomingByTarget.get(edge.target) || [];
+      current.push(edge);
+      incomingByTarget.set(edge.target, current);
+    });
+
+    const upstreamNodeIds = new Set<string>();
+    const branchBySourceNodeId = new Map<string, string>();
+    const stack: string[] = [targetNodeId];
+    const seenTargets = new Set<string>();
+
+    while (stack.length > 0) {
+      const currentTarget = stack.pop() as string;
+      if (seenTargets.has(currentTarget)) continue;
+      seenTargets.add(currentTarget);
+
+      const incomingEdges = incomingByTarget.get(currentTarget) || [];
+      incomingEdges.forEach((edge) => {
+        if (!edge.source || edge.source === currentTarget) return;
+        upstreamNodeIds.add(edge.source);
+        if (edge.sourceHandle) {
+          branchBySourceNodeId.set(edge.source, edge.sourceHandle);
+        }
+        stack.push(edge.source);
+      });
+    }
+
+    return { upstreamNodeIds, branchBySourceNodeId };
+  }, [edges]);
+
   const pollExecution = useCallback(async (executionId: string) => {
     if (activeExecutionIdRef.current !== executionId) {
       return;
@@ -804,17 +844,27 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         return;
       }
 
+      const inProgress = detail.status === 'RUNNING' || detail.status === 'PENDING';
+
       // Update nodes with their execution status and results
       setNodes((nds) =>
         nds.map((node) => {
           const result = detail.node_results.find((r) => r.node_id === node.id);
           if (result) {
+            // Keep optimistic "path already completed" highlighting while a
+            // single-node execution is still in progress and upstream rows
+            // are represented as PENDING by the backend.
+            if (inProgress && result.status === 'PENDING' && node.data.status === 'SUCCEEDED') {
+              return node;
+            }
+
             return {
               ...node,
               data: {
                 ...node.data,
                 status: result.status,
-                last_execution_result: result
+                last_execution_result: result,
+                last_output: result.output_data ?? node.data.last_output,
               }
             };
           }
@@ -847,10 +897,20 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       if (detail.status === 'SUCCEEDED' || detail.status === 'FAILED') {
         stopPolling();
         activeExecutionIdRef.current = null;
+        const triggerKind = String(detail.triggered_by || '').toLowerCase();
+        const isWorkflowRun = ['manual', 'form', 'webhook', 'workflow'].includes(triggerKind);
         if (detail.status === 'SUCCEEDED') {
-          toast.success('Workflow finished successfully');
+          toast.success(
+            isWorkflowRun
+              ? 'Workflow finished successfully'
+              : 'Node execution finished successfully',
+          );
         } else {
-          toast.error(`Workflow failed: ${detail.error_message || 'Unknown error'}`);
+          toast.error(
+            isWorkflowRun
+              ? `Workflow failed: ${detail.error_message || 'Unknown error'}`
+              : `Node execution failed: ${detail.error_message || 'Unknown error'}`,
+          );
         }
       }
     } catch (error) {
@@ -859,15 +919,77 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
   }, [onExecutionUpdate, selectedExecutionId, setNodes, stopPolling]);
 
-  const beginExecutionTracking = useCallback((executionId: string) => {
+  const beginExecutionTracking = useCallback((
+    executionId: string,
+    options?: { triggeredBy?: string; primeNodeId?: string },
+  ) => {
     stopPolling();
     activeExecutionIdRef.current = executionId;
     onExecutionStart?.(executionId);
+
+    if (options?.primeNodeId) {
+      const { upstreamNodeIds, branchBySourceNodeId } = computeUpstreamPrimePath(options.primeNodeId);
+
+      setNodes((nds) =>
+        nds.map((node) => {
+          if (node.id === options.primeNodeId) {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                status: 'RUNNING',
+                last_execution_result: {
+                  node_id: node.id,
+                  node_type: node.data.type,
+                  status: 'RUNNING',
+                  input_data: null,
+                  output_data: null,
+                  error_message: null,
+                  started_at: null,
+                  finished_at: null,
+                },
+              },
+            };
+          }
+
+          if (upstreamNodeIds.has(node.id)) {
+            const branch = branchBySourceNodeId.get(node.id);
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                status: 'SUCCEEDED',
+                last_execution_result: {
+                  node_id: node.id,
+                  node_type: node.data.type,
+                  status: 'SUCCEEDED',
+                  input_data: null,
+                  output_data: branch ? { _branch: branch } : {},
+                  error_message: null,
+                  started_at: null,
+                  finished_at: null,
+                },
+              },
+            };
+          }
+
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              status: 'PENDING',
+              last_execution_result: null,
+            },
+          };
+        }),
+      );
+    }
+
     setExecutionHistory((history) => [
       {
         executionId,
         status: 'PENDING',
-        triggeredBy: 'manual',
+        triggeredBy: options?.triggeredBy || 'manual',
         startedAt: null,
         finishedAt: null,
         errorMessage: null,
@@ -878,7 +1000,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     pollingIntervalRef.current = window.setInterval(() => {
       void pollExecution(executionId);
     }, EXECUTION_POLL_INTERVAL_MS);
-  }, [onExecutionStart, pollExecution, stopPolling]);
+  }, [computeUpstreamPrimePath, onExecutionStart, pollExecution, setNodes, stopPolling]);
 
   useEffect(() => {
     const onFormExecutionStarted = (event: MessageEvent) => {
@@ -888,6 +1010,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         type?: string;
         workflowId?: string;
         executionId?: string;
+        nodeId?: string;
       };
 
       if (!payload || payload.type !== FORM_EXECUTION_MESSAGE_TYPE) return;
@@ -900,13 +1023,69 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           data: { ...node.data, status: 'PENDING', last_execution_result: null },
         }))
       );
-      beginExecutionTracking(payload.executionId);
+      beginExecutionTracking(payload.executionId, {
+        triggeredBy: 'form',
+        primeNodeId: payload.nodeId,
+      });
       toast.success('Form submitted. Workflow execution started.');
     };
 
     window.addEventListener('message', onFormExecutionStarted);
     return () => window.removeEventListener('message', onFormExecutionStarted);
   }, [workflowId, beginExecutionTracking, setNodes]);
+
+  const resetNodeExecutionVisualState = useCallback(() => {
+    setNodes((nds) =>
+      nds.map((node) => ({
+        ...node,
+        data: { ...node.data, status: 'PENDING', last_execution_result: null },
+      }))
+    );
+  }, [setNodes]);
+
+  const startExecutionFromTrigger = useCallback(async (trigger: WorkflowNode) => {
+    resetNodeExecutionVisualState();
+
+    try {
+      if (trigger.data.type === 'manual_trigger') {
+        const enqueue = await executionService.runWorkflow(workflowId, {
+          start_node_id: trigger.id,
+        });
+        toast.success('Workflow execution started!');
+        beginExecutionTracking(enqueue.execution_id, {
+          triggeredBy: enqueue.triggered_by,
+          primeNodeId: trigger.id,
+        });
+      } else if (trigger.data.type === 'form_trigger') {
+        const formUrl = buildFormPageUrl(workflowId, trigger.id);
+        const opened = window.open(formUrl, '_blank');
+        if (opened) {
+          toast.success('Form opened in a new tab. Submit there to continue execution.');
+        } else {
+          toast(`Popup blocked. Open this form URL manually: ${formUrl}`, { duration: 7000 });
+        }
+      } else if (trigger.data.type === 'webhook_trigger') {
+        const method = String(trigger.data?.config?.method || 'POST').toUpperCase();
+        toast.success(`Webhook trigger: Use HTTP ${method} to the webhook endpoint to trigger this workflow`, { duration: 5000 });
+      } else {
+        toast.error(`Unsupported trigger type: ${trigger.data.type}`);
+      }
+    } catch (error) {
+      console.error('Execution failed:', error);
+      toast.error('Workflow execution failed. Check console for details.');
+    }
+  }, [beginExecutionTracking, resetNodeExecutionVisualState, workflowId]);
+
+  const runSelectedFlowOption = useCallback(async (trigger: WorkflowNode) => {
+    setIsStartingSelectedFlow(true);
+    try {
+      await startExecutionFromTrigger(trigger);
+      setShowRunFlowSelector(false);
+      setRunFlowOptions([]);
+    } finally {
+      setIsStartingSelectedFlow(false);
+    }
+  }, [startExecutionFromTrigger]);
 
   const handleRunWorkflow = useCallback(async () => {
     if (isAiPreviewMode) {
@@ -919,11 +1098,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       return;
     }
 
-    const triggerTypes = ['manual_trigger', 'form_trigger', 'webhook_trigger', 'workflow_trigger'];
-    const triggerCandidates = nodes.filter(node => {
-      return triggerTypes.includes(node.data.type) || node.type === 'trigger';
-    });
-    const rootTriggers = triggerCandidates.filter(node => !edges.some(edge => edge.target === node.id));
+    const triggerCandidates = nodes.filter((node) => {
+      return TRIGGER_NODE_TYPES.includes(node.data.type as typeof TRIGGER_NODE_TYPES[number]) || node.type === 'trigger';
+    }) as WorkflowNode[];
+    const rootTriggers = triggerCandidates.filter((node) => !edges.some((edge) => edge.target === node.id));
 
     if (rootTriggers.length === 0) {
       if (triggerCandidates.length === 0) {
@@ -934,37 +1112,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       if (triggerCandidates.length === 1) {
         toast('Trigger node has incoming connections, but execution will continue using the single available trigger. Make sure trigger nodes have no incoming edges.', { icon: '⚠️' });
         const trigger = triggerCandidates[0];
-        // Reset status of all nodes before starting
-        setNodes((nds) =>
-          nds.map((node) => ({
-            ...node,
-            data: { ...node.data, status: 'PENDING', last_execution_result: null }
-          }))
-        );
-
-        try {
-          if (trigger.data.type === 'manual_trigger') {
-            const enqueue = await executionService.runWorkflow(workflowId);
-            toast.success('Workflow execution started!');
-            beginExecutionTracking(enqueue.execution_id);
-          } else if (trigger.data.type === 'form_trigger') {
-            const formUrl = buildFormPageUrl(workflowId, trigger.id);
-            const opened = window.open(formUrl, '_blank');
-            if (opened) {
-              toast.success('Form opened in a new tab. Submit there to continue execution.');
-            } else {
-              toast(`Popup blocked. Open this form URL manually: ${formUrl}`, { duration: 7000 });
-            }
-          } else if (trigger.data.type === 'webhook_trigger') {
-            const method = String(trigger.data?.config?.method || 'POST').toUpperCase();
-            toast.success(`Webhook trigger: Use HTTP ${method} to the webhook endpoint to trigger this workflow`, { duration: 5000 });
-          } else {
-            toast.error(`Unsupported trigger type: ${trigger.data.type}`);
-          }
-        } catch (error) {
-          console.error('Execution failed:', error);
-          toast.error('Workflow execution failed. Check console for details.');
-        }
+        await startExecutionFromTrigger(trigger);
         return;
       }
 
@@ -973,45 +1121,23 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
 
     if (rootTriggers.length > 1) {
-      toast.error('Multiple trigger nodes found. Please ensure only one trigger node exists.');
+      const selectedTrigger = selectedNodeId
+        ? rootTriggers.find((trigger) => trigger.id === selectedNodeId)
+        : null;
+      if (selectedTrigger) {
+        await startExecutionFromTrigger(selectedTrigger);
+        return;
+      }
+
+      setRunFlowOptions(rootTriggers);
+      setShowRunFlowSelector(true);
+      toast('Multiple independent flows found. Select the flow you want to run.', { icon: 'ℹ️' });
       return;
     }
 
     const trigger = rootTriggers[0];
-
-    // Reset status of all nodes before starting
-    setNodes((nds) =>
-      nds.map((node) => ({
-        ...node,
-        data: { ...node.data, status: 'PENDING', last_execution_result: null }
-      }))
-    );
-
-    try {
-      if (trigger.data.type === 'manual_trigger') {
-        const enqueue = await executionService.runWorkflow(workflowId);
-        toast.success('Workflow execution started!');
-        beginExecutionTracking(enqueue.execution_id);
-      } else if (trigger.data.type === 'form_trigger') {
-        const formUrl = buildFormPageUrl(workflowId, trigger.id);
-        const opened = window.open(formUrl, '_blank');
-        if (opened) {
-          toast.success('Form opened in a new tab. Submit there to continue execution.');
-        } else {
-          toast(`Popup blocked. Open this form URL manually: ${formUrl}`, { duration: 7000 });
-        }
-      } else if (trigger.data.type === 'webhook_trigger') {
-        // For webhook triggers, show information about webhook usage
-        const method = String(trigger.data?.config?.method || 'POST').toUpperCase();
-        toast.success(`Webhook trigger: Use HTTP ${method} to the webhook endpoint to trigger this workflow`, { duration: 5000 });
-      } else {
-        toast.error(`Unsupported trigger type: ${trigger.data.type}`);
-      }
-    } catch (error) {
-      console.error('Execution failed:', error);
-      toast.error('Workflow execution failed. Check console for details.');
-    }
-  }, [isAiPreviewMode, workflowId, nodes, edges, beginExecutionTracking]);
+    await startExecutionFromTrigger(trigger);
+  }, [isAiPreviewMode, workflowId, nodes, edges, selectedNodeId, startExecutionFromTrigger]);
 
   useEffect(() => {
     stopPolling();
@@ -1946,6 +2072,61 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               </div>
             )}
 
+            {showRunFlowSelector && (
+              <div
+                className="fixed inset-0 z-[9998] bg-slate-900/55 backdrop-blur-sm flex items-center justify-center p-4"
+                onMouseDown={() => {
+                  if (isStartingSelectedFlow) return;
+                  setShowRunFlowSelector(false);
+                  setRunFlowOptions([]);
+                }}
+              >
+                <div
+                  className="w-full max-w-xl rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-[0_30px_80px_rgba(0,0,0,0.35)] p-6"
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-base font-black text-slate-900 dark:text-slate-100">Select Flow To Run</h3>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                        Multiple trigger flows were found on this canvas. Choose one trigger to run only that flow.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isStartingSelectedFlow}
+                      onClick={() => {
+                        setShowRunFlowSelector(false);
+                        setRunFlowOptions([]);
+                      }}
+                      className="p-2 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                    </button>
+                  </div>
+
+                  <div className="mt-5 space-y-2 max-h-72 overflow-y-auto pr-1">
+                    {runFlowOptions.map((trigger) => (
+                      <button
+                        key={trigger.id}
+                        type="button"
+                        disabled={isStartingSelectedFlow}
+                        onClick={() => void runSelectedFlowOption(trigger)}
+                        className="w-full text-left rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 hover:border-blue-300 hover:bg-blue-50/50 dark:hover:bg-blue-500/10 transition-colors px-4 py-3 disabled:opacity-60"
+                      >
+                        <div className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                          {trigger.data.label || trigger.id}
+                        </div>
+                        <div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1">
+                          {trigger.data.type} • node id: {trigger.id}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Trigger Form Modal */}
             {showTriggerForm && triggerNode && (
               <div className="fixed inset-0 z-[9999] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 md:p-8 animate-in fade-in zoom-in-95 duration-300">
@@ -1974,6 +2155,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                         try {
                           const enqueue = await executionService.runWorkflowForm(workflowId, {
                             form_data: triggerFormData,
+                            start_node_id: triggerNode.id,
                           });
                           toast.success('Workflow execution started!');
                           setShowTriggerForm(false);
@@ -2062,6 +2244,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 onClose={() => setSelectedNodeId(null)}
                 onUpdate={updateNodeConfig}
                 onNavigateNode={(nodeId) => setSelectedNodeId(nodeId)}
+                onExecutionEnqueued={({ executionId, nodeId, triggeredBy }) => {
+                  beginExecutionTracking(executionId, {
+                    triggeredBy,
+                    primeNodeId: nodeId,
+                  });
+                }}
               />
             )}
           </ReactFlow>

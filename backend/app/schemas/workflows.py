@@ -58,6 +58,8 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "search_value": "",
         "update_column": "",
         "update_value": "",
+        "auto_create_headers": True,
+        "upsert_if_not_found": True,
     },
     "create_google_docs": {
         "credential_id": "",

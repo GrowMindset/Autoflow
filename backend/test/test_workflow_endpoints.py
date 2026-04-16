@@ -472,3 +472,83 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
             rows_by_id["count_matches"].output_data,
             {"matched_count": 2},
         )
+
+    async def test_run_workflow_accepts_selected_manual_start_node(self) -> None:
+        user = await self._create_user(email="manual-start@example.com", username="manual-start")
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Multi Trigger Workflow",
+            definition={
+                "nodes": [
+                    {
+                        "id": "manual_a",
+                        "type": "manual_trigger",
+                        "label": "Manual A",
+                        "position": {"x": 0, "y": 0},
+                        "config": {},
+                    },
+                    {
+                        "id": "manual_b",
+                        "type": "manual_trigger",
+                        "label": "Manual B",
+                        "position": {"x": 0, "y": 180},
+                        "config": {},
+                    },
+                    {
+                        "id": "dummy_a",
+                        "type": "custom_dummy_a",
+                        "label": "Dummy A",
+                        "position": {"x": 220, "y": 0},
+                        "config": {},
+                    },
+                    {
+                        "id": "dummy_b",
+                        "type": "custom_dummy_b",
+                        "label": "Dummy B",
+                        "position": {"x": 220, "y": 180},
+                        "config": {},
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "manual_a", "target": "dummy_a"},
+                    {"id": "e2", "source": "manual_b", "target": "dummy_b"},
+                ],
+            },
+        )
+
+        status_code, payload = await self.client.post(
+            f"/workflows/{workflow.id}/run",
+            json_body={"start_node_id": "manual_b"},
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(status_code, 202)
+        execution_id = UUID(payload["execution_id"])
+
+        async with self.session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(NodeExecution)
+                    .where(NodeExecution.execution_id == execution_id)
+                    .order_by(NodeExecution.node_id)
+                )
+            ).scalars().all()
+
+        rows_by_id = {row.node_id: row for row in rows}
+        self.assertEqual(rows_by_id["manual_b"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["dummy_b"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["manual_a"].status, "PENDING")
+        self.assertEqual(rows_by_id["dummy_a"].status, "PENDING")
+
+    async def test_run_workflow_rejects_invalid_selected_start_node(self) -> None:
+        user = await self._create_user(email="invalid-start@example.com", username="invalid-start")
+        workflow = await self._create_workflow(user_id=user.id)
+
+        status_code, payload = await self.client.post(
+            f"/workflows/{workflow.id}/run",
+            json_body={"start_node_id": "missing_trigger"},
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(status_code, 400)
+        self.assertIn("Selected start node", str(payload.get("detail")))

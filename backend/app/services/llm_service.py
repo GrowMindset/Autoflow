@@ -82,8 +82,9 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "category": "action",
         "description": "Searches rows in Google Sheets and updates one column on the first matched row.",
         "rules": [
-            "Use config keys: credential_id, spreadsheet_id, sheet_name, search_column, search_value, update_column, update_value.",
+            "Use config keys: credential_id, spreadsheet_id, sheet_name, search_column, search_value, update_column, update_value, auto_create_headers, upsert_if_not_found.",
             "search_column and update_column can be header names, column letters (A/B/C), or column numbers.",
+            "Prefer auto_create_headers=true and upsert_if_not_found=true for empty/new sheets.",
         ],
     },
     "create_google_docs": {

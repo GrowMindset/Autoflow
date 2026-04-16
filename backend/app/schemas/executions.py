@@ -13,6 +13,11 @@ TriggeredBy = str
 
 class RunFormRequest(BaseModel):
     form_data: dict[str, Any]
+    start_node_id: str | None = None
+
+
+class RunWorkflowRequest(BaseModel):
+    start_node_id: str | None = None
 
 
 class RunNodeTestRequest(BaseModel):

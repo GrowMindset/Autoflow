@@ -29,6 +29,7 @@ class ExecutionService:
         *,
         workflow_id: UUID,
         user: User,
+        start_node_id: str | None = None,
     ) -> Execution:
         await self._mark_stale_running_executions(user_id=user.id)
 
@@ -38,7 +39,8 @@ class ExecutionService:
 
         start_node_id = self._resolve_start_node_id(
             definition=workflow.definition,
-            expected_types=None, # any trigger is fine for manual execution tests
+            expected_types={"manual_trigger"},
+            preferred_node_id=start_node_id,
         )
         return await self._create_and_enqueue_execution(
             workflow=workflow,
@@ -54,6 +56,7 @@ class ExecutionService:
         workflow_id: UUID,
         user: User,
         form_data: dict[str, Any],
+        start_node_id: str | None = None,
     ) -> Execution:
         await self._mark_stale_running_executions(user_id=user.id)
 
@@ -64,6 +67,7 @@ class ExecutionService:
         start_node_id = self._resolve_start_node_id(
             definition=workflow.definition,
             expected_types={"form_trigger"},
+            preferred_node_id=start_node_id,
         )
         return await self._create_and_enqueue_execution(
             workflow=workflow,
@@ -421,17 +425,46 @@ class ExecutionService:
         return workflow
 
     @staticmethod
-    def _resolve_start_node_id(*, definition: dict, expected_types: set[str] | str = None) -> str:
+    def _resolve_start_node_id(
+        *,
+        definition: dict,
+        expected_types: set[str] | str = None,
+        preferred_node_id: str | None = None,
+    ) -> str:
         if isinstance(expected_types, str):
             expected_types = {expected_types}
             
         nodes = definition.get("nodes", [])
         edges = definition.get("edges", [])
+        node_by_id = {node.get("id"): node for node in nodes}
         indegree = {node.get("id"): 0 for node in nodes}
         for edge in edges:
             target = edge.get("target")
             if target in indegree:
                 indegree[target] += 1
+
+        default_trigger_types = {"manual_trigger", "form_trigger", "webhook_trigger", "workflow_trigger"}
+        allowed_types = expected_types or default_trigger_types
+
+        if preferred_node_id:
+            preferred_node = node_by_id.get(preferred_node_id)
+            if preferred_node is None:
+                raise ValueError(
+                    f"Selected start node '{preferred_node_id}' was not found in workflow"
+                )
+
+            preferred_type = preferred_node.get("type")
+            if preferred_type not in allowed_types:
+                allowed_types_label = ", ".join(sorted(allowed_types))
+                raise ValueError(
+                    f"Selected start node '{preferred_node_id}' must be one of: {allowed_types_label}"
+                )
+
+            if indegree.get(preferred_node_id, 0) != 0:
+                raise ValueError(
+                    f"Selected start node '{preferred_node_id}' must be a root trigger with no incoming edges"
+                )
+            return preferred_node_id
 
         candidates = [
             node
@@ -439,11 +472,7 @@ class ExecutionService:
             if indegree.get(node.get("id")) == 0
         ]
         
-        if expected_types:
-            candidates = [c for c in candidates if c.get("type") in expected_types]
-        else:
-            # Default to checking against standard triggers if expected_types not provided
-            candidates = [c for c in candidates if c.get("type") in {"manual_trigger", "form_trigger", "webhook_trigger", "workflow_trigger"}]
+        candidates = [c for c in candidates if c.get("type") in allowed_types]
 
         if not candidates:
             raise ValueError(f"Workflow does not have a valid start node")

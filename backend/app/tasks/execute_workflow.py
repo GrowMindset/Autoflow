@@ -228,6 +228,11 @@ async def _run_execution(
             await db.commit()
 
             try:
+                nodes_by_id = {
+                    node.get("id"): node
+                    for node in workflow.definition.get("nodes", [])
+                    if node.get("id")
+                }
                 resolved_credential_data = await _resolve_credentials(
                     definition=workflow.definition,
                     db=db,
@@ -241,7 +246,84 @@ async def _run_execution(
                     if token_data.get("api_key") or token_data.get("bot_token") or token_data.get("access_token")
                 }
 
-                result = DagExecutor().execute(
+                progress_lock = asyncio.Lock()
+                loop = asyncio.get_running_loop()
+
+                async def _persist_node_progress(
+                    *,
+                    node_id: str,
+                    node_type: str,
+                    status: str,
+                    input_data: Any = None,
+                    output_data: Any = None,
+                    error_message: str | None = None,
+                ) -> None:
+                    async with progress_lock:
+                        row = _upsert_node_row(
+                            node_execution_by_id=node_execution_by_id,
+                            execution=execution,
+                            db=db,
+                            node_id=node_id,
+                            node_type=node_type,
+                        )
+                        now = _utcnow()
+
+                        if status == "RUNNING":
+                            row.status = "RUNNING"
+                            row.input_data = input_data
+                            row.error_message = None
+                            row.started_at = row.started_at or now
+                            row.finished_at = None
+                        elif status == "SUCCEEDED":
+                            row.status = "SUCCEEDED"
+                            if input_data is not None and row.input_data is None:
+                                row.input_data = input_data
+                            row.output_data = output_data
+                            row.error_message = None
+                            row.started_at = row.started_at or now
+                            row.finished_at = now
+                        elif status == "FAILED":
+                            row.status = "FAILED"
+                            if input_data is not None:
+                                row.input_data = input_data
+                            row.output_data = None
+                            row.error_message = error_message
+                            row.started_at = row.started_at or now
+                            row.finished_at = now
+                        else:
+                            row.status = status
+
+                        await db.commit()
+
+                def _on_node_progress(
+                    *,
+                    node_id: str,
+                    node_type: str,
+                    status: str,
+                    input_data: Any = None,
+                    output_data: Any = None,
+                    error_message: str | None = None,
+                ) -> None:
+                    target_type = (
+                        node_type
+                        or (nodes_by_id.get(node_id, {}) or {}).get("type")
+                        or "unknown"
+                    )
+                    future = asyncio.run_coroutine_threadsafe(
+                        _persist_node_progress(
+                            node_id=node_id,
+                            node_type=target_type,
+                            status=status,
+                            input_data=input_data,
+                            output_data=output_data,
+                            error_message=error_message,
+                        ),
+                        loop,
+                    )
+                    future.result()
+
+                result = await asyncio.to_thread(
+                    DagExecutor().execute,
                     definition=workflow.definition,
                     initial_payload=initial_payload,
                     start_node_id=start_node_id,
@@ -249,7 +331,8 @@ async def _run_execution(
                         "user_id": execution.user_id,
                         "resolved_credentials": resolved_credentials,
                         "resolved_credential_data": resolved_credential_data,
-                    }
+                    },
+                    progress_callback=_on_node_progress,
                 )
 
                 visited_nodes = result.get("visited_nodes", [])
@@ -261,7 +344,7 @@ async def _run_execution(
                 # Persist succeeded nodes in the actual execution order.
                 # This allows frontends to sort logs by the order nodes were visited.
                 for node_id in visited_nodes:
-                    node_def = next((n for n in workflow.definition.get("nodes", []) if n["id"] == node_id), None)
+                    node_def = nodes_by_id.get(node_id)
                     row = _upsert_node_row(
                         node_execution_by_id=node_execution_by_id,
                         execution=execution,
@@ -270,11 +353,11 @@ async def _run_execution(
                         node_type=node_def["type"] if node_def is not None else "unknown",
                     )
                     row.status = "SUCCEEDED"
-                    row.input_data = node_inputs.get(node_id)
+                    row.input_data = node_inputs.get(node_id) if row.input_data is None else row.input_data
                     row.output_data = node_outputs.get(node_id)
                     row.error_message = None
-                    row.started_at = execution.started_at
-                    row.finished_at = _utcnow()
+                    row.started_at = row.started_at or execution.started_at
+                    row.finished_at = row.finished_at or _utcnow()
 
                 # Mark non-visited nodes as pending
                 for node in workflow.definition.get("nodes", []):
@@ -305,7 +388,7 @@ async def _run_execution(
 
                 # Persist the successfully completed path first.
                 for node_id in exc.visited_nodes or []:
-                    node_def = next((n for n in workflow.definition.get("nodes", []) if n["id"] == node_id), None)
+                    node_def = nodes_by_id.get(node_id)
                     if node_def is None:
                         continue
                     row = _upsert_node_row(
@@ -316,11 +399,12 @@ async def _run_execution(
                         node_type=node_def["type"],
                     )
                     row.status = "SUCCEEDED"
-                    row.input_data = (exc.node_inputs or {}).get(node_id)
+                    if row.input_data is None:
+                        row.input_data = (exc.node_inputs or {}).get(node_id)
                     row.output_data = (exc.node_outputs or {}).get(node_id)
                     row.error_message = None
-                    row.started_at = execution.started_at
-                    row.finished_at = now
+                    row.started_at = row.started_at or execution.started_at
+                    row.finished_at = row.finished_at or now
 
                 for node in workflow.definition.get("nodes", []):
                     node_id = node["id"]
@@ -337,8 +421,8 @@ async def _run_execution(
                         row.input_data = exc.input_data
                         row.output_data = None
                         row.error_message = str(exc)
-                        row.started_at = execution.started_at
-                        row.finished_at = now
+                        row.started_at = row.started_at or execution.started_at
+                        row.finished_at = row.finished_at or now
                     elif node_id not in visited_node_ids:
                         row.status = "PENDING"
                         row.input_data = None

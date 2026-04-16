@@ -120,6 +120,8 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
         search_value: '',
         update_column: '',
         update_value: '',
+        auto_create_headers: true,
+        upsert_if_not_found: true,
       },
       is_dummy: false,
       icon: 'sheets',

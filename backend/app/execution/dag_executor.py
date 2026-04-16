@@ -1,7 +1,7 @@
 import json
 import re
 from collections import deque
-from typing import Any
+from typing import Any, Callable
 
 from app.execution.context import ExecutionContext
 from app.execution.registry import RunnerRegistry
@@ -46,6 +46,7 @@ class DagExecutor:
 
     def __init__(self, registry: RunnerRegistry | None = None) -> None:
         self.registry = registry or RunnerRegistry()
+        self._progress_callback: Callable[..., None] | None = None
 
     def execute(
         self,
@@ -53,7 +54,9 @@ class DagExecutor:
         initial_payload: dict[str, Any] | None = None,
         start_node_id: str | None = None,
         runner_context: dict[str, Any] | None = None,
+        progress_callback: Callable[..., None] | None = None,
     ) -> dict[str, Any]:
+        self._progress_callback = progress_callback
         context = self.build_context(definition)
         context.runner_context = runner_context or {}
         chosen_start_node_id = start_node_id or self._resolve_start_node(context)
@@ -80,6 +83,8 @@ class DagExecutor:
             exc.node_inputs = dict(context.node_inputs)
             exc.node_outputs = dict(context.node_outputs)
             raise
+        finally:
+            self._progress_callback = None
 
         terminal_outputs = {
             node_id: context.node_outputs[node_id]
@@ -619,9 +624,22 @@ class DagExecutor:
             self._build_template_context(resolved_input, context.node_outputs),
         )
         context.node_inputs[node_id] = resolved_input
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type=node_type,
+            status="RUNNING",
+            input_data=resolved_input,
+        )
         try:
             output_data = runner.run(config=config, input_data=resolved_input, context=context.runner_context)
         except Exception as exc:
+            self._emit_node_progress(
+                node_id=node_id,
+                node_type=node_type,
+                status="FAILED",
+                input_data=resolved_input,
+                error_message=str(exc),
+            )
             raise NodeExecutionError(
                 node_id=node_id,
                 node_type=node_type,
@@ -637,6 +655,13 @@ class DagExecutor:
         context.node_outputs[node_id] = output_data
         context.visited_nodes.append(node_id)
         context.node_states[node_id] = "completed"
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type=node_type,
+            status="SUCCEEDED",
+            input_data=resolved_input,
+            output_data=output_data,
+        )
 
         selected_edges, blocked_edges = self._select_next_edges(
             node_type=node_type,
@@ -665,9 +690,22 @@ class DagExecutor:
         runner = self.registry.get_runner("split_in")
         config = context.nodes_by_id[node_id].get("config", {})
         context.node_inputs[node_id] = input_data
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type="split_in",
+            status="RUNNING",
+            input_data=input_data,
+        )
         try:
             split_outputs = runner.run(config=config, input_data=input_data)
         except Exception as exc:
+            self._emit_node_progress(
+                node_id=node_id,
+                node_type="split_in",
+                status="FAILED",
+                input_data=input_data,
+                error_message=str(exc),
+            )
             raise NodeExecutionError(
                 node_id=node_id,
                 node_type="split_in",
@@ -677,6 +715,13 @@ class DagExecutor:
         context.node_outputs[node_id] = split_outputs
         context.visited_nodes.append(node_id)
         context.node_states[node_id] = "completed"
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type="split_in",
+            status="SUCCEEDED",
+            input_data=input_data,
+            output_data=split_outputs,
+        )
 
         split_out_node_id = self._resolve_split_out_node(context=context, split_in_node_id=node_id)
         context.split_buffers[split_out_node_id] = []
@@ -725,9 +770,22 @@ class DagExecutor:
             self._build_template_context(input_data, context.node_outputs),
         )
         context.node_inputs[node_id] = input_data
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type=node_type,
+            status="RUNNING",
+            input_data=input_data,
+        )
         try:
             output_data = runner.run(config=config, input_data=input_data, context=context.runner_context)
         except Exception as exc:
+            self._emit_node_progress(
+                node_id=node_id,
+                node_type=node_type,
+                status="FAILED",
+                input_data=input_data,
+                error_message=str(exc),
+            )
             raise NodeExecutionError(
                 node_id=node_id,
                 node_type=node_type,
@@ -741,6 +799,14 @@ class DagExecutor:
         )
         context.node_outputs[node_id] = output_data
         context.visited_nodes.append(node_id)
+        context.node_states[node_id] = "completed"
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type=node_type,
+            status="SUCCEEDED",
+            input_data=input_data,
+            output_data=output_data,
+        )
 
         selected_edges, _blocked_edges = self._select_next_edges(
             node_type=node_type,
@@ -769,9 +835,22 @@ class DagExecutor:
         runner = self.registry.get_runner("split_out")
         config = context.nodes_by_id[node_id].get("config", {})
         context.node_inputs[node_id] = collected_inputs
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type="split_out",
+            status="RUNNING",
+            input_data=collected_inputs,
+        )
         try:
             output_data = runner.run(config=config, input_data=collected_inputs)
         except Exception as exc:
+            self._emit_node_progress(
+                node_id=node_id,
+                node_type="split_out",
+                status="FAILED",
+                input_data=collected_inputs,
+                error_message=str(exc),
+            )
             raise NodeExecutionError(
                 node_id=node_id,
                 node_type="split_out",
@@ -781,6 +860,13 @@ class DagExecutor:
         context.node_outputs[node_id] = output_data
         context.visited_nodes.append(node_id)
         context.node_states[node_id] = "completed"
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type="split_out",
+            status="SUCCEEDED",
+            input_data=collected_inputs,
+            output_data=output_data,
+        )
 
         next_input = self._strip_internal_fields(output_data)
         for edge in context.outgoing_edges.get(node_id, []):
@@ -822,9 +908,22 @@ class DagExecutor:
         runner = self.registry.get_runner("merge")
         config = context.nodes_by_id[node_id].get("config", {})
         context.node_inputs[node_id] = merge_inputs
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type="merge",
+            status="RUNNING",
+            input_data=merge_inputs,
+        )
         try:
             output_data = runner.run(config=config, input_data=merge_inputs)
         except Exception as exc:
+            self._emit_node_progress(
+                node_id=node_id,
+                node_type="merge",
+                status="FAILED",
+                input_data=merge_inputs,
+                error_message=str(exc),
+            )
             raise NodeExecutionError(
                 node_id=node_id,
                 node_type="merge",
@@ -834,6 +933,13 @@ class DagExecutor:
         context.node_outputs[node_id] = output_data
         context.visited_nodes.append(node_id)
         context.node_states[node_id] = "completed"
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type="merge",
+            status="SUCCEEDED",
+            input_data=merge_inputs,
+            output_data=output_data,
+        )
 
         next_input = self._strip_internal_fields(output_data)
         for edge in context.outgoing_edges.get(node_id, []):
@@ -935,3 +1041,28 @@ class DagExecutor:
             }
 
         return output_data
+
+    def _emit_node_progress(
+        self,
+        *,
+        node_id: str,
+        node_type: str,
+        status: str,
+        input_data: Any = None,
+        output_data: Any = None,
+        error_message: str | None = None,
+    ) -> None:
+        if self._progress_callback is None:
+            return
+        try:
+            self._progress_callback(
+                node_id=node_id,
+                node_type=node_type,
+                status=status,
+                input_data=input_data,
+                output_data=output_data,
+                error_message=error_message,
+            )
+        except Exception:
+            # Progress reporting must never fail workflow execution.
+            return

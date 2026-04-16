@@ -97,6 +97,7 @@ const WorkflowFormPage: React.FC = () => {
     try {
       const enqueue = await executionService.runWorkflowForm(workflowId, {
         form_data: formValues,
+        start_node_id: formNode.id,
       });
       toast.success('Form submitted successfully.');
 
@@ -108,6 +109,7 @@ const WorkflowFormPage: React.FC = () => {
                 type: FORM_EXECUTION_MESSAGE_TYPE,
                 workflowId,
                 executionId: enqueue.execution_id,
+                nodeId: formNode.id,
               },
               window.location.origin,
             );

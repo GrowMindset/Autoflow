@@ -20,6 +20,11 @@ interface ConfigPanelProps {
   onClose: () => void;
   onUpdate: (id: string, config: Record<string, any>, output?: any) => void;
   onNavigateNode: (nodeId: string) => void;
+  onExecutionEnqueued?: (payload: {
+    executionId: string;
+    nodeId: string;
+    triggeredBy?: string;
+  }) => void;
 }
 
 interface WebhookMeta {
@@ -41,6 +46,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   onClose,
   onUpdate,
   onNavigateNode,
+  onExecutionEnqueued,
 }) => {
   const [output, setOutput] = useState<any>(node.data.last_output || null);
   const [isExecuting, setIsExecuting] = useState(false);
@@ -209,32 +215,15 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
 
     setIsExecuting(true);
     try {
-      // If it's a form trigger, we should use the test form values as the input data
-      const testInput = node.data.type === 'form_trigger' ? formValues : upstreamData; 
+      // If it's a form trigger, use test form values as input.
+      const testInput = node.data.type === 'form_trigger' ? formValues : upstreamData;
       const enqueue = await executionService.executeNode(workflowId, node.id, testInput);
-
-      let executionDetail = null;
-      // Poll for 15 seconds
-      for (let attempt = 0; attempt < 15; attempt += 1) {
-        await new Promise((r) => setTimeout(r, 1000));
-        executionDetail = await executionService.getExecution(enqueue.execution_id);
-
-        const nodeResult = executionDetail.node_results.find(
-          (result: any) => result.node_id === node.id
-        );
-
-        if (nodeResult && nodeResult.status !== 'PENDING' && nodeResult.status !== 'RUNNING') {
-          if (nodeResult.status === 'SUCCEEDED') {
-            setOutput(nodeResult.output_data);
-            onUpdate(node.id, node.data.config, nodeResult.output_data);
-            toast.success('Node executed successfully!');
-          } else {
-            setOutput({ error: nodeResult.error_message });
-            toast.error(`Node execution failed: ${nodeResult.error_message}`);
-          }
-          break;
-        }
-      }
+      onExecutionEnqueued?.({
+        executionId: enqueue.execution_id,
+        nodeId: node.id,
+        triggeredBy: enqueue.triggered_by,
+      });
+      toast.success('Node execution started.');
     } catch (error: any) {
       console.error('Node execution failed:', error);
       toast.error(error.response?.data?.detail || 'Failed to trigger node execution');
@@ -254,6 +243,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
     try {
       const enqueue = await executionService.runWorkflowForm(workflowId, {
         form_data: formValues,
+        start_node_id: node.id,
       });
 
       let executionDetail = null;

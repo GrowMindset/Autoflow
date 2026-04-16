@@ -78,13 +78,22 @@ const Topbar: React.FC<TopbarProps> = ({
 
   // Handle clicks outside user menu to close it
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
+    const handlePointerDownOutside = (event: PointerEvent) => {
       if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
         setIsUserMenuOpen(false);
       }
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsUserMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDownOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDownOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
   }, []);
 
   const handleBlur = () => {
@@ -304,7 +313,7 @@ const Topbar: React.FC<TopbarProps> = ({
         </button>
       </div>
 
-      <div className="flex items-center gap-4 relative" ref={userMenuRef}>
+      <div className="flex items-center gap-4 relative">
         <button
           onClick={toggleTheme}
           className="p-2 text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl transition-all shadow-sm active:scale-90"
@@ -316,19 +325,20 @@ const Topbar: React.FC<TopbarProps> = ({
           <span className="text-xs font-black text-slate-800 dark:text-slate-100 leading-none">{user?.username}</span>
         </div>
 
-        <button
-          onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
-          className={`flex items-center gap-2 p-1 rounded-xl transition-all border ${isUserMenuOpen ? 'bg-slate-50 border-slate-200' : 'bg-transparent border-transparent hover:bg-slate-50'
-            }`}
-        >
-          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white text-sm font-black shadow-sm">
-            {user?.username?.substring(0, 1).toUpperCase() || <User size={16} />}
-          </div>
-          <ChevronDown size={14} className={`text-slate-400 transition-transform duration-300 ${isUserMenuOpen ? 'rotate-180' : ''}`} />
-        </button>
+        <div className="relative" ref={userMenuRef}>
+          <button
+            onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+            className={`flex items-center gap-2 p-1 rounded-xl transition-all border ${isUserMenuOpen ? 'bg-slate-50 border-slate-200' : 'bg-transparent border-transparent hover:bg-slate-50'
+              }`}
+          >
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white text-sm font-black shadow-sm">
+              {user?.username?.substring(0, 1).toUpperCase() || <User size={16} />}
+            </div>
+            <ChevronDown size={14} className={`text-slate-400 transition-transform duration-300 ${isUserMenuOpen ? 'rotate-180' : ''}`} />
+          </button>
 
-        {isUserMenuOpen && (
-          <div className="absolute top-12 right-0 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.15)] overflow-hidden animate-in fade-in zoom-in-95 duration-200 py-2">
+          {isUserMenuOpen && (
+            <div className="absolute top-12 right-0 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.15)] overflow-hidden animate-in fade-in zoom-in-95 duration-200 py-2">
             <div className="px-4 py-3 border-b border-slate-50 dark:border-slate-800 mb-1 flex flex-col gap-1">
               <p className="text-xs font-black text-slate-800 dark:text-slate-100 tracking-tight leading-none">{user?.username}</p>
               <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 truncate">{user?.email}</p>
@@ -375,7 +385,8 @@ const Topbar: React.FC<TopbarProps> = ({
               Sign Out
             </button>
           </div>
-        )}
+          )}
+        </div>
       </div>
     </header>
   );

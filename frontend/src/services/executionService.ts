@@ -2,6 +2,11 @@ import api from './api';
 
 export interface RunFormPayload {
   form_data: Record<string, any>;
+  start_node_id?: string;
+}
+
+export interface RunWorkflowPayload {
+  start_node_id?: string;
 }
 
 export interface NodeExecutionResult {
@@ -33,8 +38,8 @@ export const executionService = {
     return response.data;
   },
 
-  runWorkflow: async (workflowId: string): Promise<any> => {
-    const response = await api.post(`/workflows/${workflowId}/run`);
+  runWorkflow: async (workflowId: string, payload?: RunWorkflowPayload): Promise<any> => {
+    const response = await api.post(`/workflows/${workflowId}/run`, payload ?? {});
     return response.data;
   },
 

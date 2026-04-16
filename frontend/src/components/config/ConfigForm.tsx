@@ -123,7 +123,9 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     { key: 'search_column', label: 'Column to Search', type: 'text', placeholder: 'e.g. Email or A or 1' },
     { key: 'search_value', label: 'Value to Find', type: 'text', placeholder: 'e.g. {{ $json.email }}' },
     { key: 'update_column', label: 'Column to Update', type: 'text', placeholder: 'e.g. Status or D or 4' },
-    { key: 'update_value', label: 'New Value', type: 'text', placeholder: 'e.g. Processed' }
+    { key: 'update_value', label: 'New Value', type: 'text', placeholder: 'e.g. Processed' },
+    { key: 'auto_create_headers', label: 'Auto Create Headers', type: 'boolean' },
+    { key: 'upsert_if_not_found', label: 'Append Row If No Match', type: 'boolean' },
   ],
   create_google_docs: [
     {

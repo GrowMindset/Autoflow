@@ -124,6 +124,42 @@ class DagExecutorTests(unittest.TestCase):
         self.assertEqual(result["node_outputs"]["n3"], {"matched_count": 2})
         self.assertEqual(result["terminal_outputs"], {"n3": {"matched_count": 2}})
 
+    def test_execute_emits_node_progress_events(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "filter", "config": {
+                    "input_key": "items",
+                    "field": "amount",
+                    "operator": "greater_than",
+                    "value": "500",
+                }},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+            ],
+        }
+
+        events: list[tuple[str, str]] = []
+
+        self.executor.execute(
+            definition=definition,
+            initial_payload={"items": [{"amount": 100}, {"amount": 700}]},
+            progress_callback=lambda **event: events.append(
+                (event.get("node_id", ""), event.get("status", ""))
+            ),
+        )
+
+        self.assertEqual(
+            events,
+            [
+                ("n1", "RUNNING"),
+                ("n1", "SUCCEEDED"),
+                ("n2", "RUNNING"),
+                ("n2", "SUCCEEDED"),
+            ],
+        )
+
     def test_execute_if_else_routes_only_matching_branch(self):
         definition = {
             "nodes": [
