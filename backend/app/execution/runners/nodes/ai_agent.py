@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from app.services.llm_providers import BaseLLMProvider, get_provider
@@ -30,6 +31,7 @@ class AIAgentRunner:
     - credential_id  : str
     - temperature    : float (default: 0.7)
     - max_tokens     : int | None
+    - response_enhancement : "auto" | "always" | "off" (default: "auto")
     """
 
     def run(
@@ -74,7 +76,7 @@ class AIAgentRunner:
         # ── Call the LLM ─────────────────────────────────────────────────────
         provider_instance = get_provider(provider, api_key)
         try:
-            response_text = self._run_provider_completion(
+            draft_response = self._run_provider_completion(
                 provider_instance,
                 system_prompt=system_prompt,
                 command=command,
@@ -85,12 +87,21 @@ class AIAgentRunner:
         except Exception as exc:
             raise ValueError(self._format_provider_error(exc)) from exc
 
+        response_text = self._verify_and_enhance_response(
+            provider_instance=provider_instance,
+            command=command,
+            draft_response=draft_response,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            enhancement_mode=str(config.get("response_enhancement", "auto")).strip().lower(),
+        )
+
         result = {}
         if isinstance(input_data, dict):
             # Preserve upstream context but strip subnode configs to keep payload clean
             result.update({k: v for k, v in input_data.items() if k not in ("chat_model", "memory", "tool")})
 
-        result["ai_response"] = response_text
         result["output"] = response_text
         result["ai_metadata"] = {
             "provider": provider,
@@ -104,6 +115,153 @@ class AIAgentRunner:
     # ─────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _verify_and_enhance_response(
+        self,
+        *,
+        provider_instance: BaseLLMProvider,
+        command: str,
+        draft_response: str,
+        model: str,
+        temperature: float,
+        max_tokens: int | None,
+        enhancement_mode: str,
+    ) -> str:
+        normalized = self._normalize_response_text(draft_response)
+        quality = self._assess_response_quality(normalized, command)
+
+        should_enhance = enhancement_mode == "always" or (
+            enhancement_mode not in {"off", "false", "none", "disabled"}
+            and quality["should_enhance"]
+        )
+        if not should_enhance:
+            return normalized
+
+        refinement_system_prompt, refinement_command = self._build_refinement_prompts(
+            command=command,
+            draft_response=normalized,
+            quality_issues=quality["issues"],
+        )
+        refinement_temperature = min(float(temperature), 0.35)
+        try:
+            refined = self._run_provider_completion(
+                provider_instance,
+                system_prompt=refinement_system_prompt,
+                command=refinement_command,
+                model=model,
+                temperature=refinement_temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            return normalized
+
+        refined_normalized = self._normalize_response_text(refined)
+        if not refined_normalized:
+            return normalized
+        return refined_normalized
+
+    @staticmethod
+    def _normalize_response_text(response: str | None) -> str:
+        text = str(response or "")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def _assess_response_quality(self, response_text: str, command: str) -> dict[str, Any]:
+        issues: list[str] = []
+
+        if not response_text:
+            return {"should_enhance": True, "issues": ["The response is empty."]}
+
+        if re.search(r"\{\{[^}]+\}\}", response_text):
+            issues.append("Contains unresolved template placeholders.")
+
+        if re.search(r"\bas an ai (language )?model\b", response_text, re.IGNORECASE):
+            issues.append("Contains meta language instead of a direct answer.")
+
+        if self._looks_repetitive(response_text):
+            issues.append("Contains repetitive text.")
+
+        if self._looks_truncated(response_text):
+            issues.append("Looks incomplete or abruptly truncated.")
+
+        words = re.findall(r"\b\w+\b", response_text)
+        if len(words) < 3 and not self._expects_brief_answer(command):
+            issues.append("Too short to be useful for this instruction.")
+
+        return {"should_enhance": bool(issues), "issues": issues}
+
+    @staticmethod
+    def _expects_brief_answer(command: str) -> bool:
+        lowered = command.strip().lower()
+        brief_patterns = (
+            "one word",
+            "single word",
+            "yes or no",
+            "true or false",
+            "answer briefly",
+            "short answer",
+        )
+        return any(pattern in lowered for pattern in brief_patterns)
+
+    @staticmethod
+    def _looks_repetitive(response_text: str) -> bool:
+        lines = [line.strip().lower() for line in response_text.splitlines() if line.strip()]
+        if len(lines) >= 3:
+            unique_ratio = len(set(lines)) / len(lines)
+            if unique_ratio < 0.7:
+                return True
+
+        sentences = [
+            sentence.strip().lower()
+            for sentence in re.split(r"[.!?]\s+", response_text)
+            if sentence.strip()
+        ]
+        if len(sentences) >= 4:
+            unique_sentence_ratio = len(set(sentences)) / len(sentences)
+            if unique_sentence_ratio < 0.7:
+                return True
+        return False
+
+    @staticmethod
+    def _looks_truncated(response_text: str) -> bool:
+        if not response_text:
+            return True
+        stripped = response_text.rstrip()
+        incomplete_endings = ("...", "…", ":", "-", "(", "[", "{")
+        if stripped.endswith(incomplete_endings):
+            return True
+        # Rough signal for unclosed markdown/code fences.
+        if stripped.count("```") % 2 != 0:
+            return True
+        return False
+
+    @staticmethod
+    def _build_refinement_prompts(
+        *,
+        command: str,
+        draft_response: str,
+        quality_issues: list[str],
+    ) -> tuple[str, str]:
+        system_prompt = (
+            "You are a response quality editor for workflow automations. "
+            "Rewrite the draft so it is clear, useful, and polished like an n8n AI node output. "
+            "Keep original meaning and facts. Do not invent data. "
+            "Return only the improved final response."
+        )
+        issues_text = "; ".join(quality_issues) if quality_issues else "Improve clarity and formatting."
+        user_prompt = (
+            f"Original instruction:\n{command.strip()}\n\n"
+            f"Draft response:\n{draft_response}\n\n"
+            f"Issues to fix:\n{issues_text}\n\n"
+            "Requirements:\n"
+            "- Remove unresolved placeholders or meta talk.\n"
+            "- Keep it concise but complete.\n"
+            "- Use short bullets if multiple points are needed.\n"
+            "- Return only the improved response."
+        )
+        return system_prompt, user_prompt
 
     @staticmethod
     def _default_model(provider: str) -> str:

@@ -298,6 +298,7 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       default_config: {
         system_prompt: '',
         command: '',
+        response_enhancement: 'auto',
       },
       is_dummy: false,
     },

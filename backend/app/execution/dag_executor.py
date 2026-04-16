@@ -318,6 +318,20 @@ class DagExecutor:
         template_context: dict[str, Any] = {}
         if isinstance(input_data, dict):
             template_context.update(input_data)
+            payload_without_trigger_meta = {
+                key: value
+                for key, value in input_data.items()
+                if key not in {"triggered", "trigger_type"}
+            }
+
+            # Keep n8n-like aliases available so both {{field}} and namespaced
+            # forms such as {{form.field}} resolve from the same payload.
+            for alias in ("form", "trigger", "manual", "webhook", "workflow"):
+                template_context.setdefault(alias, payload_without_trigger_meta)
+
+            trigger_type = str(input_data.get("trigger_type") or "").strip().lower()
+            if trigger_type in {"form", "manual", "webhook", "workflow"}:
+                template_context.setdefault(trigger_type, payload_without_trigger_meta)
 
         # Aliases for current upstream payload.
         template_context.setdefault("previous_output", input_data)

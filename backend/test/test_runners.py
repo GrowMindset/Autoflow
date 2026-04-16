@@ -149,6 +149,91 @@ class RunnerTests(unittest.TestCase):
                 context={"resolved_credentials": {"cred-1": "secret"}},
             )
 
+    def test_ai_agent_runner_enhances_low_quality_response(self):
+        runner = AIAgentRunner()
+        call_payloads = []
+
+        def fake_call_openai(*args, **kwargs):
+            call_payloads.append(kwargs)
+            if len(call_payloads) == 1:
+                return "As an AI language model, {{customer_name}}."
+            return "Order update:\n- Customer: Asha\n- Status: In transit"
+
+        runner._run_provider_completion = fake_call_openai
+
+        result = runner.run(
+            config={
+                "provider": "openai",
+                "credential_id": "cred-1",
+                "system_prompt": "You are helpful.",
+                "command": "Reply to customer with order status",
+            },
+            input_data=None,
+            context={"resolved_credentials": {"cred-1": "secret"}},
+        )
+
+        self.assertEqual(len(call_payloads), 2)
+        self.assertIn(
+            "response quality editor",
+            call_payloads[1]["system_prompt"].lower(),
+        )
+        self.assertEqual(
+            result["output"],
+            "Order update:\n- Customer: Asha\n- Status: In transit",
+        )
+        self.assertNotIn("ai_response", result)
+
+    def test_ai_agent_runner_falls_back_when_response_enhancement_fails(self):
+        runner = AIAgentRunner()
+        call_count = 0
+
+        def fake_call_openai(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return "As an AI language model, {{customer_name}}."
+            raise RuntimeError("refinement failed")
+
+        runner._run_provider_completion = fake_call_openai
+
+        result = runner.run(
+            config={
+                "provider": "openai",
+                "credential_id": "cred-1",
+                "command": "Reply to customer with order status",
+            },
+            input_data=None,
+            context={"resolved_credentials": {"cred-1": "secret"}},
+        )
+
+        self.assertEqual(call_count, 2)
+        self.assertEqual(result["output"], "As an AI language model, {{customer_name}}.")
+
+    def test_ai_agent_runner_skips_enhancement_when_disabled(self):
+        runner = AIAgentRunner()
+        call_count = 0
+
+        def fake_call_openai(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return "As an AI language model, {{customer_name}}."
+
+        runner._run_provider_completion = fake_call_openai
+
+        result = runner.run(
+            config={
+                "provider": "openai",
+                "credential_id": "cred-1",
+                "command": "Reply to customer with order status",
+                "response_enhancement": "off",
+            },
+            input_data=None,
+            context={"resolved_credentials": {"cred-1": "secret"}},
+        )
+
+        self.assertEqual(call_count, 1)
+        self.assertEqual(result["output"], "As an AI language model, {{customer_name}}.")
+
     def test_if_else_runner_true_branch(self):
         runner = IfElseRunner()
         result = runner.run(

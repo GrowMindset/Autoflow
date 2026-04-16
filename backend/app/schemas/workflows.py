@@ -124,6 +124,7 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
     "ai_agent": {
         "system_prompt": "",
         "command": "",
+        "response_enhancement": "auto",
     },
     "chat_model_openai": {
         "credential_id": "",

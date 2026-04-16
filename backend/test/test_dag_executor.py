@@ -628,6 +628,70 @@ class DagExecutorTests(unittest.TestCase):
         )
         self.assertEqual(result["output_data"]["config"]["command"], "Summarize Mina")
 
+    def test_form_payload_templates_support_flat_and_form_namespaced_paths(self):
+        class FormTriggerRunner:
+            def run(self, config, input_data, context=None):
+                return {
+                    "triggered": True,
+                    "trigger_type": "form",
+                    **(input_data or {}),
+                }
+
+        class EchoRunner:
+            def run(self, config, input_data, context=None):
+                return {"seen_config": config}
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "form_trigger": FormTriggerRunner(),
+                    "echo": EchoRunner(),
+                }
+            )
+        )
+
+        definition = {
+            "nodes": [
+                {
+                    "id": "trigger",
+                    "type": "form_trigger",
+                    "config": {
+                        "fields": [
+                            {"name": "article_topic", "required": True},
+                            {"name": "tone", "required": True},
+                        ]
+                    },
+                },
+                {
+                    "id": "echo_1",
+                    "type": "echo",
+                    "config": {
+                        "flat_topic": "{{article_topic}}",
+                        "form_topic": "{{form.article_topic}}",
+                        "trigger_tone": "{{trigger.tone}}",
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "trigger", "target": "echo_1"},
+            ],
+        }
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"article_topic": "AI automation", "tone": "friendly"},
+        )
+
+        self.assertEqual(result["visited_nodes"], ["trigger", "echo_1"])
+        self.assertEqual(
+            result["node_outputs"]["echo_1"]["seen_config"],
+            {
+                "flat_topic": "AI automation",
+                "form_topic": "AI automation",
+                "trigger_tone": "friendly",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

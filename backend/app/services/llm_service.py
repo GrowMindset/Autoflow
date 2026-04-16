@@ -176,12 +176,14 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "ai_agent": {
         "category": "ai",
-        "description": "Runs an LLM task. Use system_prompt and command config keys exactly.",
+        "description": "Runs an LLM task. Use system_prompt and command config keys; optional response_enhancement controls response polishing.",
         "rules": [
             "Prefer pairing every ai_agent with exactly one connected chat model sub-node.",
             "Put the main task instruction in command.",
             "Use system_prompt for role or behavior instructions.",
-            "When the prompt should reference upstream workflow data, use {{path.to.value}} templates.",
+            "response_enhancement can be auto, always, or off.",
+            "When referencing upstream workflow data, use {{path.to.value}} templates.",
+            "For form triggers, both {{field_name}} and {{form.field_name}} are supported.",
         ],
     },
     "chat_model_openai": {

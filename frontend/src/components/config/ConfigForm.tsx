@@ -203,7 +203,14 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       type: 'textarea',
       placeholder: 'e.g. Summarize {{previous_output.field}} in one sentence.',
       helperText: 'Template syntax example: {{previous_output.field}}'
-    }
+    },
+    {
+      key: 'response_enhancement',
+      label: 'Response Enhancement',
+      type: 'select',
+      options: ['auto', 'always', 'off'],
+      helperText: 'auto = refine only weak responses, always = always polish, off = raw model output',
+    },
   ],
   chat_model_openai: [
     { key: 'credential_id', label: 'Credential', type: 'credential_selector', appName: 'openai' },

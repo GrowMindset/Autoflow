@@ -105,12 +105,14 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const aiResponseText = useMemo(() => {
     if (node.data.type !== 'ai_agent') return null;
 
-    const executionResponse = node.data.last_execution_result?.output_data?.ai_response;
+    const executionResponse =
+      node.data.last_execution_result?.output_data?.output ||
+      node.data.last_execution_result?.output_data?.ai_response;
     if (typeof executionResponse === 'string' && executionResponse.trim()) {
       return executionResponse;
     }
 
-    const adHocResponse = output?.ai_response;
+    const adHocResponse = output?.output || output?.ai_response;
     if (typeof adHocResponse === 'string' && adHocResponse.trim()) {
       return adHocResponse;
     }
