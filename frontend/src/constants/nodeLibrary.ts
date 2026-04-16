@@ -184,6 +184,18 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       icon: 'whatsapp',
     },
     {
+      type: 'slack_send_message',
+      label: 'Slack Message',
+      category: 'action',
+      description: 'Send a message to Slack via Incoming Webhook.',
+      default_config: {
+        credential_id: '',
+        message: '',
+      },
+      is_dummy: false,
+      icon: 'slack',
+    },
+    {
       type: 'linkedin',
       label: 'LinkedIn Post',
       category: 'action',

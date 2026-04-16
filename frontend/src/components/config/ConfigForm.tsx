@@ -193,6 +193,25 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     { key: 'template_params', label: 'Template Parameters', type: 'string_array' },
     { key: 'language_code', label: 'Language Code', type: 'text', placeholder: 'e.g. en_US' },
   ],
+  slack_send_message: [
+    {
+      key: 'credential_id',
+      label: 'Slack Credential',
+      type: 'credential_selector',
+      appName: 'slack',
+      credentialLabel: 'Incoming Webhook URL',
+      credentialPlaceholder: 'https://hooks.slack.com/services/T000/B000/XXXXXXXX',
+      credentialKey: 'webhook_url',
+      requiresChannel: true,
+    },
+    {
+      key: 'message',
+      label: 'Message Text',
+      type: 'textarea',
+      placeholder: 'e.g. Hello team! {{ $json.order_id }} is ready.',
+      helperText: 'Supports variable mapping and Slack text formatting.',
+    },
+  ],
   linkedin: [
     { key: 'content', label: 'Post Content', type: 'text', placeholder: 'What do you want to share?' },
     { key: 'visibility', label: 'Visibility', type: 'select', options: ['PUBLIC', 'CONNECTIONS'] }
@@ -258,6 +277,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   const [newKey, setNewKey] = useState('');
   const [newChatId, setNewChatId] = useState('');
   const [newPhoneNumberId, setNewPhoneNumberId] = useState('');
+  const [newChannel, setNewChannel] = useState('');
   const [dragOverField, setDragOverField] = useState<string | null>(null);
 
   // ── Drag-and-drop handlers for text/textarea fields ──────────────────────
@@ -347,6 +367,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
       setNewKey('');
       setNewChatId('');
       setNewPhoneNumberId('');
+      setNewChannel('');
     }
   }, [activeCredentialForm]);
 
@@ -383,6 +404,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
       setNewKey('');
       setNewChatId('');
       setNewPhoneNumberId('');
+      setNewChannel('');
       setActiveCredentialForm(null);
       await fetchCredentials();
       toast.success('Credential saved and selected.');
@@ -702,6 +724,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
         const credentialFormId = `${field.appName}:${field.key}`;
         const requiresChatId = Boolean(field.requiresChatId);
         const requiresPhoneNumberId = Boolean(field.requiresPhoneNumberId);
+        const requiresChannel = Boolean(field.requiresChannel);
         const isGoogleOAuthOnlyApp = ['gmail', 'sheets', 'docs'].includes(String(field.appName || '').toLowerCase());
         const secretValue = newKey;
         return (
@@ -781,15 +804,30 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                       className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
                     />
                   )}
+                  {requiresChannel && (
+                    <input
+                      type="text"
+                      name={`credential-channel-${credentialFormId}`}
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="Slack Channel (e.g. #general or @username)"
+                      value={newChannel}
+                      onChange={(e) => setNewChannel(e.target.value)}
+                      className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500"
+                    />
+                  )}
                   <button
-                    disabled={loading || !secretValue.trim() || (requiresChatId && !newChatId.trim()) || (requiresPhoneNumberId && !newPhoneNumberId.trim())}
+                    disabled={loading || !secretValue.trim() || (requiresChatId && !newChatId.trim()) || (requiresPhoneNumberId && !newPhoneNumberId.trim()) || (requiresChannel && !newChannel.trim())}
                     onClick={() => {
                       const extraData: Record<string, string> = {};
-                      if (requiresChatId) {
+                                      if (requiresChatId) {
                         extraData.chat_id = newChatId.trim();
                       }
                       if (requiresPhoneNumberId) {
                         extraData.phone_number_id = newPhoneNumberId.trim();
+                      }
+                      if (requiresChannel) {
+                        extraData.channel = newChannel.trim();
                       }
                       void handleCreateCredential(
                         field.appName,

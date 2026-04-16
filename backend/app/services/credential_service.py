@@ -17,6 +17,8 @@ SENSITIVE_TOKEN_FIELDS = {
     "chat_id",
     "botToken",
     "chatId",
+    "webhook_url",
+    "channel",
     "app_password",
     "password",
     "email",
@@ -126,6 +128,27 @@ class CredentialService:
             waba_id = token_data.get("waba_id")
             if isinstance(waba_id, str) and waba_id.strip():
                 token_data["waba_id"] = waba_id.strip()
+        elif payload.app_name == "slack":
+            webhook_url = (
+                token_data.get("webhook_url")
+                or token_data.get("api_key")
+            )
+            channel = token_data.get("channel")
+
+            if not isinstance(webhook_url, str) or not webhook_url.strip():
+                raise ValueError(
+                    "Slack credential requires webhook_url (token_data.webhook_url)."
+                )
+
+            webhook_url_str = webhook_url.strip()
+            if not webhook_url_str.startswith("http://") and not webhook_url_str.startswith("https://"):
+                webhook_url_str = f"https://{webhook_url_str}"
+
+            token_data["webhook_url"] = webhook_url_str
+            token_data["api_key"] = webhook_url_str
+            token_data["provider"] = "slack_webhook"
+            if isinstance(channel, str) and channel.strip():
+                token_data["channel"] = channel.strip()
 
         for key in SENSITIVE_TOKEN_FIELDS:
             value = token_data.get(key)
@@ -195,6 +218,9 @@ class CredentialService:
         elif provider == "telegram_bot_token":
             display_name = "Telegram Bot Token"
             description = "Telegram bot token + chat ID"
+        elif provider == "slack_webhook":
+            display_name = "Slack Webhook"
+            description = "Slack incoming webhook"
         elif provider == "api_key":
             display_name = "API Key"
             description = f"{app_name.title()} API key" if app_name else "API key"

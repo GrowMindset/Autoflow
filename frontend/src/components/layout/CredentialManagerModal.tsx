@@ -13,6 +13,7 @@ const APP_OPTIONS = [
   { value: 'groq', label: 'Groq' },
   { value: 'telegram', label: 'Telegram' },
   { value: 'whatsapp', label: 'WhatsApp' },
+  { value: 'slack', label: 'Slack' },
   { value: 'linkedin', label: 'LinkedIn' },
   { value: 'gmail', label: 'Gmail' },
   { value: 'sheets', label: 'Google Sheets' },
@@ -24,6 +25,11 @@ const APP_SECRET_FIELD: Record<string, { key: string; label: string; placeholder
     key: 'api_key',
     label: 'Bot Token',
     placeholder: 'Telegram Bot Token (e.g. 123456789:AA...)',
+  },
+  slack: {
+    key: 'webhook_url',
+    label: 'Webhook URL',
+    placeholder: 'https://hooks.slack.com/services/T000/B000/XXXXXXXX',
   },
   default: {
     key: 'api_key',
@@ -40,6 +46,7 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   const [appName, setAppName] = useState('openai');
   const [secret, setSecret] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
+  const [slackChannel, setSlackChannel] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const sortedCredentials = useMemo(
@@ -73,6 +80,7 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
     if (!isOpen) return;
     setSecret('');
     setTelegramChatId('');
+    setSlackChannel('');
     setIsOAuthConnecting(false);
     void fetchCredentials();
   }, [isOpen]);
@@ -86,6 +94,9 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   useEffect(() => {
     if (appName !== 'telegram') {
       setTelegramChatId('');
+    }
+    if (appName !== 'slack') {
+      setSlackChannel('');
     }
     setSecret('');
   }, [appName]);
@@ -105,6 +116,10 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
       toast.error('Please enter Telegram Chat ID');
       return;
     }
+    if (appName === 'slack' && !slackChannel.trim()) {
+      toast.error('Please enter Slack channel');
+      return;
+    }
     setIsSaving(true);
     try {
       await credentialService.create({
@@ -112,6 +127,7 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
         token_data: {
           [secretField.key]: trimmed,
           ...(isTelegram ? { chat_id: trimmedChatId } : {}),
+          ...(appName === 'slack' ? { channel: slackChannel.trim() } : {}),
         },
       });
       setSecret('');
@@ -261,6 +277,23 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
                   value={telegramChatId}
                   onChange={(event) => setTelegramChatId(event.target.value)}
                   placeholder="e.g. 123456789 or -1001234567890"
+                  className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
+                />
+              </>
+            )}
+            {appName === 'slack' && (
+              <>
+                <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
+                  Slack Channel
+                </label>
+                <input
+                  type="text"
+                  name="credential-manager-slack-channel"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={slackChannel}
+                  onChange={(event) => setSlackChannel(event.target.value)}
+                  placeholder="e.g. #general or @someone"
                   className="w-full mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/40"
                 />
               </>

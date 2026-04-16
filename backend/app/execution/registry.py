@@ -28,6 +28,7 @@ class RunnerRegistry:
             "update_google_docs": self._build_update_google_docs,
             "telegram": self._build_telegram,
             "whatsapp": self._build_whatsapp,
+            "slack_send_message": self._build_slack_send_message,
         }
         self._cache: dict[str, Any] = {}
 
@@ -195,3 +196,9 @@ class RunnerRegistry:
         from app.execution.runners.nodes.whatsapp import WhatsAppRunner
 
         return WhatsAppRunner()
+
+    @staticmethod
+    def _build_slack_send_message() -> Any:
+        from app.execution.runners.nodes.slack_send_message import SlackSendMessageRunner
+
+        return SlackSendMessageRunner()

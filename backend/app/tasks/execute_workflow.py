@@ -75,6 +75,8 @@ async def _resolve_credentials(
                 "access_token",
                 "refresh_token",
                 "id_token",
+                "webhook_url",
+                "channel",
             }:
                 try:
                     decrypted[key] = decrypt_data(value)
