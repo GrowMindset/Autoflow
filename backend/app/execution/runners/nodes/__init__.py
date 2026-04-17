@@ -2,6 +2,7 @@ from .if_else import IfElseRunner
 from .switch import SwitchRunner
 from .merge import MergeRunner
 from .filter import FilterRunner
+from .delay import DelayRunner
 from .split_in import SplitInRunner
 from .split_out import SplitOutRunner
 from .aggregate import AggregateRunner
@@ -28,6 +29,7 @@ __all__ = [
     "SwitchRunner",
     "MergeRunner",
     "FilterRunner",
+    "DelayRunner",
     "SplitInRunner",
     "SplitOutRunner",
     "AggregateRunner",

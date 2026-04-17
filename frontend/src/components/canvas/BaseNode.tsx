@@ -15,7 +15,8 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     'get_gmail_message': ['credential_id'],
     'send_gmail_message': ['credential_id', 'to', 'subject', 'body'],
     'create_google_sheets': ['credential_id', 'title'],
-    'search_update_google_sheets': ['credential_id', 'spreadsheet_id', 'sheet_name', 'search_column', 'search_value', 'update_column', 'update_value'],
+    'search_update_google_sheets': ['credential_id', 'spreadsheet_id', 'sheet_name', 'search_column', 'search_value'],
+    'delay': ['amount', 'unit'],
     'create_google_docs': ['credential_id', 'title'],
     'update_google_docs': ['credential_id', 'document_id', 'operation', 'text'],
     'telegram': ['credential_id', 'message'],
@@ -34,6 +35,25 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
 
   if (type === 'update_google_docs' && config.operation === 'replace_all_text' && !config.match_text) {
     missing.push("Required field 'match_text' is missing for replace_all_text operation");
+  }
+
+  if (type === 'search_update_google_sheets') {
+    const hasLegacyUpdate =
+      String(config.update_column || '').trim() !== '' &&
+      Object.prototype.hasOwnProperty.call(config, 'update_value');
+    const hasMappings = Array.isArray(config.update_mappings)
+      && config.update_mappings.some((item: any) => String(item?.column || '').trim() !== '');
+    if (!hasLegacyUpdate && !hasMappings) {
+      missing.push("Required field 'update_mappings' (or legacy update_column/update_value) is missing");
+    }
+  }
+
+  if (type === 'delay') {
+    const hasUntil = String(config.until_datetime || '').trim() !== '';
+    const hasAmount = String(config.amount || '').trim() !== '';
+    if (!hasUntil && !hasAmount) {
+      missing.push("Required field 'amount' (or 'until_datetime') is missing");
+    }
   }
 
   if (type === 'ai_agent' && !isChatModelConnected) {

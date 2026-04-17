@@ -1683,27 +1683,60 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [setNodes, emitCanvasMutation]);
 
   const getUpstreamData = (nodeId: string) => {
-    const upstreamEdges = edges.filter(e => e.target === nodeId) as WorkflowEdge[];
+    const upstreamEdges = edges
+      .filter(e => e.target === nodeId)
+      .filter((edge) => {
+        // Ignore AI config sub-node links. These are not regular upstream
+        // payload edges and should not pollute input preview.
+        const handle = String(edge.targetHandle || '');
+        const targetNode = nodes.find((n) => n.id === edge.target);
+        const targetType = targetNode?.data?.type || '';
+        const sourceNode = nodes.find((n) => n.id === edge.source);
+        const sourceType = sourceNode?.data?.type || '';
+        const isAiAgentTarget = targetType === 'ai_agent';
+        const isAiChildHandle = AI_AGENT_CHILD_HANDLES.includes(handle as (typeof AI_AGENT_CHILD_HANDLES)[number]);
+        const isChatModelSource =
+          sourceType === 'chat_model_openai' || sourceType === 'chat_model_groq';
+        if (isAiAgentTarget && (isAiChildHandle || isChatModelSource)) {
+          return false;
+        }
+        return true;
+      }) as WorkflowEdge[];
     if (upstreamEdges.length === 0) return null;
 
     const combinedData: Record<string, any> = {};
+    let hasRealUpstreamOutput = false;
+
+    const isPlainObject = (value: any): value is Record<string, any> => (
+      value !== null && typeof value === 'object' && !Array.isArray(value)
+    );
+
     upstreamEdges.forEach(edge => {
       const sourceNode = nodes.find(n => n.id === edge.source);
-      if (sourceNode?.data.last_output) {
-        Object.assign(combinedData, sourceNode.data.last_output);
-      } else {
-        const mockMap: Record<string, any> = {
-          manual_trigger: { body: { message: "Hello world" }, user: { id: "u_123", name: "Ishika" } },
-          webhook_trigger: { query: { id: 50 }, headers: { "Content-Type": "application/json" } },
-          form_trigger: { submission: { name: "Test User", email: "test@example.com", priority: "high" } },
-          schedule_trigger: { scheduled_at: new Date().toISOString(), source: 'manual_preview' },
-          filter: { items: [{ id: 1, name: "A" }, { id: 2, name: "B" }] },
-          aggregate: { result: 500, count: 2 }
-        };
-        const typeMatch = sourceNode?.data.type || 'manual_trigger';
-        Object.assign(combinedData, mockMap[typeMatch as string] || mockMap.manual_trigger);
+      const lastOutput = sourceNode?.data.last_output;
+      const executionOutput = sourceNode?.data.last_execution_result?.output_data;
+      const resolvedOutput = lastOutput ?? executionOutput;
+
+      if (resolvedOutput !== null && typeof resolvedOutput !== 'undefined') {
+        hasRealUpstreamOutput = true;
+
+        if (isPlainObject(resolvedOutput)) {
+          Object.assign(combinedData, resolvedOutput);
+        } else if (Array.isArray(resolvedOutput)) {
+          // Preserve array outputs for step-by-step node testing.
+          combinedData[`${edge.source}_output`] = resolvedOutput;
+          combinedData._default = resolvedOutput;
+        } else {
+          // Preserve scalar outputs for step-by-step node testing.
+          combinedData[`${edge.source}_output`] = resolvedOutput;
+          combinedData._default = resolvedOutput;
+        }
       }
     });
+
+    if (!hasRealUpstreamOutput || Object.keys(combinedData).length === 0) {
+      return null;
+    }
 
     return combinedData;
   };

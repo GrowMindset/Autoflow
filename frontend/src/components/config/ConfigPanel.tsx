@@ -225,6 +225,23 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
     return null;
   }, [node.data.type, node.data.last_execution_result, output]);
 
+  const shouldShowExecutionLogs = useMemo(() => {
+    const result = node.data.last_execution_result;
+    if (!result) return false;
+
+    // During node-by-node testing, backend may return placeholder rows for
+    // untouched nodes: status=PENDING and all payload/timestamps null.
+    // In that case we should still show computed upstream input preview.
+    const hasPayload =
+      result.input_data !== null && typeof result.input_data !== 'undefined'
+      || result.output_data !== null && typeof result.output_data !== 'undefined'
+      || Boolean(result.error_message)
+      || Boolean(result.started_at)
+      || Boolean(result.finished_at);
+
+    return result.status !== 'PENDING' || hasPayload;
+  }, [node.data.last_execution_result]);
+
   useEffect(() => {
     const handleMouseMove = (event: MouseEvent) => {
       if (!resizingSideRef.current) return;
@@ -542,7 +559,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
               {isLeftVisible ? (
                 <>
                   <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-400">
-                    {node.data.last_execution_result ? 'EXECUTION LOGS' : 'INPUT DATA'}
+                    {shouldShowExecutionLogs ? 'EXECUTION LOGS' : 'INPUT DATA'}
                   </span>
                   <button onClick={() => setIsLeftVisible(false)} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-300 dark:text-slate-700 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
@@ -556,7 +573,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
             </div>
             {isLeftVisible && (
               <div className="flex-1 overflow-auto custom-scrollbar p-4 animate-in slide-in-from-left-4 duration-300">
-                {node.data.last_execution_result ? (
+                {shouldShowExecutionLogs ? (
                   <div className="space-y-6">
                     <div className="flex flex-col gap-1.5 p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
                       <div className="flex items-center justify-between">

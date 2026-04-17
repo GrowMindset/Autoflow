@@ -13,6 +13,7 @@ class RunnerRegistry:
             "if_else": self._build_if_else,
             "switch": self._build_switch,
             "filter": self._build_filter,
+            "delay": self._build_delay,
             "merge": self._build_merge,
             "aggregate": self._build_aggregate,
             "datetime_format": self._build_datetime_format,
@@ -100,6 +101,12 @@ class RunnerRegistry:
         from app.execution.runners.nodes.filter import FilterRunner
 
         return FilterRunner()
+
+    @staticmethod
+    def _build_delay() -> Any:
+        from app.execution.runners.nodes.delay import DelayRunner
+
+        return DelayRunner()
 
     @staticmethod
     def _build_merge() -> Any:

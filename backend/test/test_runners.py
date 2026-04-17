@@ -3,6 +3,7 @@ import unittest
 from app.execution.runners.nodes import ai_agent
 from app.execution.runners.nodes.aggregate import AggregateRunner
 from app.execution.runners.nodes.ai_agent import AIAgentRunner
+from app.execution.runners.nodes.delay import DelayRunner
 from app.execution.runners.nodes.datetime_format import DateTimeFormatRunner
 from app.execution.runners.nodes.dummy import DummyNodeRunner
 from app.execution.runners.nodes.filter import FilterRunner
@@ -291,6 +292,71 @@ class RunnerTests(unittest.TestCase):
     def test_sheets_search_update_resolves_column_letter_without_headers(self):
         index = SearchUpdateGoogleSheetsRunner._resolve_column_index("B", [])
         self.assertEqual(index, 2)
+
+    def test_sheets_search_update_coerce_bool_handles_string_false(self):
+        self.assertFalse(
+            SearchUpdateGoogleSheetsRunner._coerce_bool("false", default=True)
+        )
+        self.assertFalse(
+            SearchUpdateGoogleSheetsRunner._coerce_bool("0", default=True)
+        )
+        self.assertTrue(
+            SearchUpdateGoogleSheetsRunner._coerce_bool("true", default=False)
+        )
+
+    def test_sheets_search_update_preserves_blank_headers_for_column_position(self):
+        headers = SearchUpdateGoogleSheetsRunner._ensure_headers(
+            service=None,
+            spreadsheet_id="",
+            sheet_name="",
+            headers=["Email", "", "Status"],
+            search_column="Status",
+            update_columns=["Status"],
+            input_data={},
+            auto_create_headers=False,
+        )
+        index = SearchUpdateGoogleSheetsRunner._resolve_column_index("Status", headers)
+        self.assertEqual(index, 3)
+
+    def test_sheets_search_update_collect_update_pairs_from_mappings(self):
+        pairs = SearchUpdateGoogleSheetsRunner._collect_update_pairs(
+            {
+                "update_mappings": [
+                    {"column": "Status", "value": "Processed"},
+                    {"column": "Notes", "value": "{{ai.summary}}"},
+                ]
+            }
+        )
+        self.assertEqual(
+            pairs,
+            [
+                {"column": "Status", "value": "Processed"},
+                {"column": "Notes", "value": "{{ai.summary}}"},
+            ],
+        )
+
+    def test_sheets_search_update_collect_update_pairs_supports_legacy_fallback(self):
+        pairs = SearchUpdateGoogleSheetsRunner._collect_update_pairs(
+            {"update_column": "Status", "update_value": "Processed"}
+        )
+        self.assertEqual(
+            pairs,
+            [{"column": "Status", "value": "Processed"}],
+        )
+
+    def test_delay_runner_resolves_amount_and_unit(self):
+        runner = DelayRunner()
+        seconds = runner._resolve_delay_seconds({"amount": "2", "unit": "minutes"})
+        self.assertEqual(seconds, 120)
+
+    def test_delay_runner_supports_until_datetime(self):
+        runner = DelayRunner()
+        output = runner.run(
+            config={"until_datetime": "1970-01-01T00:00:00Z"},
+            input_data={"ok": True},
+        )
+        self.assertEqual(output["ok"], True)
+        self.assertEqual(output["delay_seconds"], 0)
 
     def test_if_else_runner_raises_for_unknown_operator(self):
         runner = IfElseRunner()

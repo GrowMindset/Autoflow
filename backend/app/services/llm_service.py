@@ -92,11 +92,13 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "search_update_google_sheets": {
         "category": "action",
-        "description": "Searches rows in Google Sheets and updates one column on the first matched row.",
+        "description": "Searches rows in Google Sheets and updates one or more columns on the first matched row.",
         "rules": [
-            "Use config keys: credential_id, spreadsheet_id, sheet_name, search_column, search_value, update_column, update_value, auto_create_headers, upsert_if_not_found.",
-            "search_column and update_column can be header names, column letters (A/B/C), or column numbers.",
-            "Prefer auto_create_headers=true and upsert_if_not_found=true for empty/new sheets.",
+            "Use config keys: credential_id, spreadsheet_id, sheet_name, search_column, search_value, update_mappings, auto_create_headers, upsert_if_not_found.",
+            "update_mappings should be an array of objects like {\"column\": \"Status\", \"value\": \"Processed\"}.",
+            "Legacy fallback update_column + update_value is still supported for backward compatibility.",
+            "search_column and mapping column values can be header names, column letters (A/B/C), or column numbers.",
+            "Prefer upsert_if_not_found=false for strict overwrite behavior (no new row when search value is missing).",
         ],
     },
     "create_google_docs": {
@@ -165,6 +167,15 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "description": "Filters an array at input_key by comparing field against value.",
         "rules": [
             f"operator must be one of: {', '.join(SHARED_OPERATORS)}.",
+        ],
+    },
+    "delay": {
+        "category": "action",
+        "description": "Pauses workflow execution for a configured time, then forwards data unchanged.",
+        "rules": [
+            "Use config keys: amount, unit, until_datetime.",
+            "Preferred unit values: seconds, minutes, hours.",
+            "until_datetime is optional ISO datetime and overrides amount/unit when provided.",
         ],
     },
     "datetime_format": {

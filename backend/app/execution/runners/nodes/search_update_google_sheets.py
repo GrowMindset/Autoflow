@@ -20,7 +20,7 @@ GOOGLE_SHEETS_SCOPES = [
 
 
 class SearchUpdateGoogleSheetsRunner:
-    """Finds the first matching row and updates one column value."""
+    """Finds the first matching row and updates one or more column values."""
 
     def run(
         self,
@@ -39,10 +39,9 @@ class SearchUpdateGoogleSheetsRunner:
         sheet_name = str(config.get("sheet_name") or "Sheet1").strip()
         search_column = str(config.get("search_column") or "").strip()
         search_value = str(config.get("search_value") or "").strip()
-        update_column = str(config.get("update_column") or "").strip()
-        update_value = config.get("update_value")
-        auto_create_headers = bool(config.get("auto_create_headers", True))
-        upsert_if_not_found = bool(config.get("upsert_if_not_found", True))
+        update_pairs = self._collect_update_pairs(config)
+        auto_create_headers = self._coerce_bool(config.get("auto_create_headers"), default=True)
+        upsert_if_not_found = self._coerce_bool(config.get("upsert_if_not_found"), default=False)
 
         if not spreadsheet_id:
             raise ValueError("Google Sheets Search/Update: 'spreadsheet_id' is required.")
@@ -52,10 +51,11 @@ class SearchUpdateGoogleSheetsRunner:
             raise ValueError("Google Sheets Search/Update: 'search_column' is required.")
         if search_value == "":
             raise ValueError("Google Sheets Search/Update: 'search_value' is required.")
-        if not update_column:
-            raise ValueError("Google Sheets Search/Update: 'update_column' is required.")
-        if update_value is None:
-            raise ValueError("Google Sheets Search/Update: 'update_value' is required.")
+        if not update_pairs:
+            raise ValueError(
+                "Google Sheets Search/Update: Provide at least one update mapping (update_mappings) "
+                "or legacy update_column/update_value."
+            )
 
         service = self._build_sheets_service(credential_data)
 
@@ -82,6 +82,7 @@ class SearchUpdateGoogleSheetsRunner:
                 f"Google Sheets Search/Update: Could not read sheet headers: {exc}"
             ) from exc
 
+        update_columns = [pair["column"] for pair in update_pairs]
         try:
             headers = self._ensure_headers(
                 service=service,
@@ -89,7 +90,7 @@ class SearchUpdateGoogleSheetsRunner:
                 sheet_name=sheet_name,
                 headers=headers,
                 search_column=search_column,
-                update_column=update_column,
+                update_columns=update_columns,
                 input_data=input_data,
                 auto_create_headers=auto_create_headers,
             )
@@ -113,10 +114,28 @@ class SearchUpdateGoogleSheetsRunner:
             raise ValueError(
                 f"Google Sheets Search/Update: Could not initialize sheet headers: {exc}"
             ) from exc
-        search_col_index = self._resolve_column_index(search_column, headers)
-        update_col_index = self._resolve_column_index(update_column, headers)
 
-        max_col_index = max(search_col_index, update_col_index)
+        search_col_index = self._resolve_column_index(search_column, headers)
+        resolved_updates_by_index: dict[int, dict[str, Any]] = {}
+        for pair in update_pairs:
+            col_index = self._resolve_column_index(pair["column"], headers)
+            resolved_updates_by_index[col_index] = {
+                "column": pair["column"],
+                "index": col_index,
+                "value": pair.get("value"),
+            }
+        resolved_updates = sorted(
+            resolved_updates_by_index.values(),
+            key=lambda item: int(item["index"]),
+        )
+        if not resolved_updates:
+            raise ValueError(
+                "Google Sheets Search/Update: Could not resolve any update column from update mappings."
+            )
+
+        max_update_col_index = max(int(item["index"]) for item in resolved_updates)
+        max_col_index = max(search_col_index, max_update_col_index)
+
         data_range = f"{sheet_name}!A2:{self._index_to_column_letter(max_col_index)}"
         try:
             rows_response = (
@@ -145,6 +164,7 @@ class SearchUpdateGoogleSheetsRunner:
             raise ValueError(
                 f"Google Sheets Search/Update: Could not read row data: {exc}"
             ) from exc
+
         rows = rows_response.get("values") or []
 
         matched_row_number: int | None = None
@@ -160,12 +180,24 @@ class SearchUpdateGoogleSheetsRunner:
         if isinstance(input_data, dict):
             result.update(input_data)
 
+        mappings_meta = [
+            {
+                "column": item["column"],
+                "column_index": item["index"],
+                "value": item.get("value"),
+            }
+            for item in resolved_updates
+        ]
+        primary_update = resolved_updates[0]
+
         if matched_row_number is None:
             if upsert_if_not_found:
-                row_width = max(search_col_index, update_col_index)
+                row_width = max_col_index
                 new_row = [""] * row_width
                 new_row[search_col_index - 1] = search_value
-                new_row[update_col_index - 1] = update_value
+                for item in resolved_updates:
+                    new_row[int(item["index"]) - 1] = item.get("value")
+
                 append_range = f"{sheet_name}!A2:{self._index_to_column_letter(row_width)}"
                 try:
                     append_response = (
@@ -212,8 +244,9 @@ class SearchUpdateGoogleSheetsRunner:
                         "google_sheets_sheet_name": sheet_name,
                         "google_sheets_search_column": search_column,
                         "google_sheets_search_value": search_value,
-                        "google_sheets_update_column": update_column,
-                        "google_sheets_update_value": update_value,
+                        "google_sheets_update_column": primary_update["column"],
+                        "google_sheets_update_value": primary_update.get("value"),
+                        "google_sheets_update_mappings": mappings_meta,
                         "google_sheets_updated_range": (
                             append_updates.get("updatedRange")
                             if isinstance(append_updates, dict)
@@ -238,20 +271,31 @@ class SearchUpdateGoogleSheetsRunner:
                     "google_sheets_sheet_name": sheet_name,
                     "google_sheets_search_column": search_column,
                     "google_sheets_search_value": search_value,
+                    "google_sheets_update_mappings": mappings_meta,
                 }
             )
             return result
 
-        update_cell = f"{sheet_name}!{self._index_to_column_letter(update_col_index)}{matched_row_number}"
+        row_width = max_col_index
+        merged_row = list(matched_row_values or [])
+        if len(merged_row) < row_width:
+            merged_row.extend([""] * (row_width - len(merged_row)))
+        for item in resolved_updates:
+            merged_row[int(item["index"]) - 1] = item.get("value")
+
+        update_range = (
+            f"{sheet_name}!A{matched_row_number}:"
+            f"{self._index_to_column_letter(row_width)}{matched_row_number}"
+        )
         try:
             update_response = (
                 service.spreadsheets()
                 .values()
                 .update(
                     spreadsheetId=spreadsheet_id,
-                    range=update_cell,
+                    range=update_range,
                     valueInputOption="USER_ENTERED",
-                    body={"values": [[update_value]]},
+                    body={"values": [merged_row[:row_width]]},
                 )
                 .execute()
             )
@@ -285,8 +329,9 @@ class SearchUpdateGoogleSheetsRunner:
                 "google_sheets_sheet_name": sheet_name,
                 "google_sheets_search_column": search_column,
                 "google_sheets_search_value": search_value,
-                "google_sheets_update_column": update_column,
-                "google_sheets_update_value": update_value,
+                "google_sheets_update_column": primary_update["column"],
+                "google_sheets_update_value": primary_update.get("value"),
+                "google_sheets_update_mappings": mappings_meta,
                 "google_sheets_upserted": False,
                 "google_sheets_matched_row_number": matched_row_number,
                 "google_sheets_matched_row_values": matched_row_values or [],
@@ -353,6 +398,53 @@ class SearchUpdateGoogleSheetsRunner:
             return []
         return [str(cell or "").strip() for cell in row]
 
+    @staticmethod
+    def _coerce_bool(raw_value: Any, *, default: bool) -> bool:
+        if raw_value is None:
+            return default
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, (int, float)):
+            return bool(raw_value)
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off", ""}:
+                return False
+        return bool(raw_value)
+
+    @staticmethod
+    def _collect_update_pairs(config: dict[str, Any]) -> list[dict[str, Any]]:
+        pairs: list[dict[str, Any]] = []
+
+        raw_mappings = config.get("update_mappings")
+        if isinstance(raw_mappings, list):
+            for raw_item in raw_mappings:
+                if not isinstance(raw_item, dict):
+                    continue
+                column = str(
+                    raw_item.get("column")
+                    or raw_item.get("update_column")
+                    or raw_item.get("name")
+                    or ""
+                ).strip()
+                if not column:
+                    continue
+                value = raw_item.get("value")
+                if "value" not in raw_item and "update_value" in raw_item:
+                    value = raw_item.get("update_value")
+                pairs.append({"column": column, "value": value})
+
+        if pairs:
+            return pairs
+
+        legacy_column = str(config.get("update_column") or "").strip()
+        if legacy_column and "update_value" in config:
+            return [{"column": legacy_column, "value": config.get("update_value")}]
+
+        return []
+
     @classmethod
     def _ensure_headers(
         cls,
@@ -362,11 +454,15 @@ class SearchUpdateGoogleSheetsRunner:
         sheet_name: str,
         headers: list[str],
         search_column: str,
-        update_column: str,
+        update_columns: list[str],
         input_data: Any,
         auto_create_headers: bool,
     ) -> list[str]:
-        normalized_headers = [str(item or "").strip() for item in headers if str(item or "").strip()]
+        # Preserve positional indices (including intentional blanks) so
+        # header-name resolution always maps to the actual sheet column.
+        normalized_headers = [str(item or "").strip() for item in headers]
+        while normalized_headers and normalized_headers[-1] == "":
+            normalized_headers.pop()
         if not auto_create_headers:
             return normalized_headers
 
@@ -381,8 +477,10 @@ class SearchUpdateGoogleSheetsRunner:
 
         if not cls._is_column_reference(search_column):
             _add_header(search_column)
-        if not cls._is_column_reference(update_column):
-            _add_header(update_column)
+
+        for update_column in update_columns:
+            if not cls._is_column_reference(update_column):
+                _add_header(update_column)
 
         if not normalized_headers and isinstance(input_data, dict):
             for key in input_data.keys():
@@ -394,7 +492,7 @@ class SearchUpdateGoogleSheetsRunner:
             return normalized_headers
 
         merged_headers = list(normalized_headers)
-        existing_lower = {item.lower() for item in merged_headers}
+        existing_lower = {item.lower() for item in merged_headers if item}
         for header in desired_headers:
             if header.lower() not in existing_lower:
                 merged_headers.append(header)

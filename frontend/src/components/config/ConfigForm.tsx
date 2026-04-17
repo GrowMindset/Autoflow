@@ -251,8 +251,12 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     { key: 'sheet_name', label: 'Sheet Name', type: 'text', placeholder: 'e.g. Sheet1' },
     { key: 'search_column', label: 'Column to Search', type: 'text', placeholder: 'e.g. Email or A or 1' },
     { key: 'search_value', label: 'Value to Find', type: 'text', placeholder: 'e.g. {{ $json.email }}' },
-    { key: 'update_column', label: 'Column to Update', type: 'text', placeholder: 'e.g. Status or D or 4' },
-    { key: 'update_value', label: 'New Value', type: 'text', placeholder: 'e.g. Processed' },
+    {
+      key: 'update_mappings',
+      label: 'Columns to Update',
+      type: 'sheet_update_mappings',
+      helperText: 'Add one or more column/value pairs. You can use mapping variables in values.',
+    },
     { key: 'auto_create_headers', label: 'Auto Create Headers', type: 'boolean' },
     { key: 'upsert_if_not_found', label: 'Append Row If No Match', type: 'boolean' },
   ],
@@ -339,6 +343,23 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       type: 'textarea',
       placeholder: 'e.g. Hello team! {{ $json.order_id }} is ready.',
       helperText: 'Supports variable mapping and Slack text formatting.',
+    },
+  ],
+  delay: [
+    { key: 'amount', label: 'Delay Amount', type: 'text', placeholder: 'e.g. 5' },
+    {
+      key: 'unit',
+      label: 'Delay Unit',
+      type: 'select',
+      options: ['seconds', 'minutes', 'hours'],
+      helperText: 'Used when "Run At (ISO datetime)" is empty.',
+    },
+    {
+      key: 'until_datetime',
+      label: 'Run At (ISO datetime)',
+      type: 'text',
+      placeholder: 'e.g. 2026-04-17T18:30:00Z',
+      helperText: 'Optional. If set, this overrides amount + unit.',
     },
   ],
   linkedin: [
@@ -1235,6 +1256,82 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
           </div>
         );
 
+      case 'sheet_update_mappings': {
+        const rawMappings = Array.isArray(value) ? value : [];
+        const legacyColumn = String(config.update_column || '').trim();
+        const legacyValue = config.update_value ?? '';
+
+        const initialMappings = rawMappings.length > 0
+          ? rawMappings
+          : (legacyColumn
+            ? [{ id: `mapping_${Date.now()}`, column: legacyColumn, value: legacyValue }]
+            : []);
+
+        const normalizedMappings = initialMappings.map((item: any, idx: number) => ({
+          id: String(item?.id || `mapping_${idx}_${Math.random().toString(36).slice(2, 7)}`),
+          column: String(item?.column || item?.update_column || '').trim(),
+          value: item?.value ?? item?.update_value ?? '',
+        }));
+
+        if (JSON.stringify(rawMappings) !== JSON.stringify(normalizedMappings)) {
+          onChange(field.key, normalizedMappings);
+        }
+
+        const updateMapping = (index: number, patch: Record<string, any>) => {
+          const next = [...normalizedMappings];
+          next[index] = { ...next[index], ...patch };
+          onChange(field.key, next);
+        };
+
+        return (
+          <div className="space-y-3">
+            {normalizedMappings.map((mapping: any, idx: number) => (
+              <div key={mapping.id || idx} className="p-3 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-xl space-y-2 relative group transition-colors">
+                <button
+                  onClick={() => {
+                    const next = [...normalizedMappings];
+                    next.splice(idx, 1);
+                    onChange(field.key, next);
+                  }}
+                  className="absolute top-2 right-2 text-slate-300 dark:text-slate-700 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                </button>
+                <input
+                  type="text"
+                  placeholder="Column (e.g. Status, D, 4)"
+                  value={mapping.column || ''}
+                  onChange={(e) => updateMapping(idx, { column: e.target.value })}
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
+                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder={dragOverField === `${field.key}_${idx}` ? 'Drop to insert…' : 'Value (supports {{...}})'}
+                    value={String(mapping.value ?? '')}
+                    onChange={(e) => updateMapping(idx, { value: e.target.value })}
+                    onDragOver={(e) => handleDragOver(e, `${field.key}_${idx}`)}
+                    onDragLeave={(e) => handleDragLeave(e)}
+                    onDrop={(e) => handleArrayDrop(e, field.key, normalizedMappings, idx, 'value')}
+                    className={`w-full bg-white dark:bg-slate-900 border rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === `${field.key}_${idx}`
+                      ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                      : 'border-slate-200 dark:border-slate-700 focus:border-blue-500 dark:focus:border-blue-400'
+                      }`}
+                  />
+                </div>
+              </div>
+            ))}
+            <button
+              onClick={() => onChange(field.key, [...normalizedMappings, { id: `mapping_${Date.now()}`, column: '', value: '' }])}
+              className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-600 text-xs font-bold hover:border-blue-300 dark:hover:border-blue-900 hover:text-blue-500 dark:hover:text-blue-400 transition-all flex items-center justify-center gap-2"
+            >
+              <Plus size={12} strokeWidth={3} />
+              Add Column Mapping
+            </button>
+          </div>
+        );
+      }
+
       case 'credential_selector':
         const filteredCreds = credentials.filter(c => c.app_name === field.appName);
         const credentialFormId = `${field.appName}:${field.key}`;
@@ -1455,7 +1552,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
           <div key={field.key} className="space-y-2">
             <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-600 flex items-center justify-between">
               {field.label}
-              {(field.type === 'text' || field.type === 'textarea') && (
+              {(field.type === 'text' || field.type === 'textarea' || field.type === 'sheet_update_mappings') && (
                 <span className="text-[9px] font-medium lowercase text-slate-300 dark:text-slate-700 normal-case">Supports mapping</span>
               )}
             </label>

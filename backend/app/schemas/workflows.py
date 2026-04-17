@@ -69,10 +69,11 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "sheet_name": "",
         "search_column": "",
         "search_value": "",
+        "update_mappings": [],
         "update_column": "",
         "update_value": "",
         "auto_create_headers": True,
-        "upsert_if_not_found": True,
+        "upsert_if_not_found": False,
     },
     "create_google_docs": {
         "credential_id": "",
@@ -119,6 +120,11 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "field": "",
         "operator": "equals",
         "value": "",
+    },
+    "delay": {
+        "amount": "1",
+        "unit": "minutes",
+        "until_datetime": "",
     },
     "datetime_format": {
         "field": "",
