@@ -11,17 +11,25 @@ ExecutionStatus = Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED"]
 TriggeredBy = str
 
 
+class LoopControlOverride(BaseModel):
+    max_node_executions: int | None = None
+    max_total_node_executions: int | None = None
+
+
 class RunFormRequest(BaseModel):
     form_data: dict[str, Any]
     start_node_id: str | None = None
+    loop_control_override: LoopControlOverride | None = None
 
 
 class RunWorkflowRequest(BaseModel):
     start_node_id: str | None = None
+    loop_control_override: LoopControlOverride | None = None
 
 
 class RunScheduleRequest(BaseModel):
     start_node_id: str | None = None
+    loop_control_override: LoopControlOverride | None = None
 
 
 class RunNodeTestRequest(BaseModel):

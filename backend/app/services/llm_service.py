@@ -85,17 +85,19 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "category": "action",
         "description": "Creates a new Google Spreadsheet using a Sheets credential.",
         "rules": [
-            "Use config keys: credential_id, title, sheet_name.",
+            "Use config keys: credential_id, title, sheet_name, columns.",
             "credential_id must point to app_credentials with app_name=sheets.",
             "title is required. sheet_name is optional.",
+            "columns is optional and should be an array of header names to write into row 1.",
         ],
     },
     "search_update_google_sheets": {
         "category": "action",
         "description": "Searches rows in Google Sheets and updates one or more columns on the first matched row.",
         "rules": [
-            "Use config keys: credential_id, spreadsheet_id, sheet_name, search_column, search_value, update_mappings, auto_create_headers, upsert_if_not_found.",
+            "Use config keys: credential_id, spreadsheet_id, sheet_name, search_column, search_value, update_mappings, ensure_columns, auto_create_headers, upsert_if_not_found.",
             "update_mappings should be an array of objects like {\"column\": \"Status\", \"value\": \"Processed\"}.",
+            "ensure_columns is optional and should be an array of extra header names to create if missing.",
             "Legacy fallback update_column + update_value is still supported for backward compatibility.",
             "search_column and mapping column values can be header names, column letters (A/B/C), or column numbers.",
             "Prefer upsert_if_not_found=false for strict overwrite behavior (no new row when search value is missing).",
@@ -138,6 +140,15 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
             "language_code defaults to en_US.",
         ],
     },
+    "slack_send_message": {
+        "category": "action",
+        "description": "Sends a Slack message through an Incoming Webhook credential.",
+        "rules": [
+            "Use config keys: credential_id and message.",
+            "Do not include webhook_url directly in node config; store it in credential token_data.",
+            "Optional channel can be stored in credential token_data.channel.",
+        ],
+    },
     "linkedin": {
         "category": "action",
         "description": "Dummy action node for LinkedIn posting. Use content and visibility exactly.",
@@ -146,7 +157,10 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "category": "logic",
         "description": "Conditional branch node. Output branches are true and false.",
         "rules": [
+            "Use config keys: field, operator, value, value_mode, value_field, case_sensitive.",
             f"operator must be one of: {', '.join(SHARED_OPERATORS)}.",
+            "Set value_mode=literal to compare against value, or value_mode=field to compare against value_field.",
+            "case_sensitive applies to equals/not_equals/contains/not_contains and defaults to true.",
             "Outgoing edges from this node must use branch values true or false.",
         ],
     },
@@ -154,8 +168,8 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "category": "logic",
         "description": "Multi-branch conditional node using first-match-wins case evaluation.",
         "rules": [
-            f"Each case object must include label, operator, and value. operator must be one of: {', '.join(SHARED_OPERATORS)}.",
-            "Every outgoing edge must set branch equal to one case label or the default_case value.",
+            f"Each case object must include id, label, operator, and value. operator must be one of: {', '.join(SHARED_OPERATORS)}.",
+            "Every outgoing edge must set branch equal to one case id or the default_case value.",
         ],
     },
     "merge": {
@@ -397,7 +411,7 @@ class LLMService:
             Edge rules:
             - Standard linear edges may omit branch or set it to null.
             - Edges leaving if_else must set branch to "true" or "false".
-            - Edges leaving switch must set branch to a case label or the default_case value.
+            - Edges leaving switch must set branch to a case id or the default_case value.
             - sourceHandle and targetHandle should usually be null unless a frontend handle name is explicitly needed.
             - Edges leaving chat_model_openai or chat_model_groq must target an ai_agent and set targetHandle to "chat_model".
 
@@ -589,7 +603,9 @@ class LLMService:
             node_edges = outgoing_edges[node_id]
             if node.type == "if_else":
                 invalid_edges = [
-                    edge.id for edge in node_edges if edge.branch not in {"true", "false"}
+                    edge.id
+                    for edge in node_edges
+                    if str(edge.branch or edge.sourceHandle or "").strip() not in {"true", "false"}
                 ]
                 if invalid_edges:
                     raise WorkflowGenerationError(
@@ -599,20 +615,22 @@ class LLMService:
 
             if node.type == "switch":
                 allowed_branches = {
-                    case.get("label")
+                    str(case.get("id") or "").strip()
                     for case in node.config.get("cases", [])
-                    if isinstance(case, dict) and case.get("label")
+                    if isinstance(case, dict) and str(case.get("id") or "").strip()
                 }
-                default_case = node.config.get("default_case")
+                default_case = str(node.config.get("default_case") or "").strip()
                 if default_case:
                     allowed_branches.add(default_case)
 
                 invalid_edges = [
-                    edge.id for edge in node_edges if edge.branch not in allowed_branches
+                    edge.id
+                    for edge in node_edges
+                    if str(edge.branch or edge.sourceHandle or "").strip() not in allowed_branches
                 ]
                 if invalid_edges:
                     raise WorkflowGenerationError(
-                        "switch edges must use a valid case label or default_case. "
+                        "switch edges must use a valid case id or default_case. "
                         f"Invalid edge ids: {', '.join(invalid_edges)}"
                     )
 

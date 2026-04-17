@@ -24,3 +24,10 @@ class ExecutionContext:
     pending_inputs: dict[str, list[Any]] = field(default_factory=dict)
     split_buffers: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     runner_context: dict[str, Any] = field(default_factory=dict)
+    loop_enabled: bool = False
+    max_cycle_node_executions: int = 3
+    max_total_node_executions: int = 500
+    cycle_node_ids: set[str] = field(default_factory=set)
+    cycle_edge_ids: set[str] = field(default_factory=set)
+    node_execution_counts: dict[str, int] = field(default_factory=dict)
+    total_node_executions: int = 0

@@ -40,6 +40,7 @@ class SearchUpdateGoogleSheetsRunner:
         search_column = str(config.get("search_column") or "").strip()
         search_value = str(config.get("search_value") or "").strip()
         update_pairs = self._collect_update_pairs(config)
+        ensure_columns = self._collect_ensure_columns(config.get("ensure_columns"))
         auto_create_headers = self._coerce_bool(config.get("auto_create_headers"), default=True)
         upsert_if_not_found = self._coerce_bool(config.get("upsert_if_not_found"), default=False)
 
@@ -91,6 +92,7 @@ class SearchUpdateGoogleSheetsRunner:
                 headers=headers,
                 search_column=search_column,
                 update_columns=update_columns,
+                ensure_columns=ensure_columns,
                 input_data=input_data,
                 auto_create_headers=auto_create_headers,
             )
@@ -247,6 +249,7 @@ class SearchUpdateGoogleSheetsRunner:
                         "google_sheets_update_column": primary_update["column"],
                         "google_sheets_update_value": primary_update.get("value"),
                         "google_sheets_update_mappings": mappings_meta,
+                        "google_sheets_ensured_columns": ensure_columns,
                         "google_sheets_updated_range": (
                             append_updates.get("updatedRange")
                             if isinstance(append_updates, dict)
@@ -272,6 +275,7 @@ class SearchUpdateGoogleSheetsRunner:
                     "google_sheets_search_column": search_column,
                     "google_sheets_search_value": search_value,
                     "google_sheets_update_mappings": mappings_meta,
+                    "google_sheets_ensured_columns": ensure_columns,
                 }
             )
             return result
@@ -332,6 +336,7 @@ class SearchUpdateGoogleSheetsRunner:
                 "google_sheets_update_column": primary_update["column"],
                 "google_sheets_update_value": primary_update.get("value"),
                 "google_sheets_update_mappings": mappings_meta,
+                "google_sheets_ensured_columns": ensure_columns,
                 "google_sheets_upserted": False,
                 "google_sheets_matched_row_number": matched_row_number,
                 "google_sheets_matched_row_values": matched_row_values or [],
@@ -445,6 +450,24 @@ class SearchUpdateGoogleSheetsRunner:
 
         return []
 
+    @staticmethod
+    def _collect_ensure_columns(raw_columns: Any) -> list[str]:
+        if not isinstance(raw_columns, list):
+            return []
+
+        seen_lower: set[str] = set()
+        ensured: list[str] = []
+        for item in raw_columns:
+            token = str(item or "").strip()
+            if not token:
+                continue
+            lowered = token.lower()
+            if lowered in seen_lower:
+                continue
+            seen_lower.add(lowered)
+            ensured.append(token)
+        return ensured
+
     @classmethod
     def _ensure_headers(
         cls,
@@ -455,6 +478,7 @@ class SearchUpdateGoogleSheetsRunner:
         headers: list[str],
         search_column: str,
         update_columns: list[str],
+        ensure_columns: list[str],
         input_data: Any,
         auto_create_headers: bool,
     ) -> list[str]:
@@ -481,6 +505,10 @@ class SearchUpdateGoogleSheetsRunner:
         for update_column in update_columns:
             if not cls._is_column_reference(update_column):
                 _add_header(update_column)
+
+        for ensured_column in ensure_columns:
+            if not cls._is_column_reference(ensured_column):
+                _add_header(ensured_column)
 
         if not normalized_headers and isinstance(input_data, dict):
             for key in input_data.keys():

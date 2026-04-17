@@ -246,6 +246,32 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(result, {"status": "paid", "amount": 500, "_branch": "true"})
 
+    def test_if_else_runner_supports_field_to_field_comparison(self):
+        runner = IfElseRunner()
+        result = runner.run(
+            config={
+                "field": "status",
+                "operator": "equals",
+                "value_mode": "field",
+                "value_field": "expected_status",
+            },
+            input_data={"status": "PAID", "expected_status": "PAID"},
+        )
+        self.assertEqual(result["_branch"], "true")
+
+    def test_if_else_runner_supports_case_insensitive_compare(self):
+        runner = IfElseRunner()
+        result = runner.run(
+            config={
+                "field": "status",
+                "operator": "contains",
+                "value": "paid",
+                "case_sensitive": False,
+            },
+            input_data={"status": "PAID_SUCCESS"},
+        )
+        self.assertEqual(result["_branch"], "true")
+
     def test_send_gmail_runner_normalizes_recipient_lists(self):
         recipients = SendGmailMessageRunner._split_and_validate_emails(
             'Asha <asha@example.com>; mina@example.com\nli@example.org',
@@ -312,6 +338,7 @@ class RunnerTests(unittest.TestCase):
             headers=["Email", "", "Status"],
             search_column="Status",
             update_columns=["Status"],
+            ensure_columns=[],
             input_data={},
             auto_create_headers=False,
         )

@@ -73,6 +73,11 @@ async def run_workflow(
             workflow_id=workflow_id,
             user=current_user,
             start_node_id=(payload.start_node_id if payload else None),
+            loop_control_override=(
+                payload.loop_control_override.model_dump(exclude_none=True)
+                if payload and payload.loop_control_override
+                else None
+            ),
         )
     except ValueError as exc:
         detail = str(exc)
@@ -113,6 +118,11 @@ async def run_workflow_form(
             user=current_user,
             form_data=payload.form_data,
             start_node_id=payload.start_node_id,
+            loop_control_override=(
+                payload.loop_control_override.model_dump(exclude_none=True)
+                if payload.loop_control_override
+                else None
+            ),
         )
     except ValueError as exc:
         detail = str(exc)
@@ -157,6 +167,11 @@ async def run_workflow_schedule(
                 "source": "manual_schedule_run",
             },
             require_published=False,
+            loop_control_override=(
+                payload.loop_control_override.model_dump(exclude_none=True)
+                if payload and payload.loop_control_override
+                else None
+            ),
         )
     except ValueError as exc:
         detail = str(exc)

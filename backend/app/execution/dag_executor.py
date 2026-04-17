@@ -17,6 +17,11 @@ UNSUPPORTED_RUNTIME_NODE_TYPES = set()
 # the executor runs them automatically (inline) just before the parent executes,
 # and injects their output into the parent's input under the targetHandle key.
 SUBNODE_TYPES = {"chat_model_openai", "chat_model_groq"}
+LOOP_CONTROL_DEFAULTS = {
+    "enabled": False,
+    "max_node_executions": 3,
+    "max_total_node_executions": 500,
+}
 
 
 class NodeExecutionError(Exception):
@@ -98,6 +103,9 @@ class DagExecutor:
             "node_inputs": context.node_inputs,
             "node_outputs": context.node_outputs,
             "terminal_outputs": terminal_outputs,
+            "loop_enabled": context.loop_enabled,
+            "node_execution_counts": context.node_execution_counts,
+            "total_node_executions": context.total_node_executions,
         }
 
     def execute_node(
@@ -402,8 +410,12 @@ class DagExecutor:
                     input_data=None,
                     context=runner_context,
                 )
-            except Exception:
-                sub_output = {}
+            except Exception as exc:
+                if sub_id and exec_context is not None:
+                    exec_context.node_states[sub_id] = "failed"
+                raise ValueError(
+                    f"Sub-node '{sub_id or sub_type}' ({sub_type}) failed: {exc}"
+                ) from exc
 
             if sub_id and exec_context is not None:
                 exec_context.node_states[sub_id] = "completed"
@@ -445,6 +457,9 @@ class DagExecutor:
             indegree[node_id] = 0
 
         subnode_edges: dict[str, list[dict[str, Any]]] = {node_id: [] for node_id in nodes_by_id}
+        loop_enabled, max_cycle_node_executions, max_total_node_executions = self._parse_loop_control(
+            definition
+        )
 
         for edge in edges:
             source = edge.get("source")
@@ -460,11 +475,106 @@ class DagExecutor:
                 subnode_edges[target].append(edge)
                 continue
 
+            if source_type == "if_else":
+                branch_value = str(
+                    edge.get("branch")
+                    if edge.get("branch") is not None
+                    else edge.get("sourceHandle") or ""
+                ).strip()
+                if branch_value not in {"true", "false"}:
+                    raise ValueError(
+                        f"if_else edge '{edge.get('id', source + '->' + target)}' must use branch 'true' or 'false'"
+                    )
+                edge["branch"] = branch_value
+                edge["sourceHandle"] = branch_value
+
+            if source_type == "switch":
+                source_config = nodes_by_id[source].get("config", {})
+                raw_cases = source_config.get("cases", []) if isinstance(source_config, dict) else []
+                label_to_id: dict[str, str] = {}
+                allowed_branches: set[str] = set()
+
+                if isinstance(raw_cases, list):
+                    for idx, case in enumerate(raw_cases):
+                        if not isinstance(case, dict):
+                            continue
+                        case_id = str(case.get("id") or case.get("label") or f"case_{idx + 1}").strip()
+                        case_label = str(case.get("label") or "").strip()
+                        if case_id:
+                            allowed_branches.add(case_id)
+                        if case_label and case_id:
+                            label_to_id[case_label] = case_id
+
+                default_case = str(
+                    source_config.get("default_case")
+                    if isinstance(source_config, dict)
+                    else "default"
+                ).strip() or "default"
+                allowed_branches.add(default_case)
+
+                branch_value = str(
+                    edge.get("branch")
+                    if edge.get("branch") is not None
+                    else edge.get("sourceHandle") or ""
+                ).strip()
+                if branch_value in label_to_id:
+                    branch_value = label_to_id[branch_value]
+
+                if branch_value not in allowed_branches:
+                    raise ValueError(
+                        "switch edge "
+                        f"'{edge.get('id', source + '->' + target)}' has unknown branch '{branch_value}'"
+                    )
+
+                edge["branch"] = branch_value
+                edge["sourceHandle"] = branch_value
+
             outgoing_edges[source].append(edge)
             incoming_edges[target].append(edge)
-            indegree[target] += 1
+        cycle_node_ids: set[str] = set()
+        cycle_edge_ids: set[str] = set()
+        if loop_enabled:
+            cycle_node_ids, cycle_edge_ids = self._identify_cycle_structure(
+                nodes_by_id=nodes_by_id,
+                outgoing_edges=outgoing_edges,
+            )
 
-        topological_order = self._topological_sort(nodes_by_id, outgoing_edges, indegree)
+            unsupported_cycle_nodes = [
+                node_id
+                for node_id in cycle_node_ids
+                if nodes_by_id[node_id].get("type") in {"split_in", "split_out"}
+            ]
+            if unsupported_cycle_nodes:
+                raise ValueError(
+                    "Loop control currently does not support cycles that include split_in/split_out nodes: "
+                    + ", ".join(sorted(unsupported_cycle_nodes))
+                )
+
+        for node_id in nodes_by_id:
+            indegree[node_id] = 0
+        for node_id, incoming in incoming_edges.items():
+            indegree[node_id] = sum(
+                1
+                for edge in incoming
+                if not (loop_enabled and self._edge_key(edge) in cycle_edge_ids)
+            )
+
+        if loop_enabled:
+            pruned_outgoing_edges = {
+                node_id: [
+                    edge
+                    for edge in node_edges
+                    if self._edge_key(edge) not in cycle_edge_ids
+                ]
+                for node_id, node_edges in outgoing_edges.items()
+            }
+            topological_order = self._topological_sort(
+                nodes_by_id,
+                pruned_outgoing_edges,
+                indegree,
+            )
+        else:
+            topological_order = self._topological_sort(nodes_by_id, outgoing_edges, indegree)
         return ExecutionContext(
             definition=definition,
             nodes_by_id=nodes_by_id,
@@ -477,7 +587,122 @@ class DagExecutor:
             blocked_input_counts={node_id: 0 for node_id in nodes_by_id},
             pending_inputs={node_id: [] for node_id in nodes_by_id},
             split_buffers={node_id: [] for node_id in nodes_by_id},
+            loop_enabled=loop_enabled,
+            max_cycle_node_executions=max_cycle_node_executions,
+            max_total_node_executions=max_total_node_executions,
+            cycle_node_ids=cycle_node_ids,
+            cycle_edge_ids=cycle_edge_ids,
+            node_execution_counts={node_id: 0 for node_id in nodes_by_id},
         )
+
+    @staticmethod
+    def _edge_key(edge: dict[str, Any]) -> str:
+        edge_id = edge.get("id")
+        if edge_id is not None and str(edge_id).strip():
+            return str(edge_id)
+        return (
+            f"{edge.get('source')}->{edge.get('target')}"
+            f":{edge.get('branch')}:{edge.get('targetHandle')}"
+        )
+
+    @classmethod
+    def _parse_loop_control(cls, definition: dict[str, Any]) -> tuple[bool, int, int]:
+        raw = definition.get("loop_control")
+        if not isinstance(raw, dict):
+            raw = {}
+
+        enabled = bool(raw.get("enabled", LOOP_CONTROL_DEFAULTS["enabled"]))
+        max_node_raw = raw.get(
+            "max_node_executions",
+            LOOP_CONTROL_DEFAULTS["max_node_executions"],
+        )
+        max_total_raw = raw.get(
+            "max_total_node_executions",
+            LOOP_CONTROL_DEFAULTS["max_total_node_executions"],
+        )
+
+        try:
+            max_node_executions = int(max_node_raw)
+            max_total_node_executions = int(max_total_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "loop_control max_node_executions and max_total_node_executions must be integers"
+            ) from exc
+
+        if max_node_executions < 1:
+            raise ValueError("loop_control.max_node_executions must be >= 1")
+        if max_total_node_executions < 1:
+            raise ValueError("loop_control.max_total_node_executions must be >= 1")
+
+        return enabled, max_node_executions, max_total_node_executions
+
+    @classmethod
+    def _identify_cycle_structure(
+        cls,
+        *,
+        nodes_by_id: dict[str, dict[str, Any]],
+        outgoing_edges: dict[str, list[dict[str, Any]]],
+    ) -> tuple[set[str], set[str]]:
+        index = 0
+        stack: list[str] = []
+        indices: dict[str, int] = {}
+        lowlinks: dict[str, int] = {}
+        on_stack: set[str] = set()
+        components: list[list[str]] = []
+
+        def strong_connect(node_id: str) -> None:
+            nonlocal index
+            indices[node_id] = index
+            lowlinks[node_id] = index
+            index += 1
+            stack.append(node_id)
+            on_stack.add(node_id)
+
+            for edge in outgoing_edges.get(node_id, []):
+                target = edge["target"]
+                if target not in indices:
+                    strong_connect(target)
+                    lowlinks[node_id] = min(lowlinks[node_id], lowlinks[target])
+                elif target in on_stack:
+                    lowlinks[node_id] = min(lowlinks[node_id], indices[target])
+
+            if lowlinks[node_id] == indices[node_id]:
+                component: list[str] = []
+                while stack:
+                    member = stack.pop()
+                    on_stack.remove(member)
+                    component.append(member)
+                    if member == node_id:
+                        break
+                components.append(component)
+
+        for node_id in nodes_by_id:
+            if node_id not in indices:
+                strong_connect(node_id)
+
+        component_by_node: dict[str, int] = {}
+        component_size: dict[int, int] = {}
+        for idx, component in enumerate(components):
+            component_size[idx] = len(component)
+            for node_id in component:
+                component_by_node[node_id] = idx
+
+        cycle_node_ids: set[str] = set()
+        cycle_edge_ids: set[str] = set()
+        for source_id, edges in outgoing_edges.items():
+            source_component = component_by_node.get(source_id)
+            for edge in edges:
+                target_id = edge["target"]
+                target_component = component_by_node.get(target_id)
+                if source_component is None or source_component != target_component:
+                    continue
+                same_component_size = component_size.get(source_component, 0)
+                if same_component_size > 1 or source_id == target_id:
+                    cycle_node_ids.add(source_id)
+                    cycle_node_ids.add(target_id)
+                    cycle_edge_ids.add(cls._edge_key(edge))
+
+        return cycle_node_ids, cycle_edge_ids
 
     def _resolve_start_node(self, context: ExecutionContext) -> str:
         candidates = [
@@ -531,13 +756,19 @@ class DagExecutor:
     ) -> None:
         node = context.nodes_by_id[node_id]
         node_type = node["type"]
+        is_cycle_node = node_id in context.cycle_node_ids
 
         if node_type in UNSUPPORTED_RUNTIME_NODE_TYPES:
             raise NotImplementedError(
                 f"Node type '{node_type}' is not supported in this executor yet"
             )
 
-        if context.node_states[node_id] in {"completed", "skipped"}:
+        if (
+            not is_cycle_node
+            and context.node_states[node_id] in {"completed", "skipped"}
+        ):
+            return
+        if is_cycle_node and context.node_states[node_id] == "skipped":
             return
 
         # Store input data mapped by handle
@@ -554,6 +785,37 @@ class DagExecutor:
         if accounted_inputs < context.indegree[node_id] and context.indegree[node_id] > 0:
             return
 
+        if context.total_node_executions >= context.max_total_node_executions:
+            raise NodeExecutionError(
+                node_id=node_id,
+                node_type=node_type,
+                input_data=input_data,
+                original_exception=ValueError(
+                    "Workflow stopped due to loop safety cap: "
+                    f"max_total_node_executions={context.max_total_node_executions}"
+                ),
+            )
+
+        if (
+            is_cycle_node
+            and context.node_execution_counts[node_id] >= context.max_cycle_node_executions
+        ):
+            context.pending_inputs[node_id] = []
+            context.node_states[node_id] = "skipped"
+            self._emit_node_progress(
+                node_id=node_id,
+                node_type=node_type,
+                status="SKIPPED",
+                input_data=input_data,
+                error_message=(
+                    "Loop safety cap reached for node "
+                    f"'{node_id}': max_node_executions={context.max_cycle_node_executions}"
+                ),
+            )
+            for edge in context.outgoing_edges.get(node_id, []):
+                self._block_path(context=context, node_id=edge["target"])
+            return
+
         # Special handling for nodes that might be triggered with NO inputs (triggers)
         # or nodes that are now ready.
 
@@ -562,12 +824,16 @@ class DagExecutor:
                 "split_out can only be executed as part of a split_in loop"
             )
 
+        context.total_node_executions += 1
+        context.node_execution_counts[node_id] += 1
+
         # Merge and SplitIn have their own specialized logic, but we've already 
         # collected their inputs. We'll adapt them.
 
         if node_type == "split_in":
             # split_in expects raw input_data from the first (and usually only) input
             raw_input = context.pending_inputs[node_id][0]["data"] if context.pending_inputs[node_id] else input_data
+            context.pending_inputs[node_id] = []
             self._handle_split_in(context=context, node_id=node_id, input_data=raw_input)
             return
 
@@ -599,6 +865,7 @@ class DagExecutor:
             # merge runner expects a list of inputs in context.pending_inputs
             # Our new logic already collected them, but merge runner expects just the data list
             merge_data_list = [inp["data"] for inp in all_inputs]
+            context.pending_inputs[node_id] = []
             self._handle_merge_execution(context=context, node_id=node_id, merge_inputs=merge_data_list)
             return
 
@@ -655,6 +922,7 @@ class DagExecutor:
         context.node_outputs[node_id] = output_data
         context.visited_nodes.append(node_id)
         context.node_states[node_id] = "completed"
+        context.pending_inputs[node_id] = []
         self._emit_node_progress(
             node_id=node_id,
             node_type=node_type,
@@ -933,6 +1201,7 @@ class DagExecutor:
         context.node_outputs[node_id] = output_data
         context.visited_nodes.append(node_id)
         context.node_states[node_id] = "completed"
+        context.pending_inputs[node_id] = []
         self._emit_node_progress(
             node_id=node_id,
             node_type="merge",
@@ -953,7 +1222,12 @@ class DagExecutor:
 
 
     def _block_path(self, context: ExecutionContext, node_id: str) -> None:
-        if context.node_states[node_id] in {"completed", "skipped"}:
+        if (
+            node_id not in context.cycle_node_ids
+            and context.node_states[node_id] in {"completed", "skipped"}
+        ):
+            return
+        if node_id in context.cycle_node_ids and context.node_states[node_id] == "skipped":
             return
 
         context.blocked_input_counts[node_id] += 1

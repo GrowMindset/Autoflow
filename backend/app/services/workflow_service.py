@@ -223,9 +223,37 @@ class WorkflowService:
                 config.pop("private_key", None)
                 config.pop("privateKey", None)
                 node_copy["config"] = config
+            if node_copy.get("type") == "slack_send_message" and isinstance(node_copy.get("config"), dict):
+                config = dict(node_copy["config"])
+                config.pop("webhook_url", None)
+                config.pop("channel", None)
+                node_copy["config"] = config
             sanitized_nodes.append(node_copy)
+
+        raw_loop_control = definition.get("loop_control")
+        if isinstance(raw_loop_control, dict):
+            loop_control = {
+                "enabled": bool(raw_loop_control.get("enabled", False)),
+                "max_node_executions": int(raw_loop_control.get("max_node_executions", 3) or 3),
+                "max_total_node_executions": int(
+                    raw_loop_control.get("max_total_node_executions", 500) or 500
+                ),
+            }
+        else:
+            loop_control = {
+                "enabled": False,
+                "max_node_executions": 3,
+                "max_total_node_executions": 500,
+            }
+
+        # Keep safety caps valid even if client sent bad values.
+        loop_control["max_node_executions"] = max(1, int(loop_control["max_node_executions"]))
+        loop_control["max_total_node_executions"] = max(
+            1, int(loop_control["max_total_node_executions"])
+        )
 
         return {
             "nodes": sanitized_nodes,
             "edges": list(definition.get("edges", [])),
+            "loop_control": loop_control,
         }

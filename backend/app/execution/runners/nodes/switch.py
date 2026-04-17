@@ -5,15 +5,15 @@ from app.execution.utils import evaluate_condition, get_nested_value
 class SwitchRunner:
     """
     Evaluates multiple conditions (cases) on input_data and returns
-    the same data with a _branch field set to the matching case label.
+    the same data with a _branch field set to the matching case id.
 
     Config shape:
     {
         "field": "country",
         "cases": [
-            {"label": "india",   "operator": "equals", "value": "IN"},
-            {"label": "usa",     "operator": "equals", "value": "US"},
-            {"label": "uk",      "operator": "equals", "value": "UK"}
+            {"id": "india", "label": "India", "operator": "equals", "value": "IN"},
+            {"id": "usa", "label": "USA", "operator": "equals", "value": "US"},
+            {"id": "uk", "label": "UK", "operator": "equals", "value": "UK"}
         ],
         "default_case": "other"
     }
@@ -30,7 +30,7 @@ class SwitchRunner:
         # --- Step 1: Read config ---
         field        = config.get("field")
         cases        = config.get("cases", [])
-        default_case = config.get("default_case", "default")
+        default_case = str(config.get("default_case", "default") or "default").strip() or "default"
 
         # --- Step 2: Validate config ---
         if not field:
@@ -40,14 +40,15 @@ class SwitchRunner:
 
         # Validate each case has required fields
         for i, case in enumerate(cases):
-            if not case.get("label"):
-                raise ValueError(f"SwitchRunner: case[{i}] is missing 'label'")
+            case_id = str(case.get("id") or case.get("label") or "").strip()
+            if not case_id:
+                raise ValueError(f"SwitchRunner: case[{i}] is missing 'id'")
             if not case.get("operator"):
                 raise ValueError(f"SwitchRunner: case[{i}] is missing 'operator'")
             
             if "value" not in case:
                 raise ValueError(
-                    f"SwitchRunner: case[{i}] (label='{case.get('label')}') "
+                    f"SwitchRunner: case[{i}] (id='{case_id}') "
                     "is missing 'value'."
                 )
 
@@ -58,7 +59,8 @@ class SwitchRunner:
         matched_branch = None
 
         for case in cases:
-            label    = case.get("label")
+            case_id  = str(case.get("id") or case.get("label") or "").strip()
+            label    = case.get("label") or case_id
             operator = case.get("operator")
             value    = case.get("value", "")
 
@@ -68,7 +70,7 @@ class SwitchRunner:
                 raise ValueError(f"SwitchRunner: Error in case '{label}': {e}")
 
             if result:
-                matched_branch = label
+                matched_branch = case_id
                 break   # first match wins — stop checking further cases
 
         # --- Step 5: Fall back to default if no case matched ---

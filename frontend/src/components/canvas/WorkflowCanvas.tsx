@@ -55,6 +55,81 @@ const UNDO_REDO_COMMIT_DEBOUNCE_MS = 180;
 const AI_APPLY_PROCESS_MS = 950;
 const AI_APPLY_HIGHLIGHT_MS = 2200;
 const TRIGGER_NODE_TYPES = ['manual_trigger', 'form_trigger', 'schedule_trigger', 'webhook_trigger', 'workflow_trigger'] as const;
+const DEFAULT_LOOP_CONTROL = {
+  enabled: false,
+  max_node_executions: 3,
+  max_total_node_executions: 500,
+} as const;
+
+type SwitchBranchLookup = {
+  caseIds: Set<string>;
+  labelToId: Map<string, string>;
+  defaultCase: string;
+};
+
+const normalizeSwitchNodeConfig = (config: Record<string, any> | undefined): Record<string, any> => {
+  const safeConfig = config && typeof config === 'object' ? config : {};
+  const nextConfig = { ...safeConfig };
+  const rawCases = Array.isArray(nextConfig.cases) ? nextConfig.cases : [];
+  nextConfig.cases = rawCases
+    .filter((item: any) => item && typeof item === 'object')
+    .map((item: any, index: number) => {
+      const id = String(item.id || item.label || `case_${index + 1}`).trim();
+      return {
+        ...item,
+        id,
+        label: String(item.label || '').trim(),
+      };
+    });
+  const defaultCase = String(nextConfig.default_case || 'default').trim();
+  nextConfig.default_case = defaultCase || 'default';
+  return nextConfig;
+};
+
+const buildSwitchBranchLookup = (nodes: any[]): Map<string, SwitchBranchLookup> => {
+  const lookup = new Map<string, SwitchBranchLookup>();
+
+  for (const node of nodes || []) {
+    if (node?.type !== 'switch') continue;
+
+    const config = normalizeSwitchNodeConfig(node?.config || {});
+    const labelToId = new Map<string, string>();
+    const caseIds = new Set<string>();
+
+    for (const rawCase of config.cases || []) {
+      const caseId = String(rawCase?.id || '').trim();
+      const caseLabel = String(rawCase?.label || '').trim();
+      if (caseId) {
+        caseIds.add(caseId);
+      }
+      if (caseId && caseLabel) {
+        labelToId.set(caseLabel, caseId);
+      }
+    }
+
+    lookup.set(String(node.id), {
+      caseIds,
+      labelToId,
+      defaultCase: String(config.default_case || 'default'),
+    });
+  }
+
+  return lookup;
+};
+
+const normalizeSwitchEdgeBranch = (
+  rawBranch: string | null | undefined,
+  branchLookup: SwitchBranchLookup | undefined,
+): string | null => {
+  const branch = String(rawBranch || '').trim();
+  if (!branch) return null;
+  if (!branchLookup) return branch;
+  if (branchLookup.caseIds.has(branch) || branch === branchLookup.defaultCase) {
+    return branch;
+  }
+  return branchLookup.labelToId.get(branch) || branch;
+};
+
 const buildFormPageUrl = (workflowId: string, nodeId: string): string => {
   const origin = window.location.origin.replace(/\/$/, '');
   return `${origin}/app/forms/${workflowId}?nodeId=${nodeId}`;
@@ -90,6 +165,11 @@ interface CanvasHistoryEntry {
       targetHandle?: string | null;
       branch?: string;
     }>;
+    loop_control?: {
+      enabled?: boolean;
+      max_node_executions?: number;
+      max_total_node_executions?: number;
+    };
   };
   signature: string;
 }
@@ -151,6 +231,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [isAiApplyingChanges, setIsAiApplyingChanges] = useState(false);
   const [recentAiNodeIds, setRecentAiNodeIds] = useState<string[]>([]);
   const [recentAiEdgeIds, setRecentAiEdgeIds] = useState<string[]>([]);
+  const workflowLoopControlRef = useRef<Record<string, any>>({ ...DEFAULT_LOOP_CONTROL });
 
   const buildWorkflowDefinition = useCallback((sourceNodes: WorkflowNode[], sourceEdges: WorkflowEdge[]) => {
     return {
@@ -183,6 +264,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             delete nextConfig.private_key;
             delete nextConfig.privateKey;
           }
+          if (node.data.type === 'slack_send_message') {
+            delete nextConfig.webhook_url;
+            delete nextConfig.channel;
+          }
+          if (node.data.type === 'switch') {
+            return normalizeSwitchNodeConfig(nextConfig);
+          }
           return nextConfig;
         })(),
         id: node.id,
@@ -196,8 +284,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         target: edge.target,
         sourceHandle: edge.sourceHandle,
         targetHandle: edge.targetHandle,
-        branch: edge.branch ?? edge.sourceHandle ?? undefined,
+        branch: edge.sourceHandle ?? edge.branch ?? undefined,
       })),
+      loop_control: {
+        ...DEFAULT_LOOP_CONTROL,
+        ...(workflowLoopControlRef.current || {}),
+      },
     };
   }, []);
 
@@ -349,6 +441,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setShowRunFlowSelector(false);
     setRunFlowOptions([]);
     setIsStartingSelectedFlow(false);
+    workflowLoopControlRef.current = { ...DEFAULT_LOOP_CONTROL };
   }, [workflowId, clearPendingHistoryCommit, clearAiApplyTimers]);
 
   useEffect(() => {
@@ -599,7 +692,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         return false;
       }
 
-      return String(edge.sourceHandle) === String(chosenBranch);
+      const edgeBranch = edge.branch ?? edge.sourceHandle;
+      return String(edgeBranch) === String(chosenBranch);
     };
 
     setEdges((eds) =>
@@ -1043,13 +1137,89 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     );
   }, [setNodes]);
 
+  const hasRuntimeCycle = useCallback((): boolean => {
+    const allNodes = nodesRef.current;
+    const allEdges = edgesRef.current;
+    const nodeIds = new Set(allNodes.map((node) => node.id));
+    const nodeById = new Map(allNodes.map((node) => [node.id, node]));
+    const adjacency = new Map<string, string[]>();
+
+    nodeIds.forEach((nodeId) => adjacency.set(nodeId, []));
+    allEdges.forEach((edge) => {
+      const sourceNode = nodeById.get(edge.source);
+      const targetNode = nodeById.get(edge.target);
+      const isAiSubnodeLink =
+        targetNode?.data?.type === 'ai_agent' &&
+        (sourceNode?.data?.type === 'chat_model_openai' || sourceNode?.data?.type === 'chat_model_groq') &&
+        AI_AGENT_CHILD_HANDLES.includes(String(edge.targetHandle || '') as (typeof AI_AGENT_CHILD_HANDLES)[number]);
+      if (isAiSubnodeLink) return;
+      if (nodeIds.has(edge.source) && nodeIds.has(edge.target)) {
+        adjacency.get(edge.source)?.push(edge.target);
+      }
+    });
+
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+
+    const dfs = (nodeId: string): boolean => {
+      if (visiting.has(nodeId)) return true;
+      if (visited.has(nodeId)) return false;
+      visiting.add(nodeId);
+      for (const next of adjacency.get(nodeId) || []) {
+        if (dfs(next)) return true;
+      }
+      visiting.delete(nodeId);
+      visited.add(nodeId);
+      return false;
+    };
+
+    for (const nodeId of nodeIds) {
+      if (dfs(nodeId)) return true;
+    }
+    return false;
+  }, []);
+
+  const resolveRuntimeLoopOverride = useCallback((): { max_node_executions: number } | null | 'cancelled' => {
+    const definition = buildWorkflowDefinition(nodesRef.current, edgesRef.current) as any;
+    const loopControl = definition?.loop_control || {};
+    const loopEnabled = Boolean(loopControl.enabled);
+    if (!loopEnabled) return null;
+
+    if (!hasRuntimeCycle()) {
+      return null;
+    }
+
+    const defaultValue = String(loopControl.max_node_executions ?? 3);
+    const rawValue = window.prompt(
+      'Loop detected. Enter repeat count for this run:',
+      defaultValue,
+    );
+    if (rawValue === null) {
+      toast('Execution cancelled by user.', { icon: 'ℹ️' });
+      return 'cancelled';
+    }
+
+    const parsed = Number.parseInt(rawValue.trim(), 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      toast.error('Please enter a valid repeat count (integer >= 1).');
+      return 'cancelled';
+    }
+
+    return { max_node_executions: parsed };
+  }, [buildWorkflowDefinition, hasRuntimeCycle]);
+
   const startExecutionFromTrigger = useCallback(async (trigger: WorkflowNode) => {
     resetNodeExecutionVisualState();
+    const runtimeLoopOverride = resolveRuntimeLoopOverride();
+    if (runtimeLoopOverride === 'cancelled') {
+      return;
+    }
 
     try {
       if (trigger.data.type === 'manual_trigger') {
         const enqueue = await executionService.runWorkflow(workflowId, {
           start_node_id: trigger.id,
+          loop_control_override: runtimeLoopOverride || undefined,
         });
         toast.success('Workflow execution started!');
         beginExecutionTracking(enqueue.execution_id, {
@@ -1070,6 +1240,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       } else if (trigger.data.type === 'schedule_trigger') {
         const enqueue = await executionService.runWorkflowSchedule(workflowId, {
           start_node_id: trigger.id,
+          loop_control_override: runtimeLoopOverride || undefined,
         });
         toast.success('Scheduled workflow execution started!');
         beginExecutionTracking(enqueue.execution_id, {
@@ -1083,7 +1254,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       console.error('Execution failed:', error);
       toast.error('Workflow execution failed. Check console for details.');
     }
-  }, [beginExecutionTracking, resetNodeExecutionVisualState, workflowId]);
+  }, [beginExecutionTracking, resetNodeExecutionVisualState, resolveRuntimeLoopOverride, workflowId]);
 
   const runSelectedFlowOption = useCallback(async (trigger: WorkflowNode) => {
     setIsStartingSelectedFlow(true);
@@ -1387,17 +1558,29 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   // Deserialization logic (restore from backend format)
   const loadWorkflowData = useCallback((definition: any, options?: { resetHistory?: boolean }) => {
     if (!definition) return;
+    workflowLoopControlRef.current = {
+      ...DEFAULT_LOOP_CONTROL,
+      ...(definition.loop_control || {}),
+    };
     const incomingNodeCount = Array.isArray(definition.nodes) ? definition.nodes.length : 0;
     const incomingEdgeCount = Array.isArray(definition.edges) ? definition.edges.length : 0;
     if (workflowId === 'new' && incomingNodeCount === 0 && incomingEdgeCount === 0) {
       setHasPickedNewWorkflowStarter(false);
     }
 
+    const switchBranchLookup = buildSwitchBranchLookup(definition.nodes || []);
+    const nodeTypeById = new Map<string, string>(
+      (definition.nodes || []).map((node: any) => [String(node.id), String(node.type || '')]),
+    );
+
     // Map simplified nodes back to React Flow format
     const rfNodes: WorkflowNode[] = (definition.nodes || []).map((n: any) => {
       const category = NODE_LIBRARY.trigger.some(ref => ref.type === n.type) ? 'trigger' :
         NODE_LIBRARY.action.some(ref => ref.type === n.type) ? 'action' :
           NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' : 'ai';
+      const normalizedConfig = n.type === 'switch'
+        ? normalizeSwitchNodeConfig(n.config)
+        : n.config;
 
       return {
         id: n.id,
@@ -1405,7 +1588,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         position: n.position,
         data: {
           label: n.label,
-          config: n.config,
+          config: normalizedConfig,
           type: n.type,
           category: category
         }
@@ -1416,15 +1599,33 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setNodes(rfNodes);
 
     // Map simplified edges back to React Flow format with handle awareness
-    const rfEdges = (definition.edges || []).map((e: any) => ({
-      ...e,
-      type: 'deletable',
-      sourceHandle: e.sourceHandle || e.branch || null,
-      targetHandle: e.targetHandle || null,
-      animated: false,
-      style: { stroke: '#94a3b8', strokeWidth: 2 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
-    }));
+    const rfEdges = (definition.edges || []).map((e: any) => {
+      const sourceNodeType = nodeTypeById.get(String(e.source));
+      const rawBranch = e.branch ?? e.sourceHandle ?? null;
+      let normalizedBranch: string | null = rawBranch ? String(rawBranch) : null;
+
+      if (sourceNodeType === 'switch') {
+        normalizedBranch = normalizeSwitchEdgeBranch(
+          normalizedBranch,
+          switchBranchLookup.get(String(e.source)),
+        );
+      } else if (sourceNodeType === 'if_else') {
+        const branch = String(normalizedBranch || '').trim();
+        normalizedBranch = branch === 'true' || branch === 'false' ? branch : normalizedBranch;
+      }
+
+      const sourceHandle = e.sourceHandle ?? normalizedBranch ?? null;
+      return {
+        ...e,
+        type: 'deletable',
+        sourceHandle,
+        targetHandle: e.targetHandle || null,
+        branch: normalizedBranch ?? undefined,
+        animated: false,
+        style: { stroke: '#94a3b8', strokeWidth: 2 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
+      };
+    });
 
     setEdges(rfEdges);
     if (options?.resetHistory !== false) {
@@ -1436,14 +1637,18 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           position: node.position,
           config: node.config || {},
         })),
-        edges: (definition.edges || []).map((edge: any) => ({
+        edges: rfEdges.map((edge: any) => ({
           id: edge.id,
           source: edge.source,
           target: edge.target,
-          sourceHandle: edge.sourceHandle || edge.branch || null,
+          sourceHandle: edge.sourceHandle || null,
           targetHandle: edge.targetHandle || null,
-          branch: edge.branch ?? edge.sourceHandle ?? undefined,
+          branch: edge.branch ?? undefined,
         })),
+        loop_control: {
+          ...DEFAULT_LOOP_CONTROL,
+          ...(definition.loop_control || {}),
+        },
       });
     }
 
@@ -1680,6 +1885,22 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       })
     );
     emitCanvasMutation('node_config_change');
+  }, [setNodes, emitCanvasMutation]);
+
+  const updateNodeLabel = useCallback((id: string, label: string) => {
+    setNodes((nds) =>
+      nds.map((node) => {
+        if (node.id !== id) return node;
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            label,
+          },
+        };
+      })
+    );
+    emitCanvasMutation('node_label_change');
   }, [setNodes, emitCanvasMutation]);
 
   const getUpstreamData = (nodeId: string) => {
@@ -2195,10 +2416,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                     <form
                       onSubmit={async (e) => {
                         e.preventDefault();
+                        const runtimeLoopOverride = resolveRuntimeLoopOverride();
+                        if (runtimeLoopOverride === 'cancelled') {
+                          return;
+                        }
                         try {
                           const enqueue = await executionService.runWorkflowForm(workflowId, {
                             form_data: triggerFormData,
                             start_node_id: triggerNode.id,
+                            loop_control_override: runtimeLoopOverride || undefined,
                           });
                           toast.success('Workflow execution started!');
                           setShowTriggerForm(false);
@@ -2286,6 +2512,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 nextNodes={nextNodes}
                 onClose={() => setSelectedNodeId(null)}
                 onUpdate={updateNodeConfig}
+                onUpdateLabel={updateNodeLabel}
                 onNavigateNode={(nodeId) => setSelectedNodeId(nodeId)}
                 onExecutionEnqueued={({ executionId, nodeId, triggeredBy }) => {
                   beginExecutionTracking(executionId, {

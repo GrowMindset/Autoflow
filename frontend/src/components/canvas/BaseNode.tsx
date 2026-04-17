@@ -9,9 +9,9 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
   const missing: string[] = [];
 
   const requiredFields: Record<string, string[]> = {
-    'if_else': ['field', 'operator', 'value'],
+    'if_else': ['field', 'operator'],
     'switch': ['field'],
-    'filter': ['condition'],
+    'filter': ['input_key', 'field', 'operator', 'value'],
     'get_gmail_message': ['credential_id'],
     'send_gmail_message': ['credential_id', 'to', 'subject', 'body'],
     'create_google_sheets': ['credential_id', 'title'],
@@ -30,6 +30,23 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
   for (const field of fields) {
     if (!config[field]) {
       missing.push(`Required field '${field}' is missing`);
+    }
+  }
+
+  if (type === 'if_else') {
+    const valueMode = String(config.value_mode || 'literal').toLowerCase() === 'field'
+      ? 'field'
+      : 'literal';
+    if (valueMode === 'field') {
+      if (!String(config.value_field || '').trim()) {
+        missing.push("Required field 'value_field' is missing for value_mode='field'");
+      }
+    } else {
+      const value = config.value;
+      const hasLiteral = value !== undefined && value !== null && String(value).trim() !== '';
+      if (!hasLiteral) {
+        missing.push("Required field 'value' is missing for value_mode='literal'");
+      }
     }
   }
 
@@ -95,10 +112,13 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
   };
 
   // Notify React Flow when handles change (e.g. for Switch node cases)
-  const caseIds = (data.config.cases || []).map((c: any) => c.id).join(',');
+  const caseIds = (data.config.cases || [])
+    .map((c: any) => String(c?.id || c?.label || ''))
+    .join(',');
+  const defaultCaseHandle = String(data.config.default_case || 'default');
   useEffect(() => {
     updateNodeInternals(id);
-  }, [id, caseIds, updateNodeInternals]);
+  }, [id, caseIds, defaultCaseHandle, updateNodeInternals]);
   
   const normalizeHandle = (handleId: string | null | undefined) => handleId ?? null;
 
@@ -279,19 +299,22 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
         </>
       ) : data.type === 'switch' ? (
         <div className="absolute -right-1 top-0 bottom-0 flex flex-col justify-center gap-4 py-2 pointer-events-none">
-          {(data.config.cases || []).map((c: any, i: number) => (
-            <div key={c.id || i} className="flex items-center justify-end w-32 translate-x-1">
-              <span className="text-[6px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm mr-2 max-w-[50px] truncate pointer-events-auto" title={c.label}>
-                {c.label || `Case ${i + 1}`}
+          {(data.config.cases || []).map((c: any, i: number) => {
+            const caseId = String(c?.id || c?.label || `case_${i}`);
+            const caseLabel = String(c?.label || `Case ${i + 1}`);
+            return (
+            <div key={caseId} className="flex items-center justify-end w-32 translate-x-1">
+              <span className="text-[6px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm mr-2 max-w-[50px] truncate pointer-events-auto" title={caseLabel}>
+                {caseLabel}
               </span>
-              <Handle type="source" position={Position.Right} id={c.id || c.label || `case_${i}`} className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-blue-400'}`} />
-              <PlusButton handleId={c.id || c.label || `case_${i}`} className="-right-10" />
+              <Handle type="source" position={Position.Right} id={caseId} className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-blue-400'}`} />
+              <PlusButton handleId={caseId} className="-right-10" />
             </div>
-          ))}
+          )})}
           <div className="flex items-center justify-end w-32 translate-x-1">
             <span className="text-[6px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm mr-2 pointer-events-auto">Default</span>
-            <Handle type="source" position={Position.Right} id="default" className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-slate-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-400'}`} />
-            <PlusButton handleId="default" className="-right-10" />
+            <Handle type="source" position={Position.Right} id={defaultCaseHandle} className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-slate-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-400'}`} />
+            <PlusButton handleId={defaultCaseHandle} className="-right-10" />
           </div>
         </div>
       ) : data.type === 'ai_agent' ? (

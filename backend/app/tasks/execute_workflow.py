@@ -180,11 +180,50 @@ def _upsert_node_row(
     return row
 
 
+def _build_effective_definition(
+    definition: dict[str, Any] | None,
+    *,
+    loop_control_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    effective = dict(definition or {})
+    base_loop_control = effective.get("loop_control")
+    if not isinstance(base_loop_control, dict):
+        base_loop_control = {}
+
+    merged_loop_control = {
+        "enabled": bool(base_loop_control.get("enabled", False)),
+        "max_node_executions": int(base_loop_control.get("max_node_executions", 3) or 3),
+        "max_total_node_executions": int(
+            base_loop_control.get("max_total_node_executions", 500) or 500
+        ),
+    }
+
+    if isinstance(loop_control_override, dict):
+        if loop_control_override.get("max_node_executions") is not None:
+            try:
+                merged_loop_control["max_node_executions"] = max(
+                    1, int(loop_control_override["max_node_executions"])
+                )
+            except Exception:
+                pass
+        if loop_control_override.get("max_total_node_executions") is not None:
+            try:
+                merged_loop_control["max_total_node_executions"] = max(
+                    1, int(loop_control_override["max_total_node_executions"])
+                )
+            except Exception:
+                pass
+
+    effective["loop_control"] = merged_loop_control
+    return effective
+
+
 async def _run_execution(
     *,
     execution_id: str,
     initial_payload: dict[str, Any] | None = None,
     start_node_id: str | None = None,
+    loop_control_override: dict[str, Any] | None = None,
 ) -> None:
     session_factory = _create_task_session_factory()
     engine = session_factory.kw["bind"]
@@ -250,6 +289,11 @@ async def _run_execution(
 
                 progress_lock = asyncio.Lock()
                 loop = asyncio.get_running_loop()
+
+                effective_definition = _build_effective_definition(
+                    workflow.definition,
+                    loop_control_override=loop_control_override,
+                )
 
                 async def _persist_node_progress(
                     *,
@@ -326,7 +370,7 @@ async def _run_execution(
 
                 result = await asyncio.to_thread(
                     DagExecutor().execute,
-                    definition=workflow.definition,
+                    definition=effective_definition,
                     initial_payload=initial_payload,
                     start_node_id=start_node_id,
                     runner_context={
@@ -556,12 +600,18 @@ def run_execution(
     execution_id: str,
     initial_payload: dict[str, Any] | None = None,
     start_node_id: str | None = None,
+    loop_control_override: dict[str, Any] | None = None,
+    **kwargs: Any,
 ) -> None:
+    # Forward-compatible shim: ignore unexpected kwargs from mixed-version senders.
+    if loop_control_override is None and isinstance(kwargs.get("loop_control_override"), dict):
+        loop_control_override = kwargs.get("loop_control_override")
     asyncio.run(
         _run_execution(
             execution_id=execution_id,
             initial_payload=initial_payload,
             start_node_id=start_node_id,
+            loop_control_override=loop_control_override,
         )
     )
 

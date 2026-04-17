@@ -39,6 +39,7 @@ class CreateGoogleSheetsRunner:
             raise ValueError("Google Sheets Create: 'title' is required.")
 
         sheet_name = str(config.get("sheet_name") or "").strip()
+        columns = self._collect_columns(config.get("columns"))
 
         service = self._build_sheets_service(credential_data)
         body: dict[str, Any] = {"properties": {"title": title}}
@@ -81,6 +82,36 @@ class CreateGoogleSheetsRunner:
                 if isinstance(title_value, str) and title_value.strip():
                     sheet_titles.append(title_value)
 
+        if columns:
+            target_sheet_name = sheet_name or (sheet_titles[0] if sheet_titles else "Sheet1")
+            try:
+                self._write_header_row(
+                    service=service,
+                    spreadsheet_id=str(created_dict.get("spreadsheetId") or ""),
+                    sheet_name=target_sheet_name,
+                    headers=columns,
+                )
+            except RefreshError as exc:
+                raise ValueError(
+                    "Google Sheets Create: Google credential authentication failed while writing column headers. "
+                    "Reconnect OAuth credential."
+                ) from exc
+            except HttpError as exc:
+                google_error = self._extract_google_error(exc)
+                if exc.resp is not None and int(getattr(exc.resp, "status", 0) or 0) == 403:
+                    raise ValueError(
+                        "Google Sheets Create: Permission denied (403) while writing column headers. "
+                        f"Google said: {google_error}. "
+                        "Reconnect Sheets OAuth credential, ensure this account is allowed in OAuth test users, and verify Sheets/Drive APIs are enabled."
+                    ) from exc
+                raise ValueError(
+                    f"Google Sheets Create: Failed to write column headers: {exc}"
+                ) from exc
+            except Exception as exc:
+                raise ValueError(
+                    f"Google Sheets Create: Failed to write column headers: {exc}"
+                ) from exc
+
         result: dict[str, Any] = {}
         if isinstance(input_data, dict):
             result.update(input_data)
@@ -92,6 +123,7 @@ class CreateGoogleSheetsRunner:
                 "google_sheets_spreadsheet_url": created_dict.get("spreadsheetUrl"),
                 "google_sheets_title": created_title or title,
                 "google_sheets_sheet_names": sheet_titles,
+                "google_sheets_headers": columns,
             }
         )
         return result
@@ -136,3 +168,57 @@ class CreateGoogleSheetsRunner:
             return raw or str(exc)
         except Exception:
             return str(exc)
+
+    @staticmethod
+    def _collect_columns(raw_columns: Any) -> list[str]:
+        if not isinstance(raw_columns, list):
+            return []
+
+        seen_lower: set[str] = set()
+        columns: list[str] = []
+        for item in raw_columns:
+            token = str(item or "").strip()
+            if not token:
+                continue
+            lowered = token.lower()
+            if lowered in seen_lower:
+                continue
+            seen_lower.add(lowered)
+            columns.append(token)
+        return columns
+
+    @classmethod
+    def _write_header_row(
+        cls,
+        *,
+        service: Any,
+        spreadsheet_id: str,
+        sheet_name: str,
+        headers: list[str],
+    ) -> None:
+        if not spreadsheet_id or not headers:
+            return
+        end_col = cls._index_to_column_letter(len(headers))
+        target_range = f"{sheet_name}!A1:{end_col}1"
+        (
+            service.spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=spreadsheet_id,
+                range=target_range,
+                valueInputOption="USER_ENTERED",
+                body={"values": [headers]},
+            )
+            .execute()
+        )
+
+    @staticmethod
+    def _index_to_column_letter(index: int) -> str:
+        if index < 1:
+            raise ValueError("Column index must be >= 1.")
+        out: list[str] = []
+        current = index
+        while current > 0:
+            current, remainder = divmod(current - 1, 26)
+            out.append(chr(ord("A") + remainder))
+        return "".join(reversed(out))

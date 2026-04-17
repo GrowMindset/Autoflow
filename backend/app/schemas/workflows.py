@@ -62,6 +62,7 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "credential_id": "",
         "title": "",
         "sheet_name": "",
+        "columns": [],
     },
     "search_update_google_sheets": {
         "credential_id": "",
@@ -70,6 +71,7 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "search_column": "",
         "search_value": "",
         "update_mappings": [],
+        "ensure_columns": [],
         "update_column": "",
         "update_value": "",
         "auto_create_headers": True,
@@ -100,6 +102,10 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "template_params": [],
         "language_code": "en_US",
     },
+    "slack_send_message": {
+        "credential_id": "",
+        "message": "",
+    },
     "linkedin": {
         "content": "",
         "visibility": "",
@@ -108,6 +114,9 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "field": "",
         "operator": "equals",
         "value": "",
+        "value_mode": "literal",
+        "value_field": "",
+        "case_sensitive": True,
     },
     "switch": {
         "field": "",
@@ -184,6 +193,26 @@ class WorkflowNodeDefinition(BaseModel):
             **defaults,
             **self.config,
         }
+
+        if self.type == "switch":
+            raw_cases = self.config.get("cases", [])
+            normalized_cases: list[dict[str, Any]] = []
+            if isinstance(raw_cases, list):
+                for idx, raw_case in enumerate(raw_cases):
+                    if not isinstance(raw_case, dict):
+                        continue
+                    case = dict(raw_case)
+                    label = str(case.get("label") or "").strip()
+                    case_id = str(case.get("id") or "").strip()
+                    if not case_id:
+                        case_id = label or f"case_{idx + 1}"
+                    case["id"] = case_id
+                    case["label"] = label
+                    normalized_cases.append(case)
+            self.config["cases"] = normalized_cases
+            default_case = str(self.config.get("default_case") or "").strip()
+            self.config["default_case"] = default_case or "default"
+
         return self
 
 
@@ -196,9 +225,16 @@ class WorkflowEdgeDefinition(BaseModel):
     branch: str | None = Field(default=None, max_length=100)
 
 
+class WorkflowLoopControl(BaseModel):
+    enabled: bool = False
+    max_node_executions: int = Field(default=3, ge=1, le=10000)
+    max_total_node_executions: int = Field(default=500, ge=1, le=200000)
+
+
 class WorkflowDefinition(BaseModel):
     nodes: list[WorkflowNodeDefinition]
     edges: list[WorkflowEdgeDefinition]
+    loop_control: WorkflowLoopControl = Field(default_factory=WorkflowLoopControl)
 
     @model_validator(mode="after")
     def validate_graph(self) -> "WorkflowDefinition":
@@ -217,24 +253,45 @@ class WorkflowDefinition(BaseModel):
                 raise ValueError("Workflow definition contains edges with unknown nodes")
 
             source_node = nodes_by_id[edge.source]
-            if source_node.type == "if_else" and edge.branch not in {None, "true", "false"}:
-                raise ValueError(
-                    "Workflow definition contains invalid if_else branch labels"
-                )
+            if source_node.type == "if_else":
+                branch = edge.branch if edge.branch is not None else edge.sourceHandle
+                branch_value = str(branch or "").strip()
+                if branch_value not in {"true", "false"}:
+                    raise ValueError(
+                        "Workflow definition contains invalid if_else branch labels"
+                    )
+                edge.branch = branch_value
+                edge.sourceHandle = branch_value
+
             if source_node.type == "switch":
                 switch_cases = source_node.config.get("cases", [])
-                allowed_branches = {
-                    case.get("label")
+                label_to_id = {
+                    str(case.get("label") or "").strip(): str(case.get("id") or "").strip()
                     for case in switch_cases
-                    if isinstance(case, dict) and case.get("label")
+                    if isinstance(case, dict)
+                    and str(case.get("label") or "").strip()
+                    and str(case.get("id") or "").strip()
                 }
-                default_case = source_node.config.get("default_case")
+                allowed_branches = {
+                    str(case.get("id") or "").strip()
+                    for case in switch_cases
+                    if isinstance(case, dict) and str(case.get("id") or "").strip()
+                }
+                default_case = str(source_node.config.get("default_case") or "").strip()
                 if default_case:
                     allowed_branches.add(default_case)
-                if edge.branch is not None and edge.branch not in allowed_branches:
+
+                branch = edge.branch if edge.branch is not None else edge.sourceHandle
+                branch_value = str(branch or "").strip()
+                if branch_value in label_to_id:
+                    branch_value = label_to_id[branch_value]
+
+                if branch_value not in allowed_branches:
                     raise ValueError(
-                        "Workflow definition contains switch edges with unknown branch labels"
+                        "Workflow definition contains switch edges with unknown branch ids"
                     )
+                edge.branch = branch_value
+                edge.sourceHandle = branch_value
         return self
 
 

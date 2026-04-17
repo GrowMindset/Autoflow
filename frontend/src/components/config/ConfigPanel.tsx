@@ -19,6 +19,7 @@ interface ConfigPanelProps {
   nextNodes: WorkflowNode[];
   onClose: () => void;
   onUpdate: (id: string, config: Record<string, any>, output?: any) => void;
+  onUpdateLabel?: (id: string, label: string) => void;
   onNavigateNode: (nodeId: string) => void;
   onExecutionEnqueued?: (payload: {
     executionId: string;
@@ -132,6 +133,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   nextNodes,
   onClose,
   onUpdate,
+  onUpdateLabel,
   onNavigateNode,
   onExecutionEnqueued,
 }) => {
@@ -146,6 +148,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const [webhookMeta, setWebhookMeta] = useState<WebhookMeta | null>(null);
   const [webhookMetaLoading, setWebhookMetaLoading] = useState(false);
   const [openNavMenu, setOpenNavMenu] = useState<'prev' | 'next' | null>(null);
+  const [editableLabel, setEditableLabel] = useState(node.data.label || '');
   const resizingSideRef = React.useRef<'left' | 'right' | null>(null);
   const resizeStartXRef = React.useRef(0);
   const resizeStartWidthRef = React.useRef(0);
@@ -166,6 +169,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   useEffect(() => {
     setOpenNavMenu(null);
   }, [node.id]);
+
+  useEffect(() => {
+    setEditableLabel(node.data.label || '');
+  }, [node.id, node.data.label]);
 
   useEffect(() => {
     if (node.data.type !== 'form_trigger') {
@@ -313,6 +320,17 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const handleConfigChange = (key: string, value: any) => {
     const nextConfig = { ...node.data.config, [key]: value };
     onUpdate(node.id, nextConfig);
+  };
+
+  const commitNodeLabelChange = () => {
+    const nextLabel = editableLabel.trim();
+    if (!nextLabel) {
+      setEditableLabel(node.data.label || '');
+      toast.error('Node name cannot be empty.');
+      return;
+    }
+    if (nextLabel === node.data.label) return;
+    onUpdateLabel?.(node.id, nextLabel);
   };
 
   const handleExecute = async () => {
@@ -506,7 +524,25 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-3">
-                <h2 className="text-base font-black text-slate-800 dark:text-slate-100 tracking-tight">{node.data.label}</h2>
+                <input
+                  type="text"
+                  value={editableLabel}
+                  onChange={(event) => setEditableLabel(event.target.value)}
+                  onBlur={commitNodeLabelChange}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      (event.currentTarget as HTMLInputElement).blur();
+                    }
+                    if (event.key === 'Escape') {
+                      setEditableLabel(node.data.label || '');
+                      (event.currentTarget as HTMLInputElement).blur();
+                    }
+                  }}
+                  className="min-w-[220px] max-w-[460px] bg-transparent border border-transparent hover:border-slate-200 dark:hover:border-slate-700 focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 rounded-lg px-2 py-1 text-base font-black text-slate-800 dark:text-slate-100 tracking-tight outline-none transition-all"
+                  title="Editable node name"
+                  placeholder="Node name"
+                />
                 {node.data.status && (
                   <span className={`text-[9px] font-black px-2 py-0.5 rounded-full text-white uppercase tracking-widest shadow-sm
                     ${node.data.status === 'SUCCEEDED' ? 'bg-emerald-500' :

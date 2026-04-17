@@ -97,6 +97,33 @@ const createDefaultScheduleRule = (interval: ScheduleInterval = 'hours'): Schedu
   }
 };
 
+const PATH_STYLE_FIELD_KEYS = new Set([
+  'field',
+  'value_field',
+  'input_key',
+  'output_key',
+]);
+
+const SWITCH_CASE_OPERATORS = [
+  'equals',
+  'not_equals',
+  'greater_than',
+  'less_than',
+  'contains',
+  'not_contains',
+];
+
+const getDroppedPathValue = (path: string, fieldKey: string): string =>
+  PATH_STYLE_FIELD_KEYS.has(fieldKey) ? path : `{{${path}}}`;
+
+const normalizeSwitchCaseId = (rawCase: any, index: number): string => {
+  const explicitId = String(rawCase?.id || '').trim();
+  if (explicitId) return explicitId;
+  const labelBased = String(rawCase?.label || '').trim();
+  if (labelBased) return labelBased;
+  return `case_${index + 1}`;
+};
+
 const normalizeScheduleRule = (rawRule: any, fallbackId?: string): ScheduleRule => {
   const rawObject: Partial<ScheduleRule> = rawRule && typeof rawRule === 'object' ? rawRule : {};
   const intervalRaw = String(rawRule?.interval || '').trim().toLowerCase();
@@ -116,14 +143,12 @@ const normalizeScheduleRule = (rawRule: any, fallbackId?: string): ScheduleRule 
  */
 export const CONFIG_SCHEMA: Record<string, any[]> = {
   if_else: [
-    { key: 'field', label: 'Field to evaluate', type: 'text', placeholder: 'e.g. status' },
     {
-      key: 'operator',
-      label: 'Operator',
-      type: 'select',
-      options: ['equals', 'not_equals', 'greater_than', 'less_than', 'contains', 'not_contains']
+      key: 'condition',
+      label: 'Condition Builder',
+      type: 'if_condition',
+      helperText: 'Compare one field with a literal value or another input field.',
     },
-    { key: 'value', label: 'Value to compare', type: 'text', placeholder: 'e.g. paid' }
   ],
   filter: [
     { key: 'input_key', label: 'Input Array Key', type: 'text', placeholder: 'e.g. items' },
@@ -237,7 +262,13 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       helperText: 'OAuth only: connect Google Sheets in Credential Manager, then select it here.',
     },
     { key: 'title', label: 'Spreadsheet Title', type: 'text', placeholder: 'e.g. New Outreach List' },
-    { key: 'sheet_name', label: 'First Sheet Name', type: 'text', placeholder: 'e.g. Leads' }
+    { key: 'sheet_name', label: 'First Sheet Name', type: 'text', placeholder: 'e.g. Leads' },
+    {
+      key: 'columns',
+      label: 'Column Headers',
+      type: 'string_array',
+      helperText: 'Optional: add headers (e.g. Name, Email, Status). They will be written to row 1.',
+    },
   ],
   search_update_google_sheets: [
     {
@@ -256,6 +287,12 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       label: 'Columns to Update',
       type: 'sheet_update_mappings',
       helperText: 'Add one or more column/value pairs. You can use mapping variables in values.',
+    },
+    {
+      key: 'ensure_columns',
+      label: 'Ensure Extra Columns',
+      type: 'string_array',
+      helperText: 'Optional: these headers are created if missing, even if not updated in this run.',
     },
     { key: 'auto_create_headers', label: 'Auto Create Headers', type: 'boolean' },
     { key: 'upsert_if_not_found', label: 'Append Row If No Match', type: 'boolean' },
@@ -463,7 +500,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
     } else {
       const path = e.dataTransfer.getData('application/json-path');
       if (path) {
-        textToInsert = `{{${path}}}`;
+        textToInsert = getDroppedPathValue(path, fieldKey);
       } else {
         // Fallback for external drops
         textToInsert = e.dataTransfer.getData('text/plain') || '';
@@ -682,6 +719,131 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
             <option value="true">true</option>
           </select>
         );
+
+      case 'if_condition': {
+        const fieldPath = String(config.field ?? '');
+        const operator = String(config.operator || 'equals');
+        const valueMode = String(config.value_mode || 'literal').toLowerCase() === 'field'
+          ? 'field'
+          : 'literal';
+        const valueFieldPath = String(config.value_field ?? '');
+        const compareValue = config.value ?? '';
+        const caseSensitive = Boolean(config.case_sensitive ?? true);
+        const usesStringComparison = ['equals', 'not_equals', 'contains', 'not_contains'].includes(operator);
+
+        return (
+          <div className="space-y-3 p-3 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-xl">
+            <div className="space-y-1">
+              <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Left Field Path
+              </label>
+              <input
+                type="text"
+                value={fieldPath}
+                placeholder={dragOverField === 'field' ? 'Drop to insert path…' : 'e.g. status or user.payment.status'}
+                onChange={(event) => onChange('field', event.target.value)}
+                onDragOver={(event) => handleDragOver(event, 'field')}
+                onDragLeave={(event) => handleDragLeave(event)}
+                onDrop={(event) => handleDrop(event, 'field')}
+                className={`w-full bg-white dark:bg-slate-900 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === 'field'
+                  ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                  : 'border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+                  }`}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Operator
+                </label>
+                <select
+                  value={operator}
+                  onChange={(event) => onChange('operator', event.target.value)}
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                >
+                  <option value="equals">Equals</option>
+                  <option value="not_equals">Not Equals</option>
+                  <option value="greater_than">Greater Than</option>
+                  <option value="less_than">Less Than</option>
+                  <option value="contains">Contains</option>
+                  <option value="not_contains">Not Contains</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Compare With
+                </label>
+                <select
+                  value={valueMode}
+                  onChange={(event) => onChange('value_mode', event.target.value)}
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                >
+                  <option value="literal">Literal Value</option>
+                  <option value="field">Another Field</option>
+                </select>
+              </div>
+            </div>
+
+            {valueMode === 'field' ? (
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Right Field Path
+                </label>
+                <input
+                  type="text"
+                  value={valueFieldPath}
+                  placeholder={dragOverField === 'value_field' ? 'Drop to insert path…' : 'e.g. expected_status'}
+                  onChange={(event) => onChange('value_field', event.target.value)}
+                  onDragOver={(event) => handleDragOver(event, 'value_field')}
+                  onDragLeave={(event) => handleDragLeave(event)}
+                  onDrop={(event) => handleDrop(event, 'value_field')}
+                  className={`w-full bg-white dark:bg-slate-900 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === 'value_field'
+                    ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                    : 'border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+                    }`}
+                />
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Right Value
+                </label>
+                <input
+                  type="text"
+                  value={String(compareValue ?? '')}
+                  placeholder={dragOverField === 'value' ? 'Drop to insert {{path}}…' : 'e.g. paid'}
+                  onChange={(event) => onChange('value', event.target.value)}
+                  onDragOver={(event) => handleDragOver(event, 'value')}
+                  onDragLeave={(event) => handleDragLeave(event)}
+                  onDrop={(event) => handleDrop(event, 'value')}
+                  className={`w-full bg-white dark:bg-slate-900 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === 'value'
+                    ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                    : 'border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+                    }`}
+                />
+              </div>
+            )}
+
+            {usesStringComparison && (
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Case Sensitive
+                </label>
+                <select
+                  value={String(caseSensitive)}
+                  onChange={(event) => onChange('case_sensitive', event.target.value === 'true')}
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                >
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              </div>
+            )}
+          </div>
+        );
+      }
 
       case 'schedule_rules': {
         const rawRules = Array.isArray(value) ? value : [];
@@ -1008,8 +1170,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
 
         // Auto-migration: Ensure every case has a stable ID
         const casesWithIds = cases.map((c: any, idx: number) => {
-          if (!c.id) {
-            return { ...c, id: c.label || `case_${idx}` };
+          const stableId = normalizeSwitchCaseId(c, idx);
+          if (String(c?.id || '').trim() !== stableId) {
+            return { ...c, id: stableId };
           }
           return c;
         });
@@ -1054,8 +1217,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                     }}
                     className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400"
                   >
-                    <option value="equals">equals</option>
-                    <option value="contains">contains</option>
+                    {SWITCH_CASE_OPERATORS.map((op) => (
+                      <option key={op} value={op}>{op}</option>
+                    ))}
                   </select>
                 </div>
                 <div className="relative">
@@ -1480,11 +1644,12 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
         );
 
       case 'textarea':
+        const isPathPlaceholderForTextarea = PATH_STYLE_FIELD_KEYS.has(field.key);
         return (
           <div className="relative">
             <textarea
               value={value}
-              placeholder={dragOverField === field.key ? 'Drop to insert {{path}}…' : field.placeholder}
+              placeholder={dragOverField === field.key ? (isPathPlaceholderForTextarea ? 'Drop to insert path…' : 'Drop to insert {{path}}…') : field.placeholder}
               onChange={(e) => onChange(field.key, e.target.value)}
               onDragOver={(e) => handleDragOver(e, field.key)}
               onDragLeave={(e) => handleDragLeave(e)}
@@ -1510,12 +1675,13 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
 
       case 'text':
       default:
+        const isPathPlaceholderForText = PATH_STYLE_FIELD_KEYS.has(field.key);
         return (
           <div className="relative">
             <input
               type="text"
               value={value}
-              placeholder={dragOverField === field.key ? 'Drop to insert {{path}}…' : field.placeholder}
+              placeholder={dragOverField === field.key ? (isPathPlaceholderForText ? 'Drop to insert path…' : 'Drop to insert {{path}}…') : field.placeholder}
               onChange={(e) => onChange(field.key, e.target.value)}
               onDragOver={(e) => handleDragOver(e, field.key)}
               onDragLeave={(e) => handleDragLeave(e)}

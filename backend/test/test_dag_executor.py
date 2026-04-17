@@ -1,6 +1,6 @@
 import unittest
 
-from app.execution.dag_executor import DagExecutor
+from app.execution.dag_executor import DagExecutor, NodeExecutionError
 from app.execution.registry import RunnerRegistry
 from app.execution.runners.nodes.ai_agent import AIAgentRunner
 
@@ -84,6 +84,122 @@ class DagExecutorTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             self.executor.build_context(definition)
+
+    def test_build_context_allows_cycles_when_loop_control_enabled(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "filter", "config": {
+                    "input_key": "items",
+                    "field": "amount",
+                    "operator": "greater_than",
+                    "value": "10",
+                }},
+                {"id": "n3", "type": "aggregate", "config": {
+                    "input_key": "items",
+                    "operation": "count",
+                    "output_key": "count",
+                }},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+                {"id": "e3", "source": "n3", "target": "n2"},
+            ],
+            "loop_control": {
+                "enabled": True,
+                "max_node_executions": 2,
+                "max_total_node_executions": 10,
+            },
+        }
+
+        context = self.executor.build_context(definition)
+
+        self.assertTrue(context.loop_enabled)
+        self.assertEqual(context.indegree["n2"], 1)
+        self.assertEqual(context.indegree["n3"], 1)
+        self.assertIn("n2", context.cycle_node_ids)
+        self.assertIn("n3", context.cycle_node_ids)
+
+    def test_execute_cycle_stops_at_per_node_loop_cap(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n2"},
+            ],
+            "loop_control": {
+                "enabled": True,
+                "max_node_executions": 2,
+                "max_total_node_executions": 20,
+            },
+        }
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: {
+                            "triggered": True,
+                            "trigger_type": "manual",
+                            **(input_data or {}),
+                        }
+                    ),
+                    "echo": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: dict(input_data or {}),
+                    ),
+                }
+            )
+        )
+
+        result = executor.execute(definition=definition, initial_payload={"seed": "x"})
+
+        self.assertEqual(result["node_execution_counts"]["n1"], 1)
+        self.assertEqual(result["node_execution_counts"]["n2"], 2)
+        self.assertEqual(result["total_node_executions"], 3)
+        self.assertEqual(result["visited_nodes"], ["n1", "n2", "n2"])
+
+    def test_execute_cycle_honors_total_execution_safety_cap(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n2"},
+            ],
+            "loop_control": {
+                "enabled": True,
+                "max_node_executions": 50,
+                "max_total_node_executions": 3,
+            },
+        }
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: {
+                            "triggered": True,
+                            "trigger_type": "manual",
+                            **(input_data or {}),
+                        }
+                    ),
+                    "echo": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: dict(input_data or {}),
+                    ),
+                }
+            )
+        )
+
+        with self.assertRaises(NodeExecutionError) as exc_ctx:
+            executor.execute(definition=definition, initial_payload={"seed": "x"})
+
+        self.assertIn("max_total_node_executions=3", str(exc_ctx.exception))
 
     def test_execute_linear_workflow_from_manual_trigger(self):
         definition = {

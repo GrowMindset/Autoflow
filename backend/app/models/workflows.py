@@ -48,7 +48,9 @@ class Workflow(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         JSONB,
         nullable=False,
         default=lambda: DEFAULT_WORKFLOW_DEFINITION.copy(),
-        server_default=text('\'{"nodes": [], "edges": []}\'::jsonb'),
+        server_default=text(
+            '\'{"nodes": [], "edges": [], "loop_control": {"enabled": false, "max_node_executions": 3, "max_total_node_executions": 500}}\'::jsonb'
+        ),
     )
     is_published: Mapped[bool] = mapped_column(
         Boolean,

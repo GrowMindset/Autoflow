@@ -47,6 +47,26 @@ class WorkflowSchemaTests(unittest.TestCase):
         self.assertEqual(config["rules"][0]["every"], 1)
         self.assertEqual(config["rules"][0]["trigger_minute"], 0)
 
+    def test_loop_control_gets_defaults(self):
+        definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "m1",
+                        "type": "manual_trigger",
+                        "label": "Manual Trigger",
+                        "position": {"x": 0, "y": 0},
+                        "config": {},
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        self.assertFalse(definition.loop_control.enabled)
+        self.assertEqual(definition.loop_control.max_node_executions, 3)
+        self.assertEqual(definition.loop_control.max_total_node_executions, 500)
+
 
 if __name__ == "__main__":
     unittest.main()

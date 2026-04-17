@@ -30,6 +30,7 @@ class ExecutionService:
         workflow_id: UUID,
         user: User,
         start_node_id: str | None = None,
+        loop_control_override: dict[str, Any] | None = None,
     ) -> Execution:
         await self._mark_stale_running_executions(user_id=user.id)
 
@@ -48,6 +49,7 @@ class ExecutionService:
             triggered_by="manual",
             initial_payload=None,
             start_node_id=start_node_id,
+            loop_control_override=loop_control_override,
         )
 
     async def create_form_execution(
@@ -57,6 +59,7 @@ class ExecutionService:
         user: User,
         form_data: dict[str, Any],
         start_node_id: str | None = None,
+        loop_control_override: dict[str, Any] | None = None,
     ) -> Execution:
         await self._mark_stale_running_executions(user_id=user.id)
 
@@ -75,6 +78,7 @@ class ExecutionService:
             triggered_by="form",
             initial_payload=form_data,
             start_node_id=start_node_id,
+            loop_control_override=loop_control_override,
         )
 
     async def create_schedule_execution(
@@ -85,6 +89,7 @@ class ExecutionService:
         start_node_id: str | None = None,
         schedule_payload: dict[str, Any] | None = None,
         require_published: bool = False,
+        loop_control_override: dict[str, Any] | None = None,
     ) -> Execution:
         await self._mark_stale_running_executions(user_id=user.id)
 
@@ -110,6 +115,7 @@ class ExecutionService:
             triggered_by="schedule",
             initial_payload=payload,
             start_node_id=start_node_id,
+            loop_control_override=loop_control_override,
         )
 
     async def create_webhook_execution_by_token(
@@ -407,6 +413,7 @@ class ExecutionService:
         triggered_by: TriggeredBy,
         initial_payload: dict | None,
         start_node_id: str,
+        loop_control_override: dict[str, Any] | None = None,
     ) -> Execution:
         execution = Execution(
             workflow_id=workflow.id,
@@ -446,6 +453,9 @@ class ExecutionService:
                     "execution_id": str(execution.id),
                     "initial_payload": initial_payload,
                     "start_node_id": start_node_id,
+                    "loop_control_override": self._sanitize_loop_control_override(
+                        loop_control_override
+                    ),
                 },
             )
         except Exception as exc:
@@ -626,3 +636,28 @@ class ExecutionService:
             return max(0, int(raw_value))
         except Exception:
             return 30
+
+    @staticmethod
+    def _sanitize_loop_control_override(
+        loop_control_override: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(loop_control_override, dict):
+            return None
+
+        result: dict[str, Any] = {}
+        if loop_control_override.get("max_node_executions") is not None:
+            try:
+                result["max_node_executions"] = max(
+                    1, int(loop_control_override["max_node_executions"])
+                )
+            except Exception:
+                pass
+        if loop_control_override.get("max_total_node_executions") is not None:
+            try:
+                result["max_total_node_executions"] = max(
+                    1, int(loop_control_override["max_total_node_executions"])
+                )
+            except Exception:
+                pass
+
+        return result or None

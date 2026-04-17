@@ -54,7 +54,15 @@ class TimestampMixin(CreatedAtMixin):
     )
 
 
-DEFAULT_WORKFLOW_DEFINITION: dict[str, list[Any]] = {"nodes": [], "edges": []}
+DEFAULT_WORKFLOW_DEFINITION: dict[str, Any] = {
+    "nodes": [],
+    "edges": [],
+    "loop_control": {
+        "enabled": False,
+        "max_node_executions": 3,
+        "max_total_node_executions": 500,
+    },
+}
 
 
 __all__ = [
