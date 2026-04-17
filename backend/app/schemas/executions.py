@@ -12,6 +12,7 @@ TriggeredBy = str
 
 
 class LoopControlOverride(BaseModel):
+    enabled: bool | None = None
     max_node_executions: int | None = None
     max_total_node_executions: int | None = None
 

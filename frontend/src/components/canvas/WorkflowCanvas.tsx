@@ -26,6 +26,7 @@ import { executionService, ExecutionDetail } from '../../services/executionServi
 import toast from 'react-hot-toast';
 import { useTheme } from '../../context/ThemeContext';
 import { Play, LayoutGrid, Sparkles, Search, Undo2, Redo2, Loader2, Plus } from 'lucide-react';
+import { formatDateTimeInAppTimezone } from '../../utils/dateTime';
 
 const nodeTypes = {
   trigger: BaseNode,
@@ -395,11 +396,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [commitHistorySnapshot]);
 
   const formatDateTime = (iso: string | null) => {
-    if (!iso) return '—';
-    return new Intl.DateTimeFormat('default', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    }).format(new Date(iso));
+    return formatDateTimeInAppTimezone(iso);
   };
 
   const getStatusBadgeClasses = (status: string) => {
@@ -1179,17 +1176,27 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     return false;
   }, []);
 
-  const resolveRuntimeLoopOverride = useCallback((): { max_node_executions: number } | null | 'cancelled' => {
+  const resolveRuntimeLoopOverride = useCallback((): {
+    enabled: boolean;
+    max_node_executions: number;
+    max_total_node_executions: number;
+  } | null | 'cancelled' => {
     const definition = buildWorkflowDefinition(nodesRef.current, edgesRef.current) as any;
     const loopControl = definition?.loop_control || {};
-    const loopEnabled = Boolean(loopControl.enabled);
-    if (!loopEnabled) return null;
 
     if (!hasRuntimeCycle()) {
       return null;
     }
 
-    const defaultValue = String(loopControl.max_node_executions ?? 3);
+    const shouldRunWithLoop = window.confirm(
+      'Loop detected in this workflow. Run with loop mode? Click Cancel to stop execution.',
+    );
+    if (!shouldRunWithLoop) {
+      toast('Execution cancelled. Enable loop mode to run this loop workflow.', { icon: '⚠️' });
+      return 'cancelled';
+    }
+
+    const defaultValue = String(loopControl.max_node_executions ?? DEFAULT_LOOP_CONTROL.max_node_executions);
     const rawValue = window.prompt(
       'Loop detected. Enter repeat count for this run:',
       defaultValue,
@@ -1205,12 +1212,23 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       return 'cancelled';
     }
 
-    return { max_node_executions: parsed };
+    const configuredMaxTotal = Number(loopControl.max_total_node_executions ?? DEFAULT_LOOP_CONTROL.max_total_node_executions);
+    const safeMaxTotal = Number.isFinite(configuredMaxTotal)
+      ? Math.max(configuredMaxTotal, parsed)
+      : Math.max(DEFAULT_LOOP_CONTROL.max_total_node_executions, parsed);
+
+    return {
+      enabled: true,
+      max_node_executions: parsed,
+      max_total_node_executions: safeMaxTotal,
+    };
   }, [buildWorkflowDefinition, hasRuntimeCycle]);
 
   const startExecutionFromTrigger = useCallback(async (trigger: WorkflowNode) => {
     resetNodeExecutionVisualState();
-    const runtimeLoopOverride = resolveRuntimeLoopOverride();
+    const shouldResolveLoopOverride =
+      trigger.data.type === 'manual_trigger' || trigger.data.type === 'schedule_trigger';
+    const runtimeLoopOverride = shouldResolveLoopOverride ? resolveRuntimeLoopOverride() : null;
     if (runtimeLoopOverride === 'cancelled') {
       return;
     }
@@ -1242,10 +1260,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           start_node_id: trigger.id,
           loop_control_override: runtimeLoopOverride || undefined,
         });
-        toast.success('Scheduled workflow execution started!');
+        toast.success('Schedule execution queued. It will run at the next matching schedule time.');
         beginExecutionTracking(enqueue.execution_id, {
           triggeredBy: enqueue.triggered_by,
-          primeNodeId: trigger.id,
         });
       } else {
         toast.error(`Unsupported trigger type: ${trigger.data.type}`);

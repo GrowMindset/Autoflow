@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,8 +17,11 @@ from app.models.user import User
 from app.models.webhook import WebhookEndpoint
 from app.models.workflows import Workflow
 from app.schemas.executions import ExecutionStatus, TriggeredBy
+from app.services.schedule_service import is_schedule_enabled, next_schedule_run_at
 from app.tasks.execute_workflow import run_execution, run_node_test
 from celery_config import WORKFLOW_EXECUTION_QUEUE, WORKFLOW_NODE_TEST_QUEUE
+
+APP_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
 class ExecutionService:
@@ -89,6 +93,7 @@ class ExecutionService:
         start_node_id: str | None = None,
         schedule_payload: dict[str, Any] | None = None,
         require_published: bool = False,
+        respect_schedule: bool = False,
         loop_control_override: dict[str, Any] | None = None,
     ) -> Execution:
         await self._mark_stale_running_executions(user_id=user.id)
@@ -106,8 +111,38 @@ class ExecutionService:
         )
 
         payload = dict(schedule_payload or {})
-        payload.setdefault("scheduled_at", datetime.now(timezone.utc).isoformat())
+        payload.setdefault(
+            "scheduled_at",
+            datetime.now(timezone.utc).astimezone(APP_TIMEZONE).isoformat(),
+        )
         payload.setdefault("source", "schedule")
+        enqueue_at_utc: datetime | None = None
+
+        if respect_schedule:
+            schedule_node = next(
+                (
+                    node
+                    for node in workflow.definition.get("nodes", [])
+                    if node.get("id") == start_node_id and node.get("type") == "schedule_trigger"
+                ),
+                None,
+            )
+            schedule_config = (
+                schedule_node.get("config")
+                if isinstance(schedule_node, dict) and isinstance(schedule_node.get("config"), dict)
+                else {}
+            )
+            if not is_schedule_enabled(schedule_config):
+                raise ValueError("Selected schedule trigger is disabled")
+
+            next_run_at = next_schedule_run_at(schedule_config)
+            if next_run_at is None:
+                raise ValueError(
+                    "Could not compute next run time for selected schedule trigger"
+                )
+
+            enqueue_at_utc = next_run_at
+            payload.setdefault("scheduled_for", next_run_at.isoformat())
 
         return await self._create_and_enqueue_execution(
             workflow=workflow,
@@ -115,6 +150,7 @@ class ExecutionService:
             triggered_by="schedule",
             initial_payload=payload,
             start_node_id=start_node_id,
+            enqueue_at_utc=enqueue_at_utc,
             loop_control_override=loop_control_override,
         )
 
@@ -413,6 +449,7 @@ class ExecutionService:
         triggered_by: TriggeredBy,
         initial_payload: dict | None,
         start_node_id: str,
+        enqueue_at_utc: datetime | None = None,
         loop_control_override: dict[str, Any] | None = None,
     ) -> Execution:
         execution = Execution(
@@ -449,6 +486,7 @@ class ExecutionService:
             self._enqueue_task(
                 run_execution,
                 queue=WORKFLOW_EXECUTION_QUEUE,
+                eta=enqueue_at_utc,
                 kwargs={
                     "execution_id": str(execution.id),
                     "initial_payload": initial_payload,
@@ -537,7 +575,13 @@ class ExecutionService:
         return str(config.get("method") or "POST").upper()
 
     @staticmethod
-    def _enqueue_task(task, *, queue: str, kwargs: dict[str, Any]) -> None:
+    def _enqueue_task(
+        task,
+        *,
+        queue: str,
+        kwargs: dict[str, Any],
+        eta: datetime | None = None,
+    ) -> None:
         inspector = task.app.control.inspect(timeout=1.0)
         active_queues = inspector.active_queues() if inspector is not None else None
         target_queue = queue
@@ -563,17 +607,21 @@ class ExecutionService:
                         f"Start a worker with '-Q {queue}' (or include this queue in worker startup)."
                     )
 
-        task.apply_async(
-            kwargs=kwargs,
-            queue=target_queue,
-            retry=True,
-            retry_policy={
+        apply_async_kwargs: dict[str, Any] = {
+            "kwargs": kwargs,
+            "queue": target_queue,
+            "retry": True,
+            "retry_policy": {
                 "max_retries": 3,
                 "interval_start": 0,
                 "interval_step": 0.5,
                 "interval_max": 2,
             },
-        )
+        }
+        if isinstance(eta, datetime):
+            apply_async_kwargs["eta"] = eta
+
+        task.apply_async(**apply_async_kwargs)
 
     async def _mark_enqueue_failure(self, *, execution: Execution, exc: Exception) -> None:
         execution.status = "FAILED"
@@ -645,6 +693,19 @@ class ExecutionService:
             return None
 
         result: dict[str, Any] = {}
+        if loop_control_override.get("enabled") is not None:
+            raw_enabled = loop_control_override.get("enabled")
+            if isinstance(raw_enabled, bool):
+                result["enabled"] = raw_enabled
+            elif isinstance(raw_enabled, (int, float)):
+                result["enabled"] = bool(raw_enabled)
+            elif isinstance(raw_enabled, str):
+                normalized = raw_enabled.strip().lower()
+                if normalized in {"true", "1", "yes", "on"}:
+                    result["enabled"] = True
+                elif normalized in {"false", "0", "no", "off"}:
+                    result["enabled"] = False
+
         if loop_control_override.get("max_node_executions") is not None:
             try:
                 result["max_node_executions"] = max(

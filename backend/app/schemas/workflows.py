@@ -26,7 +26,7 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "method": "POST",
     },
     "schedule_trigger": {
-        "timezone": "UTC",
+        "timezone": "Asia/Kolkata",
         "enabled": True,
         "rules": [
             {

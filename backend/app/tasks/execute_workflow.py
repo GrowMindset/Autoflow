@@ -185,6 +185,19 @@ def _build_effective_definition(
     *,
     loop_control_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    def _parse_bool(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "off"}:
+                return False
+        return None
+
     effective = dict(definition or {})
     base_loop_control = effective.get("loop_control")
     if not isinstance(base_loop_control, dict):
@@ -199,6 +212,10 @@ def _build_effective_definition(
     }
 
     if isinstance(loop_control_override, dict):
+        parsed_enabled = _parse_bool(loop_control_override.get("enabled"))
+        if parsed_enabled is not None:
+            merged_loop_control["enabled"] = parsed_enabled
+
         if loop_control_override.get("max_node_executions") is not None:
             try:
                 merged_loop_control["max_node_executions"] = max(

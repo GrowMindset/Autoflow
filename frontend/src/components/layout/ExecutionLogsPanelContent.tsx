@@ -2,14 +2,14 @@ import React, { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { ExecutionDetail } from '../../services/executionService';
 import { useTheme } from '../../context/ThemeContext';
+import { formatTimeInAppTimezone } from '../../utils/dateTime';
 
 interface ExecutionLogsPanelContentProps {
   executionDetail: ExecutionDetail | null;
 }
 
 const formatTimestamp = (value: string | null) => {
-  if (!value) return '--:--:--';
-  return new Date(value).toLocaleTimeString();
+  return formatTimeInAppTimezone(value);
 };
 
 const formatJson = (value: unknown) => {

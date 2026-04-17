@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+APP_TIMEZONE_NAME = "Asia/Kolkata"
+APP_TIMEZONE = ZoneInfo(APP_TIMEZONE_NAME)
 
 
 class ScheduleConfigError(ValueError):
@@ -72,8 +75,8 @@ def build_cron_expression(config: Mapping[str, Any] | None) -> str:
 
 def resolve_schedule_timezone(config: Mapping[str, Any] | None) -> str:
     if not isinstance(config, Mapping):
-        return "UTC"
-    return str(config.get("timezone") or "UTC").strip() or "UTC"
+        return APP_TIMEZONE_NAME
+    return str(config.get("timezone") or APP_TIMEZONE_NAME).strip() or APP_TIMEZONE_NAME
 
 
 def is_schedule_due(
@@ -106,6 +109,36 @@ def is_schedule_due(
     return _cron_expression_matches(cron_expr, localized)
 
 
+def next_schedule_run_at(
+    config: Mapping[str, Any] | None,
+    *,
+    now_utc: datetime | None = None,
+    max_lookahead_minutes: int = 60 * 24 * 400,
+) -> datetime | None:
+    """
+    Computes the next UTC datetime when this schedule becomes due.
+
+    The returned datetime is always strictly after ``now_utc`` (or current UTC time).
+    Returns ``None`` when schedule is disabled or no due time is found in lookahead window.
+    """
+    if not is_schedule_enabled(config):
+        return None
+
+    if max_lookahead_minutes < 1:
+        max_lookahead_minutes = 1
+
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    base = now.replace(second=0, microsecond=0)
+    candidate = base + timedelta(minutes=1)
+
+    for _ in range(max_lookahead_minutes):
+        if is_schedule_due(config, now_utc=candidate):
+            return candidate
+        candidate += timedelta(minutes=1)
+
+    return None
+
+
 def build_schedule_payload(
     *,
     config: Mapping[str, Any] | None,
@@ -113,11 +146,12 @@ def build_schedule_payload(
     fired_at_utc: datetime | None = None,
 ) -> dict[str, Any]:
     fired_at = fired_at_utc or datetime.now(timezone.utc)
+    scheduled_at = fired_at.astimezone(APP_TIMEZONE).isoformat()
     return {
         "triggered": True,
         "trigger_type": "schedule",
         "schedule_node_id": node_id,
-        "scheduled_at": fired_at.isoformat(),
+        "scheduled_at": scheduled_at,
         "schedule_timezone": resolve_schedule_timezone(config),
         "schedule_cron": build_cron_expression(config),
         "source": "schedule",

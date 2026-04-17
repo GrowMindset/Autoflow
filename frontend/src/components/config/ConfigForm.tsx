@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import { Plus } from 'lucide-react';
 import { CredentialItem, credentialService } from '../../services/credentialService';
+import { getAppTimezone } from '../../utils/dateTime';
 
 const GOOGLE_OAUTH_APPS = ['gmail', 'sheets', 'docs'] as const;
 const GOOGLE_OAUTH_NODE_USAGE: Record<string, string[]> = {
@@ -209,7 +210,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       key: 'timezone',
       label: 'Timezone',
       type: 'text',
-      placeholder: 'e.g. UTC, Asia/Kolkata, America/New_York',
+      placeholder: 'e.g. Asia/Kolkata, UTC, America/New_York',
       helperText: 'IANA timezone name used for schedule matching.',
     },
   ],
@@ -631,7 +632,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
     const patch: Record<string, any> = {};
     const timezone = String(config.timezone || '').trim();
     if (!timezone) {
-      patch.timezone = 'UTC';
+      patch.timezone = getAppTimezone();
     }
     if (typeof config.enabled === 'undefined') {
       patch.enabled = true;

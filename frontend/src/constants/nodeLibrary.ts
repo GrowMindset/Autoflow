@@ -55,7 +55,7 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       category: 'trigger',
       description: 'Trigger the workflow on a recurring schedule with simple trigger rules.',
       default_config: {
-        timezone: 'UTC',
+        timezone: 'Asia/Kolkata',
         enabled: true,
         rules: [
           {

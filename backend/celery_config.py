@@ -79,7 +79,7 @@ celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
-    timezone="UTC",
+    timezone="Asia/Kolkata",
     enable_utc=True,
     task_default_queue=WORKFLOW_EXECUTION_QUEUE,
     task_queues=(

@@ -17,6 +17,46 @@ type WorkflowNode = {
   config?: Record<string, any>;
 };
 
+const DEFAULT_LOOP_CONTROL = {
+  max_node_executions: 3,
+  max_total_node_executions: 500,
+};
+
+const hasGraphCycle = (
+  nodes: WorkflowNode[],
+  edges: Array<{ source: string; target: string }>,
+): boolean => {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const adjacency = new Map<string, string[]>();
+  nodeIds.forEach((id) => adjacency.set(id, []));
+  edges.forEach((edge) => {
+    if (nodeIds.has(edge.source) && nodeIds.has(edge.target)) {
+      adjacency.get(edge.source)?.push(edge.target);
+    }
+  });
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+
+  const dfs = (nodeId: string): boolean => {
+    if (visiting.has(nodeId)) return true;
+    if (visited.has(nodeId)) return false;
+
+    visiting.add(nodeId);
+    for (const next of adjacency.get(nodeId) || []) {
+      if (dfs(next)) return true;
+    }
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+    return false;
+  };
+
+  for (const nodeId of nodeIds) {
+    if (dfs(nodeId)) return true;
+  }
+  return false;
+};
+
 const FORM_EXECUTION_MESSAGE_TYPE = 'autoflow:form-execution-started';
 
 const WorkflowFormPage: React.FC = () => {
@@ -29,6 +69,8 @@ const WorkflowFormPage: React.FC = () => {
   const [workflowName, setWorkflowName] = useState('Workflow Form');
   const [formNode, setFormNode] = useState<WorkflowNode | null>(null);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [isLoopWorkflow, setIsLoopWorkflow] = useState(false);
+  const [loopControlDefaults, setLoopControlDefaults] = useState(DEFAULT_LOOP_CONTROL);
 
   useEffect(() => {
     const loadWorkflow = async () => {
@@ -49,6 +91,19 @@ const WorkflowFormPage: React.FC = () => {
         const edges: Array<{ source: string; target: string }> = Array.isArray(workflow.definition.edges)
           ? workflow.definition.edges
           : [];
+        setIsLoopWorkflow(hasGraphCycle(nodes, edges));
+
+        const rawLoopControl = workflow.definition.loop_control;
+        const parsedMaxNode = Number.parseInt(String(rawLoopControl?.max_node_executions ?? DEFAULT_LOOP_CONTROL.max_node_executions), 10);
+        const parsedMaxTotal = Number.parseInt(String(rawLoopControl?.max_total_node_executions ?? DEFAULT_LOOP_CONTROL.max_total_node_executions), 10);
+        setLoopControlDefaults({
+          max_node_executions: Number.isFinite(parsedMaxNode) && parsedMaxNode > 0
+            ? parsedMaxNode
+            : DEFAULT_LOOP_CONTROL.max_node_executions,
+          max_total_node_executions: Number.isFinite(parsedMaxTotal) && parsedMaxTotal > 0
+            ? parsedMaxTotal
+            : DEFAULT_LOOP_CONTROL.max_total_node_executions,
+        });
 
         const formNodes = nodes.filter((node) => node.type === 'form_trigger');
         if (formNodes.length === 0) {
@@ -95,9 +150,47 @@ const WorkflowFormPage: React.FC = () => {
 
     setIsSubmitting(true);
     try {
+      let runtimeLoopOverride: {
+        enabled: boolean;
+        max_node_executions: number;
+        max_total_node_executions: number;
+      } | undefined;
+
+      if (isLoopWorkflow) {
+        const shouldRunWithLoop = window.confirm(
+          'Loop detected in this workflow. Run with loop mode? Click Cancel to stop execution.',
+        );
+        if (!shouldRunWithLoop) {
+          toast('Execution cancelled. Enable loop mode to run this loop workflow.', { icon: '⚠️' });
+          return;
+        }
+
+        const rawValue = window.prompt(
+          'Loop detected. Enter repeat count for this run:',
+          String(loopControlDefaults.max_node_executions),
+        );
+        if (rawValue === null) {
+          toast('Execution cancelled by user.', { icon: 'ℹ️' });
+          return;
+        }
+
+        const parsed = Number.parseInt(rawValue.trim(), 10);
+        if (!Number.isFinite(parsed) || parsed < 1) {
+          toast.error('Please enter a valid repeat count (integer >= 1).');
+          return;
+        }
+
+        runtimeLoopOverride = {
+          enabled: true,
+          max_node_executions: parsed,
+          max_total_node_executions: Math.max(loopControlDefaults.max_total_node_executions, parsed),
+        };
+      }
+
       const enqueue = await executionService.runWorkflowForm(workflowId, {
         form_data: formValues,
         start_node_id: formNode.id,
+        loop_control_override: runtimeLoopOverride,
       });
       toast.success('Form submitted successfully.');
 

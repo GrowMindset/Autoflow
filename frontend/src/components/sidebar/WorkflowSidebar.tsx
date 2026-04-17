@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
+import { formatSidebarDateTimeInAppTimezone } from '../../utils/dateTime';
 
 interface Workflow {
   id: string;
@@ -187,7 +188,7 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
                         </span>
                         {flow.updated_at && (
                           <span className="text-[10px] text-slate-400 dark:text-slate-500 font-medium truncate mt-0.5">
-                            Last saved: {new Date(flow.updated_at).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            Last saved: {formatSidebarDateTimeInAppTimezone(flow.updated_at)}
                           </span>
                         )}
                       </div>

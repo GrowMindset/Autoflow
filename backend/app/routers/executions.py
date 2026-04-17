@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,7 @@ from app.schemas.executions import (
 from app.services.execution_service import ExecutionService
 
 router = APIRouter(tags=["executions"])
+APP_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
 def get_execution_service(db: AsyncSession = Depends(get_db)) -> ExecutionService:
@@ -163,10 +165,11 @@ async def run_workflow_schedule(
             user=current_user,
             start_node_id=(payload.start_node_id if payload else None),
             schedule_payload={
-                "scheduled_at": datetime.now(timezone.utc).isoformat(),
+                "scheduled_at": datetime.now(timezone.utc).astimezone(APP_TIMEZONE).isoformat(),
                 "source": "manual_schedule_run",
             },
             require_published=False,
+            respect_schedule=True,
             loop_control_override=(
                 payload.loop_control_override.model_dump(exclude_none=True)
                 if payload and payload.loop_control_override

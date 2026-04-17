@@ -9,7 +9,7 @@ class ScheduleTriggerRunner:
 
     Config shape:
     {
-        "timezone": "UTC",
+        "timezone": "Asia/Kolkata",
         "enabled": True,
         "rules": [
             {

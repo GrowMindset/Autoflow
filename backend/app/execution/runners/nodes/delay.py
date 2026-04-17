@@ -5,6 +5,9 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+
+APP_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
 class DelayRunner:
@@ -37,7 +40,7 @@ class DelayRunner:
             result = {"_default": input_data}
 
         result["delay_seconds"] = delay_seconds
-        result["delay_completed_at"] = datetime.now(UTC).isoformat()
+        result["delay_completed_at"] = datetime.now(UTC).astimezone(APP_TIMEZONE).isoformat()
         return result
 
     @classmethod
@@ -89,4 +92,3 @@ class DelayRunner:
             # Treat naive datetimes as UTC to keep behavior deterministic.
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
-

@@ -7,6 +7,7 @@ import LogSection from './LogSection';
 import DataView from './DataView';
 import { executionService } from '../../services/executionService';
 import api from '../../services/api';
+import { formatTimeInAppTimezone, getAppTimezone } from '../../utils/dateTime';
 
 const DEFAULT_LEFT_PANEL_WIDTH = 350;
 const DEFAULT_RIGHT_PANEL_WIDTH = 400;
@@ -620,12 +621,12 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                       </div>
                       <div className="flex items-center justify-between">
                         <span className="text-[8px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">Started At</span>
-                        <span className="text-[8px] font-mono text-slate-500 dark:text-slate-400">{new Date(node.data.last_execution_result.started_at).toLocaleTimeString()}</span>
+                        <span className="text-[8px] font-mono text-slate-500 dark:text-slate-400">{formatTimeInAppTimezone(node.data.last_execution_result.started_at)}</span>
                       </div>
                       {node.data.last_execution_result.finished_at && (
                         <div className="flex items-center justify-between">
                           <span className="text-[8px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">Finished At</span>
-                          <span className="text-[8px] font-mono text-slate-500 dark:text-slate-400">{new Date(node.data.last_execution_result.finished_at).toLocaleTimeString()}</span>
+                          <span className="text-[8px] font-mono text-slate-500 dark:text-slate-400">{formatTimeInAppTimezone(node.data.last_execution_result.finished_at)}</span>
                         </div>
                       )}
                     </div>
@@ -834,7 +835,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         ))}
                       </div>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                        Timezone: {String(node.data.config?.timezone || 'UTC')}
+                        Timezone: {String(node.data.config?.timezone || getAppTimezone())}
                       </p>
                     </section>
                   </div>

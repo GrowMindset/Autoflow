@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { X, RefreshCw, Plus, KeyRound, Copy, Check, Trash2, Link as LinkIcon } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { credentialService, CredentialItem } from '../../services/credentialService';
+import { formatDateTimeInAppTimezone } from '../../utils/dateTime';
 
 interface CredentialManagerModalProps {
   isOpen: boolean;
@@ -351,7 +352,7 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
                         {item.app_name}
                       </span>
                       <span className="text-[10px] text-slate-500 dark:text-slate-400">
-                        {new Date(item.created_at).toLocaleString()}
+                        {formatDateTimeInAppTimezone(item.created_at)}
                       </span>
                     </div>
                     <div className="mt-1">

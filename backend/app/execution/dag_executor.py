@@ -743,7 +743,9 @@ class DagExecutor:
                     queue.append(target)
 
         if len(ordered) != len(nodes_by_id):
-            raise ValueError("Workflow graph contains a cycle and is not a DAG")
+            raise ValueError(
+                "Workflow graph contains a cycle. Enable loop_control (or provide loop_control_override.enabled=true) to execute loop workflows."
+            )
 
         return ordered
 

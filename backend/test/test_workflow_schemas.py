@@ -40,7 +40,7 @@ class WorkflowSchemaTests(unittest.TestCase):
         )
 
         config = definition.nodes[0].config
-        self.assertEqual(config["timezone"], "UTC")
+        self.assertEqual(config["timezone"], "Asia/Kolkata")
         self.assertTrue(config["enabled"])
         self.assertTrue(isinstance(config.get("rules"), list))
         self.assertEqual(config["rules"][0]["interval"], "hours")

@@ -1,28 +1,25 @@
 import api from './api';
 
+interface LoopControlOverridePayload {
+  enabled?: boolean;
+  max_node_executions?: number;
+  max_total_node_executions?: number;
+}
+
 export interface RunFormPayload {
   form_data: Record<string, any>;
   start_node_id?: string;
-  loop_control_override?: {
-    max_node_executions?: number;
-    max_total_node_executions?: number;
-  };
+  loop_control_override?: LoopControlOverridePayload;
 }
 
 export interface RunWorkflowPayload {
   start_node_id?: string;
-  loop_control_override?: {
-    max_node_executions?: number;
-    max_total_node_executions?: number;
-  };
+  loop_control_override?: LoopControlOverridePayload;
 }
 
 export interface RunSchedulePayload {
   start_node_id?: string;
-  loop_control_override?: {
-    max_node_executions?: number;
-    max_total_node_executions?: number;
-  };
+  loop_control_override?: LoopControlOverridePayload;
 }
 
 export interface NodeExecutionResult {

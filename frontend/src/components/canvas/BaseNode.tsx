@@ -1,9 +1,10 @@
-import React, { memo, useEffect } from 'react';
+import React, { memo, useEffect, useMemo, useState } from 'react';
 import { Handle, Position, NodeProps, useUpdateNodeInternals, useReactFlow, useEdges } from 'reactflow';
 import { Check, Loader2, AlertCircle, AlertTriangle, Plus } from 'lucide-react';
 import { WorkflowNodeData } from '../../types/workflow';
 import { CATEGORY_ACCENTS } from '../../constants/nodeLibrary';
 import NodeBadge from '../sidebar/NodeBadge';
+import { getNodeCountdownLabel, shouldShowLiveNodeCountdown } from '../../utils/nodeTimers';
 
 const getMissingRequirements = (type: string, config: Record<string, any>, isChatModelConnected: boolean): string[] => {
   const missing: string[] = [];
@@ -98,6 +99,12 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
   const aiNodeErrorPreview = aiNodeErrorMessage.length > 90
     ? `${aiNodeErrorMessage.slice(0, 90)}...`
     : aiNodeErrorMessage;
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const shouldShowLiveCountdown = shouldShowLiveNodeCountdown(data);
+  const countdownLabel = useMemo(
+    () => getNodeCountdownLabel(data, nowMs),
+    [data, nowMs],
+  );
 
   // Debug log whenever data changes
   useEffect(() => {
@@ -105,6 +112,18 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       console.log(`BaseNode ${id} status changed to:`, data.status);
     }
   }, [data.status, id]);
+
+  useEffect(() => {
+    if (!shouldShowLiveCountdown) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [shouldShowLiveCountdown]);
 
   const handleDeleteNode = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -196,6 +215,12 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       }}
       title={hasIncomplete ? 'This node is missing required configuration' : ''}
     >
+      {countdownLabel && (
+        <div className="absolute -top-8 left-1/2 -translate-x-1/2 z-20 px-2 py-1 rounded-md bg-slate-900 text-white text-[9px] font-black tracking-wide border border-slate-700 shadow-lg whitespace-nowrap">
+          {countdownLabel}
+        </div>
+      )}
+
       {/* Execution Status Icon */}
       {data.status && (
         <div className={`absolute -top-3 -right-3 p-1 rounded-full border shadow-md z-20 transition-all duration-300 ${data.status === 'SUCCEEDED' ? 'bg-emerald-500 border-emerald-400' :
