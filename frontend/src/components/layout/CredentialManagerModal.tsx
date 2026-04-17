@@ -63,6 +63,8 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   const isGmail = appName === 'gmail';
   const isSheets = appName === 'sheets';
   const isDocs = appName === 'docs';
+  const isLinkedIn = appName === 'linkedin';
+  const isOAuthConnectingApp = isGmail || isSheets || isDocs || isLinkedIn;
   const isGoogleOAuthCapable = isGmail || isSheets || isDocs;
 
   const fetchCredentials = async () => {
@@ -103,8 +105,8 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
   }, [appName]);
 
   const handleCreate = async () => {
-    if (isGoogleOAuthCapable) {
-      toast.error('Google credentials are OAuth-only. Use "Connect With Google OAuth".');
+    if (isOAuthConnectingApp) {
+      toast.error('OAuth credentials are connected through the button above.');
       return;
     }
     const trimmed = secret.trim();
@@ -142,19 +144,23 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
     }
   };
 
-  const handleGoogleOAuthConnect = async () => {
-    if (!isGoogleOAuthCapable) return;
+  const handleOAuthConnect = async () => {
+    if (!isOAuthConnectingApp) return;
     setIsOAuthConnecting(true);
     try {
-      const redirectUri = `${window.location.origin}/app/oauth/google/callback`;
-      const result = await credentialService.startGoogleOAuth(
-        isGmail ? 'gmail' : (isSheets ? 'sheets' : 'docs'),
-        redirectUri,
-      );
+      const redirectUri = isLinkedIn
+        ? `${window.location.origin}/app/oauth/linkedin/callback`
+        : `${window.location.origin}/app/oauth/google/callback`;
+      const result = isLinkedIn
+        ? await credentialService.startLinkedInOAuth(redirectUri)
+        : await credentialService.startGoogleOAuth(
+            isGmail ? 'gmail' : (isSheets ? 'sheets' : 'docs'),
+            redirectUri,
+          );
       window.location.href = result.auth_url;
     } catch (error) {
-      console.error('Failed to start Google OAuth:', error);
-      toast.error('Could not start Google OAuth flow.');
+      console.error('Failed to start OAuth:', error);
+      toast.error(`Could not start ${isLinkedIn ? 'LinkedIn' : 'Google'} OAuth flow.`);
       setIsOAuthConnecting(false);
     }
   };
@@ -232,23 +238,25 @@ const CredentialManagerModal: React.FC<CredentialManagerModalProps> = ({ isOpen,
                 </option>
               ))}
             </select>
-            {isGoogleOAuthCapable && (
+            {isOAuthConnectingApp && (
               <button
                 type="button"
-                onClick={() => void handleGoogleOAuthConnect()}
+                onClick={() => void handleOAuthConnect()}
                 disabled={isOAuthConnecting}
                 className="w-full mb-4 flex items-center justify-center gap-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:text-slate-500 text-white px-4 py-2 text-sm font-black uppercase tracking-[0.08em] transition-colors"
               >
                 <LinkIcon size={14} />
-                {isOAuthConnecting ? 'Connecting...' : 'Connect With Google OAuth'}
+                {isOAuthConnecting ? 'Connecting...' : isLinkedIn ? 'Connect With LinkedIn OAuth' : 'Connect With Google OAuth'}
               </button>
             )}
-            {isGoogleOAuthCapable && (
+            {isOAuthConnectingApp && (
               <p className="mb-3 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                Google credentials are OAuth-only. Click the button above to connect your Google account.
+                {isLinkedIn
+                  ? 'LinkedIn credentials are OAuth-only. Click the button above to connect your LinkedIn account.'
+                  : 'Google credentials are OAuth-only. Click the button above to connect your Google account.'}
               </p>
             )}
-            {!isGoogleOAuthCapable && (
+            {!isOAuthConnectingApp && (
               <>
                 <label className="block text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
                   {secretField.label}

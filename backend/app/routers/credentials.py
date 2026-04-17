@@ -18,6 +18,7 @@ from app.schemas.credentials import (
 )
 from app.services.credential_service import CredentialService
 from app.services.google_oauth_service import GoogleOAuthService
+from app.services.linkedin_oauth_service import LinkedInOAuthService
 
 router = APIRouter(prefix="/credentials", tags=["credentials"])
 
@@ -27,6 +28,10 @@ def get_credential_service(db: AsyncSession = Depends(get_db)) -> CredentialServ
 
 def get_google_oauth_service() -> GoogleOAuthService:
     return GoogleOAuthService()
+
+
+def get_linkedin_oauth_service() -> LinkedInOAuthService:
+    return LinkedInOAuthService()
 
 
 def _to_response(
@@ -145,6 +150,57 @@ async def exchange_google_oauth(
         credential = await credential_service.upsert_google_oauth_credential(
             current_user.id,
             app_name=app_name,
+            token_data=token_data,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return _to_response(service=credential_service, credential=credential)
+
+
+@router.get("/oauth/linkedin/start")
+async def start_linkedin_oauth(
+    redirect_uri: str | None = None,
+    current_user: User = Depends(get_current_user),
+    oauth_service: LinkedInOAuthService = Depends(get_linkedin_oauth_service),
+) -> dict[str, str | list[str]]:
+    try:
+        result = oauth_service.build_auth_url(
+            user_id=current_user.id,
+            redirect_uri=redirect_uri,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {
+        "auth_url": result["auth_url"],
+        "state": result["state"],
+        "redirect_uri": result["redirect_uri"],
+        "scopes": result["scopes"],
+    }
+
+
+@router.post("/oauth/linkedin/exchange", response_model=AppCredentialResponse)
+async def exchange_linkedin_oauth(
+    payload: GoogleOAuthExchangeRequest,
+    current_user: User = Depends(get_current_user),
+    credential_service: CredentialService = Depends(get_credential_service),
+    oauth_service: LinkedInOAuthService = Depends(get_linkedin_oauth_service),
+) -> AppCredentialResponse:
+    try:
+        state_payload = oauth_service.parse_state(payload.state)
+        if str(state_payload.get("sub") or "") != str(current_user.id):
+            raise ValueError("LinkedIn OAuth state does not belong to current user.")
+
+        redirect_uri = payload.redirect_uri or str(state_payload.get("redirect_uri") or "")
+        if not redirect_uri:
+            redirect_uri = oauth_service.resolve_redirect_uri(None)
+
+        token_data = await oauth_service.exchange_code(
+            code=payload.code,
+            redirect_uri=redirect_uri,
+        )
+        credential = await credential_service.upsert_linkedin_oauth_credential(
+            current_user.id,
             token_data=token_data,
         )
     except ValueError as exc:

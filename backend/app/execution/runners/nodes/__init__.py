@@ -18,6 +18,7 @@ from .create_google_docs import CreateGoogleDocsRunner
 from .update_google_docs import UpdateGoogleDocsRunner
 from .telegram import TelegramRunner
 from .whatsapp import WhatsAppRunner
+from .linkedin import LinkedInRunner
 
 try:
     from .datetime_format import DateTimeFormatRunner
@@ -45,6 +46,7 @@ __all__ = [
     "UpdateGoogleDocsRunner",
     "TelegramRunner",
     "WhatsAppRunner",
+    "LinkedInRunner",
 ]
 
 if DateTimeFormatRunner is not None:

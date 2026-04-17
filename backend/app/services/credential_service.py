@@ -128,6 +128,23 @@ class CredentialService:
             waba_id = token_data.get("waba_id")
             if isinstance(waba_id, str) and waba_id.strip():
                 token_data["waba_id"] = waba_id.strip()
+        elif payload.app_name == "linkedin":
+            access_token = (
+                token_data.get("access_token")
+                or token_data.get("api_key")
+            )
+
+            if not isinstance(access_token, str) or not access_token.strip():
+                raise ValueError(
+                    "LinkedIn credential requires access_token (token_data.access_token)."
+                )
+
+            token_data["access_token"] = access_token.strip()
+            token_data["api_key"] = access_token.strip()
+            token_data["provider"] = "linkedin_oauth"
+            member_urn = token_data.get("member_urn")
+            if isinstance(member_urn, str) and member_urn.strip():
+                token_data["member_urn"] = member_urn.strip()
         elif payload.app_name == "slack":
             webhook_url = (
                 token_data.get("webhook_url")
@@ -224,6 +241,45 @@ class CredentialService:
         await self.db.refresh(credential)
         return credential
 
+    async def upsert_linkedin_oauth_credential(
+        self,
+        user_id: UUID,
+        *,
+        token_data: dict[str, Any],
+    ) -> AppCredential:
+        prepared = self._normalize_and_encrypt_token_data(app_name="linkedin", token_data=token_data)
+
+        query = select(AppCredential).where(
+            AppCredential.user_id == user_id,
+            AppCredential.app_name == "linkedin",
+        )
+        result = await self.db.execute(query)
+        candidates = list(result.scalars().all())
+
+        oauth_candidates = []
+        for credential in candidates:
+            provider = str((credential.token_data or {}).get("provider") or "").strip().lower()
+            if provider == "linkedin_oauth":
+                oauth_candidates.append(credential)
+
+        matched_credential: AppCredential | None = oauth_candidates[0] if len(oauth_candidates) == 1 else None
+        if matched_credential is not None:
+            matched_credential.token_data = prepared
+            self.db.add(matched_credential)
+            await self.db.commit()
+            await self.db.refresh(matched_credential)
+            return matched_credential
+
+        credential = AppCredential(
+            user_id=user_id,
+            app_name="linkedin",
+            token_data=prepared,
+        )
+        self.db.add(credential)
+        await self.db.commit()
+        await self.db.refresh(credential)
+        return credential
+
     async def get_user_credentials(self, user_id: UUID, app_name: str | None = None) -> list[AppCredential]:
         query = select(AppCredential).where(AppCredential.user_id == user_id)
         if app_name:
@@ -280,6 +336,9 @@ class CredentialService:
         elif provider == "slack_webhook":
             display_name = "Slack Webhook"
             description = "Slack incoming webhook"
+        elif provider == "linkedin_oauth":
+            display_name = "LinkedIn"
+            description = "Connected LinkedIn account"
         elif provider == "api_key":
             display_name = "API Key"
             description = f"{app_name.title()} API key" if app_name else "API key"
@@ -403,6 +462,23 @@ class CredentialService:
             waba_id = normalized_data.get("waba_id")
             if isinstance(waba_id, str) and waba_id.strip():
                 normalized_data["waba_id"] = waba_id.strip()
+        elif app_name == "linkedin":
+            access_token = (
+                normalized_data.get("access_token")
+                or normalized_data.get("api_key")
+            )
+
+            if not isinstance(access_token, str) or not access_token.strip():
+                raise ValueError(
+                    "LinkedIn credential requires access_token (token_data.access_token)."
+                )
+
+            normalized_data["access_token"] = access_token.strip()
+            normalized_data["api_key"] = access_token.strip()
+            normalized_data["provider"] = "linkedin_oauth"
+            member_urn = normalized_data.get("member_urn")
+            if isinstance(member_urn, str) and member_urn.strip():
+                normalized_data["member_urn"] = member_urn.strip()
 
         for key in SENSITIVE_TOKEN_FIELDS:
             value = normalized_data.get(key)

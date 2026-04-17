@@ -107,8 +107,15 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "message": "",
     },
     "linkedin": {
-        "content": "",
-        "visibility": "",
+        "credential_id": "",
+        "post_text": "",
+        "visibility": "PUBLIC",
+    },
+    "slack_send_message": {
+        "credential_id": "",
+        "webhook_url": "",
+        "channel": "",
+        "message": "",
     },
     "if_else": {
         "field": "",

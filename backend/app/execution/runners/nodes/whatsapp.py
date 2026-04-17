@@ -162,10 +162,15 @@ class WhatsAppRunner:
 
         payload = {
             "messaging_product": "whatsapp",
-            "to": to_number.lstrip("+"),
+            "to": to_number,
             "type": "template",
             "template": template_body,
         }
+
+        # DEBUG START
+        print("TEMPLATE PARAMS:", template_params)
+        print("FINAL PAYLOAD:", payload)
+        # DEBUG END
 
         def _do_request() -> dict[str, Any]:
             with httpx.Client(timeout=15.0) as client:

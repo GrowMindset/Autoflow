@@ -27,6 +27,8 @@ interface GoogleOAuthStartResponse {
   scopes: string[];
 }
 
+type OAuthStartResponse = Omit<GoogleOAuthStartResponse, 'app_name'> & { app_name?: string };
+
 interface GoogleOAuthExchangePayload {
   code: string;
   state: string;
@@ -62,6 +64,20 @@ export const credentialService = {
 
   async exchangeGoogleOAuth(payload: GoogleOAuthExchangePayload): Promise<CredentialItem> {
     const response = await api.post<CredentialItem>('/credentials/oauth/google/exchange', payload);
+    return response.data;
+  },
+
+  async startLinkedInOAuth(redirectUri?: string): Promise<OAuthStartResponse> {
+    const response = await api.get<OAuthStartResponse>('/credentials/oauth/linkedin/start', {
+      params: {
+        ...(redirectUri ? { redirect_uri: redirectUri } : {}),
+      },
+    });
+    return response.data;
+  },
+
+  async exchangeLinkedInOAuth(payload: GoogleOAuthExchangePayload): Promise<CredentialItem> {
+    const response = await api.post<CredentialItem>('/credentials/oauth/linkedin/exchange', payload);
     return response.data;
   },
 };

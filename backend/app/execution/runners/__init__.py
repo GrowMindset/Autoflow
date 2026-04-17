@@ -39,6 +39,7 @@ __all__ = [
     "ChatModelGroqRunner",
     "TelegramRunner",
     "WhatsAppRunner",
+    "LinkedInRunner",
     "ManualTriggerRunner",
     "FormTriggerRunner",
     "ScheduleTriggerRunner",

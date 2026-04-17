@@ -4,16 +4,18 @@ import { Plus } from 'lucide-react';
 import { CredentialItem, credentialService } from '../../services/credentialService';
 import { getAppTimezone } from '../../utils/dateTime';
 
-const GOOGLE_OAUTH_APPS = ['gmail', 'sheets', 'docs'] as const;
-const GOOGLE_OAUTH_NODE_USAGE: Record<string, string[]> = {
+const OAUTH_APPS = ['gmail', 'sheets', 'docs', 'linkedin'] as const;
+const OAUTH_NODE_USAGE: Record<string, string[]> = {
   gmail: ['Get Gmail Message', 'Send Gmail Message'],
   sheets: ['Create Google Sheets', 'Search/Update Google Sheets'],
   docs: ['Create Google Docs', 'Update Google Docs'],
+  linkedin: ['LinkedIn Post'],
 };
-const GOOGLE_OAUTH_APP_LABEL: Record<string, string> = {
+const OAUTH_APP_LABEL: Record<string, string> = {
   gmail: 'Gmail',
   sheets: 'Google Sheets',
   docs: 'Google Docs',
+  linkedin: 'LinkedIn',
 };
 
 const GoogleMark: React.FC<{ className?: string }> = ({ className }) => (
@@ -401,8 +403,23 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     },
   ],
   linkedin: [
-    { key: 'content', label: 'Post Content', type: 'text', placeholder: 'What do you want to share?' },
-    { key: 'visibility', label: 'Visibility', type: 'select', options: ['PUBLIC', 'CONNECTIONS'] }
+    {
+      key: 'credential_id',
+      label: 'LinkedIn Credential',
+      type: 'credential_selector',
+      appName: 'linkedin',
+      credentialLabel: 'LinkedIn OAuth',
+      credentialPlaceholder: 'Connect LinkedIn via OAuth',
+      credentialKey: 'api_key',
+    },
+    { key: 'post_text', label: 'Post Content', type: 'textarea', placeholder: 'What do you want to share?' },
+    {
+      key: 'visibility',
+      label: 'Visibility',
+      type: 'select',
+      options: ['PUBLIC', 'CONNECTIONS'],
+      helperText: 'Choose who can see this post.',
+    },
   ],
   ai_agent: [
     { key: 'system_prompt', label: 'System Prompt', type: 'textarea', placeholder: 'e.g. You are a helpful assistant...' },
@@ -607,21 +624,23 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
 
   const handleQuickGoogleOAuthConnect = async (appName: string) => {
     const normalizedApp = String(appName || '').trim().toLowerCase();
-    if (!GOOGLE_OAUTH_APPS.includes(normalizedApp as (typeof GOOGLE_OAUTH_APPS)[number])) {
+    if (!OAUTH_APPS.includes(normalizedApp as (typeof OAUTH_APPS)[number])) {
       return;
     }
 
     setOauthConnectingApp(normalizedApp);
     try {
-      const redirectUri = `${window.location.origin}/app/oauth/google/callback`;
-      const result = await credentialService.startGoogleOAuth(
-        normalizedApp as 'gmail' | 'sheets' | 'docs',
-        redirectUri,
-      );
+      const redirectUri = `${window.location.origin}/app/oauth/${normalizedApp}/callback`;
+      const result = normalizedApp === 'linkedin'
+        ? await credentialService.startLinkedInOAuth(redirectUri)
+        : await credentialService.startGoogleOAuth(
+            normalizedApp as 'gmail' | 'sheets' | 'docs',
+            redirectUri,
+          );
       window.location.href = result.auth_url;
     } catch (error) {
-      console.error('Failed to start Google OAuth:', error);
-      toast.error(`Could not start ${GOOGLE_OAUTH_APP_LABEL[normalizedApp] || 'Google'} OAuth.`);
+      console.error('Failed to start OAuth:', error);
+      toast.error(`Could not start ${OAUTH_APP_LABEL[normalizedApp] || 'OAuth'} flow.`);
       setOauthConnectingApp(null);
     }
   };
@@ -1504,9 +1523,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
         const requiresPhoneNumberId = Boolean(field.requiresPhoneNumberId);
         const requiresChannel = Boolean(field.requiresChannel);
         const normalizedAppName = String(field.appName || '').toLowerCase();
-        const isGoogleOAuthOnlyApp = GOOGLE_OAUTH_APPS.includes(normalizedAppName as (typeof GOOGLE_OAUTH_APPS)[number]);
-        const oauthAppLabel = GOOGLE_OAUTH_APP_LABEL[normalizedAppName] || 'Google';
-        const oauthNodeUsage = GOOGLE_OAUTH_NODE_USAGE[normalizedAppName] || [];
+        const isOAuthOnlyApp = OAUTH_APPS.includes(normalizedAppName as (typeof OAUTH_APPS)[number]);
+        const oauthAppLabel = OAUTH_APP_LABEL[normalizedAppName] || 'OAuth';
+        const oauthNodeUsage = OAUTH_NODE_USAGE[normalizedAppName] || [];
         const secretValue = newKey;
         return (
           <div className="space-y-2">
@@ -1523,13 +1542,14 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                   </option>
                 ))}
               </select>
-              {!isGoogleOAuthOnlyApp && (
+              {!isOAuthOnlyApp && (
                 <button
                   onClick={() => {
                     void fetchCredentials();
                     setNewKey('');
                     setNewChatId('');
                     setNewPhoneNumberId('');
+                    setNewChannel('');
                     setActiveCredentialForm((current) => (
                       current === credentialFormId ? null : credentialFormId
                     ));
@@ -1540,7 +1560,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                 </button>
               )}
             </div>
-            {isGoogleOAuthOnlyApp && (
+            {isOAuthOnlyApp && (
               <>
                 <button
                   type="button"
@@ -1551,8 +1571,8 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                   <GoogleMark className="h-4 w-4" />
                   {oauthConnectingApp === normalizedAppName ? 'Connecting...' : `Connect ${oauthAppLabel} OAuth`}
                 </button>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  OAuth only. Use the Google button above for quick verification, then select the credential.
+                <p className="text-[11px] text-slate-500 dark:text-[11px] dark:text-slate-400">
+                  OAuth only. Use the button above for quick verification, then select the credential.
                 </p>
                 {oauthNodeUsage.length > 0 && (
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -1561,7 +1581,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
                 )}
               </>
             )}
-            {!isGoogleOAuthOnlyApp && activeCredentialForm === credentialFormId && (
+            {!isOAuthOnlyApp && activeCredentialForm === credentialFormId && (
               <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
                 <label className="text-[9px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
                   Add {field.appName} {field.credentialLabel || 'API Key'}

@@ -235,10 +235,12 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       label: 'LinkedIn Post',
       category: 'action',
       description: 'Create a post on LinkedIn.',
-      default_config: {},
-      is_dummy: true,
+      default_config: {
+        credential_id: '',
+        post_text: '',
+        visibility: 'PUBLIC',
+      },
       icon: 'linkedin',
-      phase: 3,
     },
   ],
   transform: [

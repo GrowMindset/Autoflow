@@ -151,7 +151,21 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "linkedin": {
         "category": "action",
-        "description": "Dummy action node for LinkedIn posting. Use content and visibility exactly.",
+        "description": "Posts content to LinkedIn using a connected LinkedIn credential.",
+        "rules": [
+            "Use config keys: credential_id, post_text, visibility.",
+            "visibility should be PUBLIC or CONNECTIONS.",
+        ],
+    },
+    "slack_send_message": {
+        "category": "action",
+        "description": "Sends a message through a Slack Incoming Webhook.",
+        "rules": [
+            "Use config keys: credential_id, message, webhook_url, channel.",
+            "credential_id must point to app_credentials with app_name=slack.",
+            "message is required and specifies the text to send. Supports {{ }} template expressions.",
+            "webhook_url and channel are optional legacy overrides. Preferred source is the credential data.",
+        ],
     },
     "if_else": {
         "category": "logic",
