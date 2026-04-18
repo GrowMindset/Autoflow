@@ -274,6 +274,45 @@ async def get_execution(
     )
 
 
+@router.post("/executions/{execution_id}/stop", response_model=ExecutionDetailResponse)
+async def stop_execution(
+    execution_id: UUID,
+    current_user: User = Depends(get_current_user),
+    execution_service: ExecutionService = Depends(get_execution_service),
+) -> ExecutionDetailResponse:
+    try:
+        execution, node_results = await execution_service.stop_execution(
+            execution_id=execution_id,
+            user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return ExecutionDetailResponse(
+        id=execution.id,
+        workflow_id=execution.workflow_id,
+        user_id=execution.user_id,
+        status=execution.status,
+        triggered_by=execution.triggered_by,
+        started_at=execution.started_at,
+        finished_at=execution.finished_at,
+        error_message=execution.error_message,
+        node_results=[
+            NodeExecutionResult(
+                node_id=node.node_id,
+                node_type=node.node_type,
+                status=node.status,
+                input_data=node.input_data,
+                output_data=node.output_data,
+                error_message=node.error_message,
+                started_at=node.started_at,
+                finished_at=node.finished_at,
+            )
+            for node in node_results
+        ],
+    )
+
+
 @router.get("/workflows/{workflow_id}/executions/latest", response_model=ExecutionDetailResponse)
 async def get_latest_execution(
     workflow_id: UUID,

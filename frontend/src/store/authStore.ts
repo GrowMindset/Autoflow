@@ -7,17 +7,43 @@ export const useAuthStore = create<AuthState>()(
     (set) => ({
       user: null,
       token: null,
+      refreshToken: null,
       isAuthenticated: false,
       isLoading: false,
 
-      setAuth: (user: User, token: string) => {
+      setAuth: (user: User, token: string, refreshToken: string) => {
         localStorage.setItem('token', token);
-        set({ user, token, isAuthenticated: true, isLoading: false });
+        localStorage.setItem('refresh_token', refreshToken);
+        set({
+          user,
+          token,
+          refreshToken,
+          isAuthenticated: true,
+          isLoading: false,
+        });
+      },
+
+      setTokenPair: (token: string, refreshToken: string) => {
+        localStorage.setItem('token', token);
+        localStorage.setItem('refresh_token', refreshToken);
+        set((state) => ({
+          ...state,
+          token,
+          refreshToken,
+          isAuthenticated: Boolean(state.user),
+        }));
       },
 
       clearAuth: () => {
         localStorage.removeItem('token');
-        set({ user: null, token: null, isAuthenticated: false, isLoading: false });
+        localStorage.removeItem('refresh_token');
+        set({
+          user: null,
+          token: null,
+          refreshToken: null,
+          isAuthenticated: false,
+          isLoading: false,
+        });
       },
 
       setLoading: (isLoading: boolean) => set({ isLoading }),
@@ -31,6 +57,7 @@ export const useAuthStore = create<AuthState>()(
       partialize: (state) => ({ 
         user: state.user, 
         token: state.token, 
+        refreshToken: state.refreshToken,
         isAuthenticated: state.isAuthenticated 
       }),
     }

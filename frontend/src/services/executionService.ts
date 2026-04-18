@@ -66,6 +66,11 @@ export const executionService = {
     return response.data;
   },
 
+  stopExecution: async (executionId: string): Promise<ExecutionDetail> => {
+    const response = await api.post(`/executions/${executionId}/stop`);
+    return response.data;
+  },
+
   getLatestExecution: async (workflowId: string): Promise<ExecutionDetail> => {
     const response = await api.get(`/workflows/${workflowId}/executions/latest`);
     return response.data;

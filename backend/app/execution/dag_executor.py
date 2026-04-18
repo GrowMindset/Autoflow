@@ -46,6 +46,10 @@ class NodeExecutionError(Exception):
         super().__init__(str(original_exception))
 
 
+class WorkflowStopRequested(Exception):
+    """Raised by progress callbacks when a running execution is manually stopped."""
+
+
 class DagExecutor:
     """Executes dummy workflow JSON in memory."""
 
@@ -1339,6 +1343,9 @@ class DagExecutor:
                 output_data=output_data,
                 error_message=error_message,
             )
+        except WorkflowStopRequested:
+            # Manual stop should abort execution quickly.
+            raise
         except Exception:
             # Progress reporting must never fail workflow execution.
             return

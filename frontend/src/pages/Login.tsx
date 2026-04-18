@@ -24,15 +24,18 @@ const Login: React.FC = () => {
     try {
       const response = await authService.login({ email, password });
       
-      // Store token early for the getMe call
+      // Store token pair early for the getMe call
       localStorage.setItem('token', response.access_token);
+      localStorage.setItem('refresh_token', response.refresh_token);
       const user = await authService.getMe();
       
-      setAuth(user, response.access_token);
+      setAuth(user, response.access_token, response.refresh_token);
       toast.success(`Welcome back, ${user.username}!`);
       navigate('/');
     } catch (error: any) {
       console.error('Login failed:', error);
+      localStorage.removeItem('token');
+      localStorage.removeItem('refresh_token');
       // api interceptor handles toast
     } finally {
       setIsLoading(false);

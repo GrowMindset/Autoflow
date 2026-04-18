@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.execution.constants import MANUAL_STOP_ERROR_MESSAGE
 from app.models.executions import Execution
 from app.models.nodes_executions import NodeExecution
 from app.models.user import User
@@ -561,6 +562,48 @@ class ExecutionService:
             .offset(offset)
         )
         return int(total or 0), result.all()
+
+    async def stop_execution(
+        self,
+        *,
+        execution_id: UUID,
+        user_id: UUID,
+    ) -> tuple[Execution, list[NodeExecution]]:
+        execution = await self.db.scalar(
+            select(Execution).where(
+                Execution.id == execution_id,
+                Execution.user_id == user_id,
+            )
+        )
+        if execution is None:
+            raise ValueError("Execution not found")
+
+        if execution.status in {"PENDING", "RUNNING"}:
+            now = datetime.now(timezone.utc)
+            execution.status = "FAILED"
+            execution.finished_at = now
+            execution.error_message = MANUAL_STOP_ERROR_MESSAGE
+
+            node_rows = (
+                await self.db.scalars(
+                    select(NodeExecution).where(
+                        NodeExecution.execution_id == execution.id,
+                        NodeExecution.status.in_(["PENDING", "RUNNING"]),
+                    )
+                )
+            ).all()
+            for node_row in node_rows:
+                node_row.status = "FAILED"
+                node_row.error_message = MANUAL_STOP_ERROR_MESSAGE
+                node_row.started_at = node_row.started_at or now
+                node_row.finished_at = now
+
+            await self.db.commit()
+
+        return await self.get_execution_detail(
+            execution_id=execution.id,
+            user_id=user_id,
+        )
 
     async def _create_and_enqueue_execution(
         self,

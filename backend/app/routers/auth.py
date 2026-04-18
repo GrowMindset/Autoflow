@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models.user import User
-from app.schemas.auth import LoginRequest, SignupRequest, TokenResponse, UserResponse
+from app.schemas.auth import (
+    RefreshTokenRequest,
+    SignupRequest,
+    TokenResponse,
+    UserResponse,
+)
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -27,8 +33,6 @@ async def signup(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return UserResponse.model_validate(user)
 
-from fastapi.security import OAuth2PasswordRequestForm
-
 @router.post("/login", response_model=TokenResponse)
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -45,7 +49,29 @@ async def login(
             detail=str(exc)
         ) from exc
 
-    return TokenResponse(access_token=access_token)
+    return TokenResponse(
+        access_token=access_token.access_token,
+        refresh_token=access_token.refresh_token,
+    )
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_access_token(
+    payload: RefreshTokenRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+) -> TokenResponse:
+    try:
+        refreshed = await auth_service.refresh_access_token(payload.refresh_token)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+    return TokenResponse(
+        access_token=refreshed.access_token,
+        refresh_token=refreshed.refresh_token,
+    )
 
 
 @router.get("/me", response_model=UserResponse)

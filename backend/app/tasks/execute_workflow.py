@@ -11,7 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.execution.dag_executor import DagExecutor, NodeExecutionError
+from app.execution.constants import MANUAL_STOP_ERROR_MESSAGE
+from app.execution.dag_executor import DagExecutor, NodeExecutionError, WorkflowStopRequested
 from app.models.executions import Execution
 from app.models.nodes_executions import NodeExecution
 from app.models.workflows import Workflow
@@ -22,6 +23,10 @@ load_dotenv()
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _is_manual_stop_error(message: str | None) -> bool:
+    return str(message or "").strip().startswith(MANUAL_STOP_ERROR_MESSAGE)
 
 
 async def _resolve_credentials(
@@ -264,6 +269,11 @@ async def _run_execution(
                     f"Workflow '{execution.workflow_id}' for execution '{execution_id}' was not found"
                 )
 
+            if execution.status == "FAILED" and _is_manual_stop_error(execution.error_message):
+                return
+            if execution.status == "SUCCEEDED":
+                return
+
             execution.status = "RUNNING"
             execution.started_at = _utcnow()
             execution.finished_at = None
@@ -322,6 +332,12 @@ async def _run_execution(
                     error_message: str | None = None,
                 ) -> None:
                     async with progress_lock:
+                        await db.refresh(execution)
+                        if execution.status != "RUNNING":
+                            raise WorkflowStopRequested(
+                                execution.error_message or MANUAL_STOP_ERROR_MESSAGE
+                            )
+
                         row = _upsert_node_row(
                             node_execution_by_id=node_execution_by_id,
                             execution=execution,
@@ -398,6 +414,10 @@ async def _run_execution(
                     progress_callback=_on_node_progress,
                 )
 
+                await db.refresh(execution)
+                if execution.status != "RUNNING":
+                    return
+
                 visited_nodes = result.get("visited_nodes", [])
                 node_inputs = result.get("node_inputs", {})
                 node_outputs = result.get("node_outputs", {})
@@ -446,6 +466,10 @@ async def _run_execution(
                 execution.error_message = None
                 await db.commit()
             except NodeExecutionError as exc:
+                await db.refresh(execution)
+                if execution.status != "RUNNING":
+                    return
+
                 now = _utcnow()
                 visited_node_ids = set(exc.visited_nodes or [])
 
@@ -499,7 +523,21 @@ async def _run_execution(
                 execution.error_message = None
                 await db.commit()
                 return
+            except WorkflowStopRequested:
+                await db.refresh(execution)
+                if execution.status == "FAILED" and _is_manual_stop_error(execution.error_message):
+                    return
+
+                execution.status = "FAILED"
+                execution.finished_at = _utcnow()
+                execution.error_message = MANUAL_STOP_ERROR_MESSAGE
+                await db.commit()
+                return
             except Exception as exc:
+                await db.refresh(execution)
+                if execution.status == "FAILED" and _is_manual_stop_error(execution.error_message):
+                    return
+
                 execution.status = "FAILED"
                 execution.finished_at = _utcnow()
                 execution.error_message = str(exc)

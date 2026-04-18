@@ -25,7 +25,7 @@ import ConfigPanel from '../config/ConfigPanel';
 import { executionService, ExecutionDetail } from '../../services/executionService';
 import toast from 'react-hot-toast';
 import { useTheme } from '../../context/ThemeContext';
-import { Play, LayoutGrid, Sparkles, Search, Undo2, Redo2, Loader2, Plus } from 'lucide-react';
+import { Play, Square, LayoutGrid, Sparkles, Search, Undo2, Redo2, Loader2, Plus } from 'lucide-react';
 import { formatDateTimeInAppTimezone } from '../../utils/dateTime';
 
 const nodeTypes = {
@@ -618,6 +618,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [showRunFlowSelector, setShowRunFlowSelector] = useState(false);
   const [runFlowOptions, setRunFlowOptions] = useState<WorkflowNode[]>([]);
   const [isStartingSelectedFlow, setIsStartingSelectedFlow] = useState(false);
+  const [activeExecutionId, setActiveExecutionId] = useState<string | null>(null);
+  const [isStoppingExecution, setIsStoppingExecution] = useState(false);
 
   const emitCanvasMutation = useCallback((reason: string) => {
     if (isHydratingCanvasRef.current || isApplyingHistoryRef.current) return;
@@ -990,6 +992,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       if (detail.status === 'SUCCEEDED' || detail.status === 'FAILED') {
         stopPolling();
         activeExecutionIdRef.current = null;
+        setActiveExecutionId(null);
         const triggerKind = String(detail.triggered_by || '').toLowerCase();
         const isWorkflowRun = ['manual', 'form', 'webhook', 'workflow'].includes(triggerKind);
         if (detail.status === 'SUCCEEDED') {
@@ -1018,6 +1021,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   ) => {
     stopPolling();
     activeExecutionIdRef.current = executionId;
+    setActiveExecutionId(executionId);
     onExecutionStart?.(executionId);
 
     if (options?.primeNodeId) {
@@ -1341,11 +1345,79 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   useEffect(() => {
     stopPolling();
     activeExecutionIdRef.current = null;
+    setActiveExecutionId(null);
     return () => {
       stopPolling();
       activeExecutionIdRef.current = null;
+      setActiveExecutionId(null);
     };
   }, [workflowId, stopPolling]);
+
+  const handleStopWorkflow = useCallback(async () => {
+    const executionId = activeExecutionIdRef.current;
+    if (!executionId) {
+      toast('No running execution to stop.', { icon: 'ℹ️' });
+      return;
+    }
+    if (isStoppingExecution) return;
+
+    setIsStoppingExecution(true);
+    try {
+      const detail = await executionService.stopExecution(executionId);
+      stopPolling();
+      activeExecutionIdRef.current = null;
+      setActiveExecutionId(null);
+
+      setNodes((nds) =>
+        nds.map((node) => {
+          const result = detail.node_results.find((r) => r.node_id === node.id);
+          if (!result) {
+            return node;
+          }
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              status: result.status,
+              last_execution_result: result,
+              last_output: result.output_data ?? node.data.last_output,
+            },
+          };
+        }),
+      );
+
+      setExecutionHistory((history) =>
+        history.map((entry) =>
+          entry.executionId === executionId
+            ? {
+                ...entry,
+                status: detail.status,
+                errorMessage: detail.error_message,
+                startedAt: detail.started_at,
+                finishedAt: detail.finished_at,
+                durationMs:
+                  detail.started_at && detail.finished_at
+                    ? Date.parse(detail.finished_at) - Date.parse(detail.started_at)
+                    : entry.durationMs,
+              }
+            : entry,
+        ),
+      );
+
+      executionDetailCacheRef.current[executionId] = detail;
+      if (selectedExecutionId === executionId) {
+        setSelectedExecutionDetail(detail);
+      }
+      onExecutionUpdate?.(detail);
+      toast.success('Workflow stopped manually.');
+    } catch (error: any) {
+      const message =
+        String(error?.response?.data?.detail || '').trim() || 'Failed to stop workflow.';
+      toast.error(message);
+    } finally {
+      setIsStoppingExecution(false);
+    }
+  }, [isStoppingExecution, onExecutionUpdate, selectedExecutionId, setNodes, stopPolling]);
 
   const isValidConnection = useCallback((connection: Connection) => {
     if (!connection.source || !connection.target) {
@@ -2238,6 +2310,19 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                   <div className="absolute inset-0 bg-white/20 rounded-full scale-150 opacity-0 group-hover:animate-ping" />
                 </div>
                 <span className="text-xs font-black uppercase tracking-[0.1em]">Execute Workflow</span>
+              </button>
+
+              <button
+                onClick={handleStopWorkflow}
+                disabled={!activeExecutionId || isStoppingExecution}
+                title={activeExecutionId ? 'Stop Running Workflow' : 'No running workflow'}
+                className="group flex items-center justify-center bg-rose-600 hover:bg-rose-700 text-white w-12 h-12 rounded-2xl border border-rose-500 shadow-[0_20px_40px_rgba(244,63,94,0.28)] transition-all duration-300 active:scale-95 disabled:opacity-45 disabled:cursor-not-allowed"
+              >
+                {isStoppingExecution ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Square size={14} fill="currentColor" stroke="none" className="group-enabled:group-hover:scale-105 transition-transform" />
+                )}
               </button>
             </div>
 

@@ -20,6 +20,16 @@ export const authService = {
   },
 
   /**
+   * Exchange a refresh token for a new access/refresh token pair
+   */
+  refresh: async (refreshToken: string): Promise<LoginResponse> => {
+    const response = await api.post<LoginResponse>('/auth/refresh', {
+      refresh_token: refreshToken,
+    });
+    return response.data;
+  },
+
+  /**
    * Register a new user
    */
   signup: async (data: any): Promise<SignupResponse> => {

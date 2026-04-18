@@ -7,7 +7,7 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.auth import decode_access_token, verify_password
+from app.core.auth import decode_access_token, decode_refresh_token, verify_password
 from app.core.database import get_db
 from app.main import app
 from app.models import Base
@@ -137,6 +137,46 @@ class AuthEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["token_type"], "bearer")
         token_payload = decode_access_token(payload["access_token"])
         self.assertEqual(token_payload["sub"], signup_payload["id"])
+        refresh_payload = decode_refresh_token(payload["refresh_token"])
+        self.assertEqual(refresh_payload["sub"], signup_payload["id"])
+
+    async def test_refresh_returns_new_token_pair_for_valid_refresh_token(self) -> None:
+        signup_status, _ = await self.client.post(
+            "/auth/signup",
+            json_body={
+                "email": "refresh@example.com",
+                "username": "refresh-user",
+                "password": "mypassword123",
+            },
+        )
+        self.assertEqual(signup_status, 201)
+
+        login_status, login_payload = await self.client.post(
+            "/auth/login",
+            data={
+                "username": "refresh@example.com",
+                "password": "mypassword123",
+            },
+        )
+        self.assertEqual(login_status, 200)
+        first_refresh = login_payload["refresh_token"]
+
+        refresh_status, refresh_payload = await self.client.post(
+            "/auth/refresh",
+            json_body={"refresh_token": first_refresh},
+        )
+        self.assertEqual(refresh_status, 200)
+        self.assertIn("access_token", refresh_payload)
+        self.assertIn("refresh_token", refresh_payload)
+        self.assertNotEqual(refresh_payload["refresh_token"], first_refresh)
+
+    async def test_refresh_rejects_invalid_refresh_token(self) -> None:
+        status_code, payload = await self.client.post(
+            "/auth/refresh",
+            json_body={"refresh_token": "not-a-valid-token"},
+        )
+        self.assertEqual(status_code, 401)
+        self.assertIn("detail", payload)
 
     async def test_login_rejects_invalid_credentials(self) -> None:
         await self.client.post(

@@ -17,21 +17,35 @@ const queryClient = new QueryClient({
 
 const Root = () => {
   const setAuth = useAuthStore((state) => state.setAuth);
+  const setTokenPair = useAuthStore((state) => state.setTokenPair);
   const clearAuth = useAuthStore((state) => state.clearAuth);
   const setLoading = useAuthStore((state) => state.setLoading);
 
   useEffect(() => {
     const initAuth = async () => {
-      const token = localStorage.getItem('token');
-      if (!token) {
+      let accessToken = localStorage.getItem('token') || '';
+      let refreshToken = localStorage.getItem('refresh_token') || '';
+      if (!accessToken && !refreshToken) {
         setLoading(false);
         return;
       }
 
       setLoading(true);
       try {
+        if (!accessToken && refreshToken) {
+          const refreshed = await authService.refresh(refreshToken);
+          accessToken = refreshed.access_token;
+          refreshToken = refreshed.refresh_token;
+          setTokenPair(accessToken, refreshToken);
+        }
+
         const user = await authService.getMe();
-        setAuth(user, token);
+        const latestAccessToken = localStorage.getItem('token') || accessToken;
+        const latestRefreshToken = localStorage.getItem('refresh_token') || refreshToken;
+        if (!latestAccessToken || !latestRefreshToken) {
+          throw new Error('Missing token pair after auth initialization.');
+        }
+        setAuth(user, latestAccessToken, latestRefreshToken);
       } catch (error: any) {
         console.error('Session restoration failed:', error);
         clearAuth();
@@ -41,7 +55,7 @@ const Root = () => {
     };
 
     initAuth();
-  }, [setAuth, clearAuth, setLoading]);
+  }, [setAuth, setTokenPair, clearAuth, setLoading]);
 
   return (
     <QueryClientProvider client={queryClient}>
