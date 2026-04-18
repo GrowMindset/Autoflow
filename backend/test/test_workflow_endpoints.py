@@ -121,6 +121,9 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
             ("GET", "/workflows", None),
             ("GET", f"/workflows/{workflow_id}", None),
             ("PUT", f"/workflows/{workflow_id}", {"name": "B"}),
+            ("POST", f"/workflows/{workflow_id}/publish", None),
+            ("POST", f"/workflows/{workflow_id}/unpublish", None),
+            ("GET", f"/workflows/{workflow_id}/public-run-url", None),
             ("DELETE", f"/workflows/{workflow_id}", None),
         ]:
             if method == "POST":
@@ -243,6 +246,326 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(hidden_status, 404)
         self.assertEqual(hidden_payload["detail"], "Workflow not found")
+
+    async def test_publish_endpoints_toggle_status(self) -> None:
+        user = await self._create_user(email="publish@example.com", username="publish-user")
+        workflow = await self._create_workflow(user_id=user.id, name="Publish Workflow")
+
+        publish_status, publish_payload = await self.client.post(
+            f"/workflows/{workflow.id}/publish",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(publish_status, 200)
+        self.assertTrue(publish_payload["is_published"])
+
+        unpublish_status, unpublish_payload = await self.client.post(
+            f"/workflows/{workflow.id}/unpublish",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(unpublish_status, 200)
+        self.assertFalse(unpublish_payload["is_published"])
+
+    async def test_public_run_url_is_stable_and_reflects_publish_status(self) -> None:
+        user = await self._create_user(
+            email="public-run@example.com",
+            username="public-run-user",
+        )
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Public Run Workflow",
+            is_published=True,
+        )
+
+        first_status, first_payload = await self.client.get(
+            f"/workflows/{workflow.id}/public-run-url",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(first_status, 200)
+        self.assertEqual(first_payload["method"], "POST")
+        self.assertEqual(first_payload["path"], "published-run")
+        self.assertTrue(first_payload["is_active"])
+        self.assertIn("/webhook/", first_payload["url"])
+        first_token = first_payload["path_token"]
+
+        unpublish_status, _ = await self.client.post(
+            f"/workflows/{workflow.id}/unpublish",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(unpublish_status, 200)
+
+        second_status, second_payload = await self.client.get(
+            f"/workflows/{workflow.id}/public-run-url",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(second_status, 200)
+        self.assertEqual(second_payload["path_token"], first_token)
+        self.assertFalse(second_payload["is_active"])
+
+    async def test_public_run_url_returns_404_for_non_trigger_workflow(self) -> None:
+        user = await self._create_user(
+            email="no-trigger@example.com",
+            username="no-trigger-user",
+        )
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="No Trigger",
+            definition={
+                "nodes": [
+                    {
+                        "id": "filter_only",
+                        "type": "filter",
+                        "label": "Filter",
+                        "position": {"x": 0, "y": 0},
+                        "config": {"input_key": "items"},
+                    }
+                ],
+                "edges": [],
+            },
+            is_published=True,
+        )
+
+        status_code, payload = await self.client.get(
+            f"/workflows/{workflow.id}/public-run-url",
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(status_code, 404)
+        self.assertEqual(payload["detail"], "No trigger found for public run URL")
+
+    async def test_public_run_url_for_form_workflow_points_to_public_form_path(self) -> None:
+        user = await self._create_user(
+            email="public-form-url@example.com",
+            username="public-form-url-user",
+        )
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Public Form Workflow",
+            is_published=True,
+            definition={
+                "nodes": [
+                    {
+                        "id": "form_start",
+                        "type": "form_trigger",
+                        "label": "Form Trigger",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "form_title": "Lead Form",
+                            "fields": [
+                                {"name": "email", "label": "Email", "type": "email", "required": True}
+                            ],
+                        },
+                    }
+                ],
+                "edges": [],
+            },
+        )
+
+        status_code, payload = await self.client.get(
+            f"/workflows/{workflow.id}/public-run-url",
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["method"], "GET")
+        self.assertTrue(payload["path"].startswith("public/forms/"))
+        self.assertIn("/public/forms/", payload["url"])
+        self.assertEqual(payload["path_token"], payload["path"].split("/")[-1])
+
+    async def test_public_form_definition_and_submit_work_for_published_form_workflow(self) -> None:
+        user = await self._create_user(
+            email="public-form-submit@example.com",
+            username="public-form-submit-user",
+        )
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Public Form Submit Workflow",
+            is_published=True,
+            definition={
+                "nodes": [
+                    {
+                        "id": "form_start",
+                        "type": "form_trigger",
+                        "label": "Form Trigger",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "form_title": "Contact Form",
+                            "form_description": "Tell us about your request",
+                            "fields": [
+                                {"name": "email", "label": "Email", "type": "email", "required": True},
+                                {"name": "message", "label": "Message", "type": "textarea", "required": True},
+                            ],
+                        },
+                    }
+                ],
+                "edges": [],
+            },
+        )
+
+        endpoint_status, endpoint_payload = await self.client.get(
+            f"/workflows/{workflow.id}/public-run-url",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(endpoint_status, 200)
+        token = endpoint_payload["path_token"]
+
+        definition_status, definition_payload = await self.client.get(f"/public/forms/{token}")
+        self.assertEqual(definition_status, 200)
+        self.assertEqual(definition_payload["workflow_id"], str(workflow.id))
+        self.assertEqual(definition_payload["path_token"], token)
+        self.assertEqual(definition_payload["form_title"], "Contact Form")
+        self.assertEqual(len(definition_payload["fields"]), 2)
+        self.assertTrue(definition_payload["submit_url"].endswith(f"/public/forms/{token}/submit"))
+
+        submit_status, submit_payload = await self.client.post(
+            f"/public/forms/{token}/submit",
+            json_body={
+                "form_data": {
+                    "email": "test@example.com",
+                    "message": "Need more details",
+                }
+            },
+        )
+        self.assertEqual(submit_status, 202)
+        self.assertEqual(submit_payload["message"], "Workflow execution enqueued")
+        execution_id = UUID(submit_payload["execution_id"])
+
+        async with self.session_factory() as session:
+            execution = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution)
+            self.assertEqual(execution.workflow_id, workflow.id)
+            self.assertEqual(execution.triggered_by, "form")
+
+    async def test_public_form_endpoints_return_404_for_invalid_or_unpublished_tokens(self) -> None:
+        invalid_get_status, _ = await self.client.get("/public/forms/not-a-valid-token")
+        self.assertEqual(invalid_get_status, 404)
+
+        invalid_submit_status, _ = await self.client.post(
+            "/public/forms/not-a-valid-token/submit",
+            json_body={"form_data": {"email": "x@example.com"}},
+        )
+        self.assertEqual(invalid_submit_status, 404)
+
+        user = await self._create_user(
+            email="public-form-unpublished@example.com",
+            username="public-form-unpublished-user",
+        )
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Form Unpublish Workflow",
+            is_published=True,
+            definition={
+                "nodes": [
+                    {
+                        "id": "form_start",
+                        "type": "form_trigger",
+                        "label": "Form Trigger",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "fields": [
+                                {"name": "email", "label": "Email", "type": "email", "required": True}
+                            ],
+                        },
+                    }
+                ],
+                "edges": [],
+            },
+        )
+
+        endpoint_status, endpoint_payload = await self.client.get(
+            f"/workflows/{workflow.id}/public-run-url",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(endpoint_status, 200)
+        token = endpoint_payload["path_token"]
+
+        unpublish_status, _ = await self.client.post(
+            f"/workflows/{workflow.id}/unpublish",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(unpublish_status, 200)
+
+        unpublished_get_status, _ = await self.client.get(f"/public/forms/{token}")
+        self.assertEqual(unpublished_get_status, 404)
+
+        unpublished_submit_status, _ = await self.client.post(
+            f"/public/forms/{token}/submit",
+            json_body={"form_data": {"email": "x@example.com"}},
+        )
+        self.assertEqual(unpublished_submit_status, 404)
+
+    async def test_public_form_submit_missing_required_fields_fails_execution(self) -> None:
+        user = await self._create_user(
+            email="public-form-required@example.com",
+            username="public-form-required-user",
+        )
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Form Required Workflow",
+            is_published=True,
+            definition={
+                "nodes": [
+                    {
+                        "id": "form_start",
+                        "type": "form_trigger",
+                        "label": "Form Trigger",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "fields": [
+                                {"name": "email", "label": "Email", "type": "email", "required": True}
+                            ],
+                        },
+                    }
+                ],
+                "edges": [],
+            },
+        )
+
+        endpoint_status, endpoint_payload = await self.client.get(
+            f"/workflows/{workflow.id}/public-run-url",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(endpoint_status, 200)
+        token = endpoint_payload["path_token"]
+
+        submit_status, submit_payload = await self.client.post(
+            f"/public/forms/{token}/submit",
+            json_body={"form_data": {}},
+        )
+        self.assertEqual(submit_status, 202)
+        execution_id = UUID(submit_payload["execution_id"])
+
+        async with self.session_factory() as session:
+            execution = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution)
+            self.assertEqual(execution.workflow_id, workflow.id)
+            self.assertEqual(execution.triggered_by, "form")
+            self.assertNotEqual(execution.status, "SUCCEEDED")
+
+    async def test_published_token_webhook_requires_post_method(self) -> None:
+        user = await self._create_user(
+            email="published-method@example.com",
+            username="published-method-user",
+        )
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Published Method Workflow",
+            is_published=True,
+        )
+
+        endpoint_status, endpoint_payload = await self.client.get(
+            f"/workflows/{workflow.id}/public-run-url",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(endpoint_status, 200)
+        token = endpoint_payload["path_token"]
+
+        get_status, get_payload = await self.client.get(f"/webhook/{token}")
+        self.assertEqual(get_status, 405)
+        self.assertIn("method not allowed", str(get_payload.get("detail", "")).lower())
+
+        post_status, post_payload = await self.client.post(f"/webhook/{token}")
+        self.assertEqual(post_status, 202)
+        self.assertEqual(post_payload["message"], "Workflow execution enqueued")
 
     async def test_update_workflow_partially_updates_and_checks_ownership(self) -> None:
         owner = await self._create_user(email="update-owner@example.com", username="update-owner")

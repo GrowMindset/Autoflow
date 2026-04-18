@@ -63,7 +63,7 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "workflow_trigger": {
         "category": "trigger",
-        "description": "Placeholder trigger type for future workflow-to-workflow starts.",
+        "description": "Starts a workflow from another workflow execution context.",
     },
     "get_gmail_message": {
         "category": "action",
@@ -140,21 +140,41 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
             "language_code defaults to en_US.",
         ],
     },
-    "slack_send_message": {
-        "category": "action",
-        "description": "Sends a Slack message through an Incoming Webhook credential.",
-        "rules": [
-            "Use config keys: credential_id and message.",
-            "Do not include webhook_url directly in node config; store it in credential token_data.",
-            "Optional channel can be stored in credential token_data.channel.",
-        ],
-    },
     "linkedin": {
         "category": "action",
         "description": "Posts content to LinkedIn using a connected LinkedIn credential.",
         "rules": [
             "Use config keys: credential_id, post_text, visibility.",
             "visibility should be PUBLIC or CONNECTIONS.",
+        ],
+    },
+    "http_request": {
+        "category": "input_output",
+        "description": "Calls external HTTP APIs with configurable method, headers, query/body, and auth modes.",
+        "rules": [
+            "Use config keys: url, method, auth_mode, credential_id, headers_json, query_json, body_type, body_json, body_form_json, body_raw.",
+            "method should be one of GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD.",
+            "auth_mode should be none, bearer, basic, or api_key.",
+            "response_format should be auto, json, or text.",
+        ],
+    },
+    "file_read": {
+        "category": "input_output",
+        "description": "Reads a local file from an allowed directory and returns parsed content.",
+        "rules": [
+            "Use config keys: file_path, parse_as, encoding, max_bytes, include_metadata, csv_delimiter.",
+            "parse_as should be one of auto, text, json, csv, lines, base64.",
+            "Allowed file paths/extensions are controlled by FILE_NODE_ALLOWED_BASE_DIRS and FILE_NODE_ALLOWED_EXTENSIONS.",
+        ],
+    },
+    "file_write": {
+        "category": "input_output",
+        "description": "Writes content to a local file in an allowed directory.",
+        "rules": [
+            "Use config keys: file_path, content_source, input_key, content_text, input_format, write_mode, encoding, create_dirs.",
+            "write_mode should be create, overwrite, or append.",
+            "input_format should be auto, text, json, or base64.",
+            "Allowed file paths/extensions are controlled by FILE_NODE_ALLOWED_BASE_DIRS and FILE_NODE_ALLOWED_EXTENSIONS.",
         ],
     },
     "slack_send_message": {
@@ -198,7 +218,7 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         ],
     },
     "delay": {
-        "category": "action",
+        "category": "transform",
         "description": "Pauses workflow execution for a configured time, then forwards data unchanged.",
         "rules": [
             "Use config keys: amount, unit, until_datetime.",

@@ -4,6 +4,7 @@ import MainLayout from './components/layout/MainLayout';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import WorkflowFormPage from './pages/WorkflowFormPage';
+import PublicWorkflowFormPage from './pages/PublicWorkflowFormPage';
 import GoogleOAuthCallback from './pages/GoogleOAuthCallback';
 import LinkedInOAuthCallback from './pages/LinkedInOAuthCallback';
 import ProtectedRoute from './components/auth/ProtectedRoute';
@@ -18,6 +19,7 @@ const App: React.FC = () => {
           {/* Public Routes */}
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
+          <Route path="/public/forms/:pathToken" element={<PublicWorkflowFormPage />} />
 
           {/* Protected Routes */}
           <Route element={<ProtectedRoute />}>

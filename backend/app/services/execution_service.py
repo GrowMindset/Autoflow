@@ -17,6 +17,7 @@ from app.models.user import User
 from app.models.webhook import WebhookEndpoint
 from app.models.workflows import Workflow
 from app.schemas.executions import ExecutionStatus, TriggeredBy
+from app.services.workflow_service import PUBLISHED_RUN_NODE_ID
 from app.services.schedule_service import is_schedule_enabled, next_schedule_run_at
 from app.tasks.execute_workflow import run_execution, run_node_test
 from celery_config import WORKFLOW_EXECUTION_QUEUE, WORKFLOW_NODE_TEST_QUEUE
@@ -179,6 +180,33 @@ class ExecutionService:
         if workflow is None or not workflow.is_published:
             raise ValueError("Webhook not found or workflow not published")
 
+        if webhook.node_id == PUBLISHED_RUN_NODE_ID:
+            incoming_method = (request_method or "POST").upper()
+            expected_method = "POST"
+            if incoming_method != expected_method:
+                raise ValueError(
+                    f"Webhook method not allowed. Expected {expected_method}, received {incoming_method}"
+                )
+
+            user = await self.db.get(User, workflow.user_id)
+            if user is None:
+                raise ValueError("Webhook owner not found")
+
+            await self._mark_stale_running_executions(user_id=user.id)
+
+            start_node_id = self._resolve_start_node_id(
+                definition=workflow.definition,
+            )
+            execution_payload = dict(payload or {})
+            execution_payload.setdefault("source", "published_url")
+            return await self._create_and_enqueue_execution(
+                workflow=workflow,
+                user=user,
+                triggered_by="webhook",
+                initial_payload=execution_payload,
+                start_node_id=start_node_id,
+            )
+
         node = next(
             (
                 item
@@ -209,6 +237,99 @@ class ExecutionService:
             triggered_by="webhook",
             initial_payload=payload,
             start_node_id=webhook.node_id,
+        )
+
+    async def get_public_form_definition(
+        self,
+        *,
+        path_token: str,
+        base_url: str,
+    ) -> dict[str, Any]:
+        webhook = await self.db.scalar(
+            select(WebhookEndpoint).where(
+                WebhookEndpoint.path_token == path_token,
+                WebhookEndpoint.is_active.is_(True),
+                WebhookEndpoint.node_id == PUBLISHED_RUN_NODE_ID,
+            )
+        )
+        if webhook is None:
+            raise ValueError("Public form not found")
+
+        workflow = await self.db.scalar(
+            select(Workflow).where(
+                Workflow.id == webhook.workflow_id,
+                Workflow.user_id == webhook.user_id,
+            )
+        )
+        if workflow is None or not workflow.is_published:
+            raise ValueError("Public form not found")
+
+        form_node = self._resolve_form_trigger_node(definition=workflow.definition)
+        if form_node is None:
+            raise ValueError("Public form not found")
+
+        config = form_node.get("config") if isinstance(form_node.get("config"), dict) else {}
+        fields = self._sanitize_public_form_fields(config.get("fields"))
+        if not fields:
+            raise ValueError("Public form has no configured fields")
+
+        stripped_base = base_url.rstrip("/")
+        return {
+            "workflow_id": workflow.id,
+            "workflow_name": str(workflow.name or "Workflow Form"),
+            "path_token": path_token,
+            "submit_url": f"{stripped_base}/public/forms/{path_token}/submit",
+            "form_node_id": str(form_node.get("id") or ""),
+            "form_title": str(config.get("form_title") or workflow.name or "Workflow Form"),
+            "form_description": str(config.get("form_description") or ""),
+            "fields": fields,
+        }
+
+    async def create_public_form_execution(
+        self,
+        *,
+        path_token: str,
+        form_data: dict[str, Any],
+    ) -> Execution:
+        webhook = await self.db.scalar(
+            select(WebhookEndpoint).where(
+                WebhookEndpoint.path_token == path_token,
+                WebhookEndpoint.is_active.is_(True),
+                WebhookEndpoint.node_id == PUBLISHED_RUN_NODE_ID,
+            )
+        )
+        if webhook is None:
+            raise ValueError("Public form not found")
+
+        workflow = await self.db.scalar(
+            select(Workflow).where(
+                Workflow.id == webhook.workflow_id,
+                Workflow.user_id == webhook.user_id,
+            )
+        )
+        if workflow is None or not workflow.is_published:
+            raise ValueError("Public form not found")
+
+        user = await self.db.get(User, workflow.user_id)
+        if user is None:
+            raise ValueError("Public form not found")
+
+        start_node_id = self._resolve_start_node_id(
+            definition=workflow.definition,
+            expected_types={"form_trigger"},
+        )
+
+        await self._mark_stale_running_executions(user_id=user.id)
+
+        payload = dict(form_data or {})
+        payload.setdefault("source", "public_form")
+
+        return await self._create_and_enqueue_execution(
+            workflow=workflow,
+            user=user,
+            triggered_by="form",
+            initial_payload=payload,
+            start_node_id=start_node_id,
         )
 
     async def create_webhook_execution(
@@ -573,6 +694,73 @@ class ExecutionService:
         if not isinstance(config, dict):
             return "POST"
         return str(config.get("method") or "POST").upper()
+
+    @staticmethod
+    def _resolve_form_trigger_node(*, definition: dict[str, Any]) -> dict[str, Any] | None:
+        nodes = definition.get("nodes", [])
+        edges = definition.get("edges", [])
+        form_nodes = [
+            node
+            for node in nodes
+            if isinstance(node, dict) and node.get("type") == "form_trigger"
+        ]
+        if not form_nodes:
+            return None
+
+        indegree = {
+            str(node.get("id")): 0
+            for node in nodes
+            if isinstance(node, dict) and node.get("id")
+        }
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            target = str(edge.get("target") or "")
+            if target in indegree:
+                indegree[target] += 1
+
+        for node in form_nodes:
+            node_id = str(node.get("id") or "")
+            if node_id and indegree.get(node_id, 0) == 0:
+                return node
+        return form_nodes[0]
+
+    @staticmethod
+    def _sanitize_public_form_fields(raw_fields: Any) -> list[dict[str, Any]]:
+        if not isinstance(raw_fields, list):
+            return []
+
+        fields: list[dict[str, Any]] = []
+        for index, raw_field in enumerate(raw_fields):
+            if not isinstance(raw_field, dict):
+                continue
+            name = str(raw_field.get("name") or f"field_{index + 1}").strip()
+            if not name:
+                continue
+            label = str(raw_field.get("label") or name).strip() or name
+            field_type = str(raw_field.get("type") or "text").strip().lower() or "text"
+            if field_type not in {
+                "text",
+                "email",
+                "number",
+                "password",
+                "url",
+                "tel",
+                "date",
+                "datetime-local",
+                "textarea",
+            }:
+                field_type = "text"
+
+            fields.append(
+                {
+                    "name": name,
+                    "label": label,
+                    "type": field_type,
+                    "required": bool(raw_field.get("required")),
+                }
+            )
+        return fields
 
     @staticmethod
     def _enqueue_task(

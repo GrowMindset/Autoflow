@@ -18,6 +18,8 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     'create_google_sheets': ['credential_id', 'title'],
     'search_update_google_sheets': ['credential_id', 'spreadsheet_id', 'sheet_name', 'search_column', 'search_value'],
     'delay': ['amount', 'unit'],
+    'file_read': ['file_path'],
+    'file_write': ['file_path'],
     'create_google_docs': ['credential_id', 'title'],
     'update_google_docs': ['credential_id', 'document_id', 'operation', 'text'],
     'telegram': ['credential_id', 'message'],

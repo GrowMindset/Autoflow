@@ -10,6 +10,7 @@ class RunnerRegistry:
             "form_trigger": self._build_form_trigger,
             "schedule_trigger": self._build_schedule_trigger,
             "webhook_trigger": self._build_webhook_trigger,
+            "workflow_trigger": self._build_workflow_trigger,
             "if_else": self._build_if_else,
             "switch": self._build_switch,
             "filter": self._build_filter,
@@ -32,6 +33,11 @@ class RunnerRegistry:
             "whatsapp": self._build_whatsapp,
             "slack_send_message": self._build_slack_send_message,
             "linkedin": self._build_linkedin,
+            "http_request": self._build_http_request,
+            "file_read": self._build_file_read,
+            "file_write": self._build_file_write,
+            # n8n compatibility alias
+            "n8n-nodes-base.httpRequest": self._build_http_request,
         }
         self._cache: dict[str, Any] = {}
 
@@ -84,6 +90,14 @@ class RunnerRegistry:
         )
 
         return WebhookTriggerRunner()
+
+    @staticmethod
+    def _build_workflow_trigger() -> Any:
+        from app.execution.runners.triggers.workflow_trigger import (
+            WorkflowTriggerRunner,
+        )
+
+        return WorkflowTriggerRunner()
 
     @staticmethod
     def _build_if_else() -> Any:
@@ -225,3 +239,21 @@ class RunnerRegistry:
         from app.execution.runners.nodes.linkedin import LinkedInRunner
 
         return LinkedInRunner()
+
+    @staticmethod
+    def _build_http_request() -> Any:
+        from app.execution.runners.nodes.http_request import HttpRequestRunner
+
+        return HttpRequestRunner()
+
+    @staticmethod
+    def _build_file_read() -> Any:
+        from app.execution.runners.nodes.file_read import FileReadRunner
+
+        return FileReadRunner()
+
+    @staticmethod
+    def _build_file_write() -> Any:
+        from app.execution.runners.nodes.file_write import FileWriteRunner
+
+        return FileWriteRunner()

@@ -90,6 +90,38 @@ async def update_workflow(
     return WorkflowResponse.model_validate(workflow)
 
 
+@router.post("/{workflow_id}/publish", response_model=WorkflowResponse)
+async def publish_workflow(
+    workflow_id: UUID,
+    current_user: User = Depends(get_current_user),
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowResponse:
+    workflow = await workflow_service.update_workflow(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+        payload=WorkflowUpdate(is_published=True),
+    )
+    if workflow is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    return WorkflowResponse.model_validate(workflow)
+
+
+@router.post("/{workflow_id}/unpublish", response_model=WorkflowResponse)
+async def unpublish_workflow(
+    workflow_id: UUID,
+    current_user: User = Depends(get_current_user),
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowResponse:
+    workflow = await workflow_service.update_workflow(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+        payload=WorkflowUpdate(is_published=False),
+    )
+    if workflow is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    return WorkflowResponse.model_validate(workflow)
+
+
 @router.delete("/{workflow_id}", response_model=WorkflowDeleteResponse)
 async def delete_workflow(
     workflow_id: UUID,
@@ -127,3 +159,30 @@ async def list_workflow_webhooks(
     return WorkflowWebhookListResponse(
         webhooks=[WorkflowWebhookEndpoint(**item) for item in webhooks]
     )
+
+
+@router.get("/{workflow_id}/public-run-url", response_model=WorkflowWebhookEndpoint)
+async def get_public_run_url(
+    workflow_id: UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowWebhookEndpoint:
+    workflow = await workflow_service.get_workflow(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+    )
+    if workflow is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+
+    endpoint = await workflow_service.get_public_run_endpoint(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+        base_url=str(request.base_url),
+    )
+    if endpoint is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No trigger found for public run URL",
+        )
+    return WorkflowWebhookEndpoint(**endpoint)

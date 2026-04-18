@@ -19,6 +19,8 @@ from app.schemas.executions import (
     ExecutionListResponse,
     ExecutionStatus,
     NodeExecutionResult,
+    PublicFormDefinitionResponse,
+    PublicFormSubmitRequest,
     RunFormRequest,
     RunNodeTestRequest,
     RunScheduleRequest,
@@ -413,6 +415,55 @@ async def trigger_webhook_legacy(
             else status.HTTP_404_NOT_FOUND
         )
         raise HTTPException(status_code=status_code, detail=detail) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    return WebhookEnqueueResponse(
+        execution_id=execution.id,
+        message="Workflow execution enqueued",
+    )
+
+
+@router.get(
+    "/public/forms/{path_token}",
+    response_model=PublicFormDefinitionResponse,
+)
+async def get_public_form_definition(
+    path_token: str,
+    request: Request,
+    execution_service: ExecutionService = Depends(get_execution_service),
+) -> PublicFormDefinitionResponse:
+    try:
+        payload = await execution_service.get_public_form_definition(
+            path_token=path_token,
+            base_url=str(request.base_url),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return PublicFormDefinitionResponse(**payload)
+
+
+@router.post(
+    "/public/forms/{path_token}/submit",
+    response_model=WebhookEnqueueResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def submit_public_form(
+    path_token: str,
+    payload: PublicFormSubmitRequest,
+    execution_service: ExecutionService = Depends(get_execution_service),
+) -> WebhookEnqueueResponse:
+    try:
+        execution = await execution_service.create_public_form_execution(
+            path_token=path_token,
+            form_data=payload.form_data,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

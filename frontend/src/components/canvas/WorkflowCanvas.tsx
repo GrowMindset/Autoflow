@@ -32,6 +32,7 @@ const nodeTypes = {
   trigger: BaseNode,
   action: BaseNode,
   transform: BaseNode,
+  input_output: BaseNode,
   ai: BaseNode,
 };
 
@@ -814,7 +815,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     const rawNodes = (definition?.nodes || []).map((n: any) => {
       const category = NODE_LIBRARY.trigger.some(ref => ref.type === n.type) ? 'trigger' :
         NODE_LIBRARY.action.some(ref => ref.type === n.type) ? 'action' :
-          NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' : 'ai';
+          NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' :
+            NODE_LIBRARY.input_output.some(ref => ref.type === n.type) ? 'input_output' : 'ai';
       return {
         ...n,
         data: {
@@ -1594,7 +1596,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     const rfNodes: WorkflowNode[] = (definition.nodes || []).map((n: any) => {
       const category = NODE_LIBRARY.trigger.some(ref => ref.type === n.type) ? 'trigger' :
         NODE_LIBRARY.action.some(ref => ref.type === n.type) ? 'action' :
-          NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' : 'ai';
+          NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' :
+            NODE_LIBRARY.input_output.some(ref => ref.type === n.type) ? 'input_output' : 'ai';
       const normalizedConfig = n.type === 'switch'
         ? normalizeSwitchNodeConfig(n.config)
         : n.config;
@@ -2257,6 +2260,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 if (data.category === 'trigger') return '#10b981';
                 if (data.category === 'action') return '#3b82f6';
                 if (data.category === 'transform') return '#f59e0b';
+                if (data.category === 'input_output') return '#06b6d4';
                 if (data.category === 'ai') return '#a855f7';
                 return isDark ? '#334155' : '#cbd5e1';
               }}
@@ -2311,7 +2315,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
                     return (
                       <div key={category} className="mb-2 last:mb-0">
-                        <div className="text-[10px] font-bold uppercase text-slate-300 dark:text-slate-600 mb-2 ml-1 tracking-widest">{category}</div>
+                        <div className="text-[10px] font-bold uppercase text-slate-300 dark:text-slate-600 mb-2 ml-1 tracking-widest">
+                          {category.replace(/_/g, ' ')}
+                        </div>
                         <div className="grid grid-cols-1 gap-1">
                           {filteredNodes.map(node => (
                             <button
@@ -2327,7 +2333,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                               <div className="flex items-center gap-2">
                                 <div className={`w-2 h-2 rounded-full ring-4 ring-white dark:ring-slate-900 shadow-sm ${category === 'trigger' ? 'bg-emerald-400' :
                                   category === 'action' ? 'bg-blue-400' :
-                                    category === 'transform' ? 'bg-amber-400' : 'bg-purple-400'
+                                    category === 'transform' ? 'bg-amber-400' :
+                                      category === 'input_output' ? 'bg-cyan-400' : 'bg-purple-400'
                                   }`} />
                                 <span className="text-sm font-bold text-slate-700 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400">{node.label}</span>
                               </div>

@@ -22,8 +22,9 @@ const NodeSidebar: React.FC<NodeSidebarProps> = ({ onClose, onSelect }) => {
 
   const categories = [
     { title: 'Triggers', id: 'trigger', nodes: NODE_LIBRARY.trigger },
+    { title: 'Input & Output', id: 'input_output', nodes: NODE_LIBRARY.input_output },
     { title: 'Actions', id: 'action', nodes: NODE_LIBRARY.action },
-    { title: 'Data Transform', id: 'transform', nodes: NODE_LIBRARY.transform },
+    { title: 'Data Transformation', id: 'transform', nodes: NODE_LIBRARY.transform },
     { title: 'AI', id: 'ai', nodes: NODE_LIBRARY.ai },
   ];
 

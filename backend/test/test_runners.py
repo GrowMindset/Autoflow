@@ -1,12 +1,19 @@
 import unittest
+import os
+import tempfile
+from unittest.mock import patch
 
+import httpx
 from app.execution.runners.nodes import ai_agent
 from app.execution.runners.nodes.aggregate import AggregateRunner
 from app.execution.runners.nodes.ai_agent import AIAgentRunner
 from app.execution.runners.nodes.delay import DelayRunner
 from app.execution.runners.nodes.datetime_format import DateTimeFormatRunner
 from app.execution.runners.nodes.dummy import DummyNodeRunner
+from app.execution.runners.nodes.file_read import FileReadRunner
+from app.execution.runners.nodes.file_write import FileWriteRunner
 from app.execution.runners.nodes.filter import FilterRunner
+from app.execution.runners.nodes.http_request import HttpRequestRunner
 from app.execution.runners.nodes.if_else import IfElseRunner
 from app.execution.runners.nodes.merge import MergeRunner
 from app.execution.runners.nodes.search_update_google_sheets import SearchUpdateGoogleSheetsRunner
@@ -18,6 +25,7 @@ from app.execution.runners.triggers.form_trigger import FormTriggerRunner
 from app.execution.runners.triggers.manual_trigger import ManualTriggerRunner
 from app.execution.runners.triggers.schedule_trigger import ScheduleTriggerRunner
 from app.execution.runners.triggers.webhook_trigger import WebhookTriggerRunner
+from app.execution.runners.triggers.workflow_trigger import WorkflowTriggerRunner
 
 
 class RunnerTests(unittest.TestCase):
@@ -715,12 +723,28 @@ class RunnerTests(unittest.TestCase):
             },
         )
 
+    def test_workflow_trigger_runner_sets_workflow_metadata(self):
+        runner = WorkflowTriggerRunner()
+        result = runner.run(
+            config={"source_workflow": "orders-sync"},
+            input_data={"source_id": "wf-1"},
+        )
+        self.assertEqual(
+            result,
+            {
+                "triggered": True,
+                "trigger_type": "workflow",
+                "source_id": "wf-1",
+            },
+        )
+
     def test_trigger_runners_reject_invalid_input_types(self):
         runners = [
             ManualTriggerRunner(),
             FormTriggerRunner(),
             ScheduleTriggerRunner(),
             WebhookTriggerRunner(),
+            WorkflowTriggerRunner(),
         ]
 
         for runner in runners:
@@ -732,6 +756,227 @@ class RunnerTests(unittest.TestCase):
                     )
                 else:
                     runner.run(config={}, input_data="not-a-dict")
+
+    def test_http_request_runner_applies_bearer_auth_and_parses_json(self):
+        runner = HttpRequestRunner()
+        fake_response = httpx.Response(
+            200,
+            json={"ok": True},
+            headers={"content-type": "application/json"},
+            request=httpx.Request("GET", "https://api.example.com/orders"),
+        )
+
+        with patch.object(HttpRequestRunner, "_perform_request", return_value=fake_response) as mocked:
+            result = runner.run(
+                config={
+                    "url": "https://api.example.com/orders",
+                    "method": "GET",
+                    "auth_mode": "bearer",
+                    "bearer_token": "test-token",
+                    "response_format": "auto",
+                },
+                input_data={"source": "unit-test"},
+                context={},
+            )
+
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(result["response_body"], {"ok": True})
+        self.assertEqual(result["http_response"]["body_kind"], "json")
+        self.assertEqual(result["source"], "unit-test")
+        self.assertEqual(
+            mocked.call_args.kwargs["headers"]["Authorization"],
+            "Bearer test-token",
+        )
+
+    def test_http_request_runner_supports_api_key_auth_from_credential(self):
+        runner = HttpRequestRunner()
+        fake_response = httpx.Response(
+            200,
+            text="ok",
+            headers={"content-type": "text/plain"},
+            request=httpx.Request("GET", "https://api.example.com/ping?api_key=secret-key"),
+        )
+
+        with patch.object(HttpRequestRunner, "_perform_request", return_value=fake_response) as mocked:
+            result = runner.run(
+                config={
+                    "url": "https://api.example.com/ping",
+                    "method": "GET",
+                    "auth_mode": "api_key",
+                    "api_key_name": "api_key",
+                    "api_key_in": "query",
+                    "credential_id": "cred-1",
+                    "response_format": "text",
+                },
+                input_data=None,
+                context={
+                    "resolved_credential_data": {
+                        "cred-1": {"api_key": "secret-key"},
+                    }
+                },
+            )
+
+        self.assertEqual(result["response_body"], "ok")
+        self.assertEqual(mocked.call_args.kwargs["query"]["api_key"], "secret-key")
+
+    def test_http_request_runner_raises_on_http_error_by_default(self):
+        runner = HttpRequestRunner()
+        fake_response = httpx.Response(
+            500,
+            text="Internal server error",
+            headers={"content-type": "text/plain"},
+            request=httpx.Request("POST", "https://api.example.com/orders"),
+        )
+
+        with patch.object(HttpRequestRunner, "_perform_request", return_value=fake_response):
+            with self.assertRaisesRegex(ValueError, "500"):
+                runner.run(
+                    config={
+                        "url": "https://api.example.com/orders",
+                        "method": "POST",
+                        "body_type": "json",
+                        "body_json": '{"name":"demo"}',
+                    },
+                    input_data=None,
+                    context={},
+                )
+
+    def test_http_request_runner_blocks_localhost_targets(self):
+        runner = HttpRequestRunner()
+        with self.assertRaisesRegex(ValueError, "private networks are blocked"):
+            runner.run(
+                config={
+                    "url": "http://localhost:8080/health",
+                    "method": "GET",
+                },
+                input_data=None,
+                context={},
+            )
+
+    def test_http_request_runner_can_allow_private_network_targets_via_env(self):
+        runner = HttpRequestRunner()
+        fake_response = httpx.Response(
+            200,
+            json={"ok": True},
+            headers={"content-type": "application/json"},
+            request=httpx.Request("GET", "http://localhost:8080/health"),
+        )
+
+        previous = os.environ.get("HTTP_REQUEST_ALLOW_PRIVATE_NETWORKS")
+        os.environ["HTTP_REQUEST_ALLOW_PRIVATE_NETWORKS"] = "true"
+        try:
+            with patch.object(HttpRequestRunner, "_perform_request", return_value=fake_response):
+                result = runner.run(
+                    config={
+                        "url": "http://localhost:8080/health",
+                        "method": "GET",
+                    },
+                    input_data={},
+                    context={},
+                )
+        finally:
+            if previous is None:
+                os.environ.pop("HTTP_REQUEST_ALLOW_PRIVATE_NETWORKS", None)
+            else:
+                os.environ["HTTP_REQUEST_ALLOW_PRIVATE_NETWORKS"] = previous
+
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(result["response_body"], {"ok": True})
+
+    def test_http_request_runner_continue_on_fail_returns_error_response(self):
+        runner = HttpRequestRunner()
+        fake_response = httpx.Response(
+            404,
+            text="Not found",
+            headers={"content-type": "text/plain"},
+            request=httpx.Request("GET", "https://api.example.com/missing"),
+        )
+
+        with patch.object(HttpRequestRunner, "_perform_request", return_value=fake_response):
+            result = runner.run(
+                config={
+                    "url": "https://api.example.com/missing",
+                    "method": "GET",
+                    "continue_on_fail": True,
+                    "response_format": "text",
+                },
+                input_data={},
+                context={},
+            )
+
+        self.assertEqual(result["status_code"], 404)
+        self.assertFalse(result["http_response"]["ok"])
+        self.assertEqual(result["response_body"], "Not found")
+
+    def test_file_write_and_file_read_runners_handle_json_content(self):
+        write_runner = FileWriteRunner()
+        read_runner = FileReadRunner()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous = os.environ.get("FILE_NODE_ALLOWED_BASE_DIRS")
+            os.environ["FILE_NODE_ALLOWED_BASE_DIRS"] = temp_dir
+            try:
+                path = os.path.join(temp_dir, "report.json")
+                write_result = write_runner.run(
+                    config={
+                        "file_path": path,
+                        "content_source": "config",
+                        "content_text": '{"ok": true, "count": 2}',
+                        "input_format": "text",
+                        "write_mode": "create",
+                    },
+                    input_data={},
+                    context={},
+                )
+
+                self.assertEqual(write_result["file_write"]["path"], path)
+                self.assertTrue(os.path.exists(path))
+
+                read_result = read_runner.run(
+                    config={
+                        "file_path": path,
+                        "parse_as": "json",
+                    },
+                    input_data={},
+                    context={},
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("FILE_NODE_ALLOWED_BASE_DIRS", None)
+                else:
+                    os.environ["FILE_NODE_ALLOWED_BASE_DIRS"] = previous
+
+        self.assertEqual(read_result["file_content"], {"ok": True, "count": 2})
+        self.assertEqual(read_result["file_read"]["content_type"], "json")
+
+    def test_file_write_runner_rejects_disallowed_extensions(self):
+        runner = FileWriteRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_base = os.environ.get("FILE_NODE_ALLOWED_BASE_DIRS")
+            previous_ext = os.environ.get("FILE_NODE_ALLOWED_EXTENSIONS")
+            os.environ["FILE_NODE_ALLOWED_BASE_DIRS"] = temp_dir
+            os.environ["FILE_NODE_ALLOWED_EXTENSIONS"] = "txt,json,csv"
+            try:
+                with self.assertRaisesRegex(ValueError, "not allowed"):
+                    runner.run(
+                        config={
+                            "file_path": os.path.join(temp_dir, "payload.exe"),
+                            "content_source": "config",
+                            "content_text": "x",
+                            "write_mode": "create",
+                        },
+                        input_data={},
+                        context={},
+                    )
+            finally:
+                if previous_base is None:
+                    os.environ.pop("FILE_NODE_ALLOWED_BASE_DIRS", None)
+                else:
+                    os.environ["FILE_NODE_ALLOWED_BASE_DIRS"] = previous_base
+                if previous_ext is None:
+                    os.environ.pop("FILE_NODE_ALLOWED_EXTENSIONS", None)
+                else:
+                    os.environ["FILE_NODE_ALLOWED_EXTENSIONS"] = previous_ext
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from secrets import token_urlsafe
 from typing import Any
 from uuid import UUID
@@ -10,6 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.webhook import WebhookEndpoint
 from app.models.workflows import Workflow
 from app.schemas.workflows import WorkflowCreate, WorkflowUpdate
+
+PUBLISHED_RUN_NODE_ID = "__published_run__"
+PUBLISHED_RUN_PATH_HINT = "published-run"
+WORKFLOW_TRIGGER_NODE_TYPES = {
+    "manual_trigger",
+    "form_trigger",
+    "schedule_trigger",
+    "webhook_trigger",
+    "workflow_trigger",
+}
 
 
 class WorkflowService:
@@ -152,12 +163,78 @@ class WorkflowService:
 
         return webhooks
 
+    async def get_public_run_endpoint(
+        self,
+        *,
+        workflow_id: UUID,
+        user_id: UUID,
+        base_url: str,
+    ) -> dict[str, Any] | None:
+        workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
+        if workflow is None:
+            return None
+        has_trigger_node = any(
+            node.get("type") in WORKFLOW_TRIGGER_NODE_TYPES
+            for node in workflow.definition.get("nodes", [])
+            if isinstance(node, dict)
+        )
+        if not has_trigger_node:
+            await self._ensure_webhook_endpoints(workflow)
+            return None
+
+        row = await self.db.scalar(
+            select(WebhookEndpoint).where(
+                WebhookEndpoint.workflow_id == workflow.id,
+                WebhookEndpoint.node_id == PUBLISHED_RUN_NODE_ID,
+            )
+        )
+        if row is None:
+            await self._ensure_webhook_endpoints(workflow)
+            row = await self.db.scalar(
+                select(WebhookEndpoint).where(
+                    WebhookEndpoint.workflow_id == workflow.id,
+                    WebhookEndpoint.node_id == PUBLISHED_RUN_NODE_ID,
+                )
+            )
+        if row is None:
+            return None
+
+        stripped_base = base_url.rstrip("/")
+        form_node = self._resolve_form_trigger_node(workflow.definition)
+        if form_node is not None:
+            frontend_base = str(
+                os.getenv("FRONTEND_BASE_URL") or stripped_base
+            ).rstrip("/")
+            return {
+                "node_id": row.node_id,
+                "path_token": row.path_token,
+                "is_active": bool(row.is_active),
+                "method": "GET",
+                "path": f"public/forms/{row.path_token}",
+                "url": f"{frontend_base}/public/forms/{row.path_token}",
+            }
+
+        return {
+            "node_id": row.node_id,
+            "path_token": row.path_token,
+            "is_active": bool(row.is_active),
+            "method": "POST",
+            "path": PUBLISHED_RUN_PATH_HINT,
+            "url": f"{stripped_base}/webhook/{row.path_token}",
+        }
+
     async def _ensure_webhook_endpoints(self, workflow: Workflow) -> None:
         trigger_node_ids = {
             node["id"]
             for node in workflow.definition.get("nodes", [])
             if node.get("type") == "webhook_trigger"
         }
+        if any(
+            node.get("type") in WORKFLOW_TRIGGER_NODE_TYPES
+            for node in workflow.definition.get("nodes", [])
+            if isinstance(node, dict)
+        ):
+            trigger_node_ids.add(PUBLISHED_RUN_NODE_ID)
 
         existing = (
             await self.db.scalars(
@@ -186,6 +263,36 @@ class WorkflowService:
             webhook.is_active = False
 
         await self.db.commit()
+
+    @staticmethod
+    def _resolve_form_trigger_node(definition: dict[str, Any]) -> dict[str, Any] | None:
+        nodes = definition.get("nodes", [])
+        edges = definition.get("edges", [])
+        form_nodes = [
+            node
+            for node in nodes
+            if isinstance(node, dict) and node.get("type") == "form_trigger"
+        ]
+        if not form_nodes:
+            return None
+
+        indegree = {
+            str(node.get("id")): 0
+            for node in nodes
+            if isinstance(node, dict) and node.get("id")
+        }
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            target = str(edge.get("target") or "")
+            if target in indegree:
+                indegree[target] += 1
+
+        for node in form_nodes:
+            node_id = str(node.get("id") or "")
+            if node_id and indegree.get(node_id, 0) == 0:
+                return node
+        return form_nodes[0]
 
     @staticmethod
     def _sanitize_definition_for_storage(definition: dict[str, Any]) -> dict[str, Any]:

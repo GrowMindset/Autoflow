@@ -49,10 +49,12 @@ const MainLayout: React.FC = () => {
   // Save Status State
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [currentDescription, setCurrentDescription] = useState<string>('');
+  const [publishedRunUrl, setPublishedRunUrl] = useState<string | null>(null);
   const autoSaveTimeoutRef = useRef<number | null>(null);
   const isAutoSaveInFlightRef = useRef(false);
   const queuedAutoSaveRef = useRef(false);
   const lastSavedDefinitionRef = useRef<string>('');
+  const skipNextPublishedUrlReloadRef = useRef<string | null>(null);
 
   // Logs Panel State
   const [logsExpanded, setLogsExpanded] = useState(false);
@@ -444,6 +446,49 @@ const MainLayout: React.FC = () => {
     };
   }, [clearAutoSaveTimeout]);
 
+  const loadPublishedRunUrl = useCallback(async (workflowId: string) => {
+    if (!workflowId || workflowId === 'new') {
+      setPublishedRunUrl(null);
+      return null;
+    }
+    try {
+      const publicRun = await workflowService.getPublicRunUrl(workflowId);
+      const url = publicRun?.url || null;
+      setPublishedRunUrl(url);
+      return url;
+    } catch {
+      setPublishedRunUrl(null);
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentWorkflowId === 'new' || !isPublished) {
+      setPublishedRunUrl(null);
+      return;
+    }
+    if (skipNextPublishedUrlReloadRef.current === currentWorkflowId) {
+      skipNextPublishedUrlReloadRef.current = null;
+      return;
+    }
+    void loadPublishedRunUrl(currentWorkflowId);
+  }, [currentWorkflowId, isPublished, loadPublishedRunUrl]);
+
+  const handleCopyPublishedUrl = useCallback(async () => {
+    if (currentWorkflowId === 'new') return;
+    const url = publishedRunUrl || await loadPublishedRunUrl(currentWorkflowId);
+    if (!url) {
+      toast.error('Published URL is not available for this workflow.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success('Published URL copied to clipboard.');
+    } catch {
+      toast.success(`Published URL: ${url}`);
+    }
+  }, [currentWorkflowId, publishedRunUrl, loadPublishedRunUrl]);
+
   const handleTogglePublish = useCallback(async () => {
     if (currentWorkflowId === 'new') {
       toast.error('Please save the workflow first');
@@ -462,13 +507,36 @@ const MainLayout: React.FC = () => {
       );
 
       // Update local state
+      if (newStatus) {
+        skipNextPublishedUrlReloadRef.current = currentWorkflowId;
+      } else {
+        skipNextPublishedUrlReloadRef.current = null;
+      }
       setWorkflows(prev => prev.map(w =>
         w.id === currentWorkflowId ? { ...w, is_published: newStatus } : w
       ));
+
+      if (newStatus) {
+        const url = await loadPublishedRunUrl(currentWorkflowId);
+        if (!url) {
+          skipNextPublishedUrlReloadRef.current = null;
+        }
+        if (url) {
+          try {
+            await navigator.clipboard.writeText(url);
+            toast.success('Published URL copied to clipboard.');
+          } catch {
+            toast.success(`Published URL: ${url}`);
+          }
+        }
+      } else {
+        setPublishedRunUrl(null);
+      }
     } catch (error) {
+      skipNextPublishedUrlReloadRef.current = null;
       console.error('Failed to toggle publish status:', error);
     }
-  }, [currentWorkflowId, isPublished]);
+  }, [currentWorkflowId, isPublished, loadPublishedRunUrl]);
 
   const handleDeleteWorkflow = async (id: string) => {
     if (id === currentWorkflowId) {
@@ -728,6 +796,8 @@ const MainLayout: React.FC = () => {
           onSave={handleSave}
           isPublished={isPublished}
           onTogglePublish={handleTogglePublish}
+          onCopyPublishedUrl={handleCopyPublishedUrl}
+          hasPublishedUrl={Boolean(publishedRunUrl)}
           saveStatus={saveStatus}
           onImport={handleImportWorkflow}
           executionState={executionState}

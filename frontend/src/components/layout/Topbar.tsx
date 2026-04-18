@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, LogOut, ChevronDown, Settings, CreditCard, Shield, Download, Upload, Sun, Moon } from 'lucide-react';
+import { User, LogOut, ChevronDown, Settings, CreditCard, Shield, Download, Upload, Sun, Moon, Copy } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useTheme } from '../../context/ThemeContext';
 import { useNavigate } from 'react-router-dom';
@@ -18,6 +18,8 @@ interface TopbarProps {
   onImport: (data: any) => void;
   isPublished?: boolean;
   onTogglePublish?: () => void;
+  onCopyPublishedUrl?: () => void;
+  hasPublishedUrl?: boolean;
   saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
   executionState?: string;
   lastExecutionTime?: number;
@@ -34,6 +36,8 @@ const Topbar: React.FC<TopbarProps> = ({
   onImport,
   isPublished = false,
   onTogglePublish,
+  onCopyPublishedUrl,
+  hasPublishedUrl = false,
   saveStatus = 'idle',
   executionState = 'idle',
   lastExecutionTime,
@@ -311,6 +315,22 @@ const Topbar: React.FC<TopbarProps> = ({
           <div className={`w-2 h-2 rounded-full ${isPublished ? 'bg-emerald-500 animate-pulse' : 'bg-white/50'}`} />
           {isPublished ? 'Unpublish' : 'Publish'}
         </button>
+
+        {isPublished && (
+          <button
+            onClick={onCopyPublishedUrl}
+            disabled={!hasPublishedUrl}
+            className={`p-2 rounded-lg border transition-all ${
+              hasPublishedUrl
+                ? 'border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-700'
+                : 'border-slate-100 text-slate-300 cursor-not-allowed'
+            }`}
+            title={hasPublishedUrl ? 'Copy published URL' : 'Published URL not available'}
+            aria-label="Copy published URL"
+          >
+            <Copy size={14} strokeWidth={2.5} />
+          </button>
+        )}
       </div>
 
       <div className="flex items-center gap-4 relative">

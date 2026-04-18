@@ -1,7 +1,7 @@
 export interface NodeDefinition {
   type: string;
   label: string;
-  category: 'trigger' | 'action' | 'transform' | 'ai';
+  category: 'trigger' | 'action' | 'transform' | 'input_output' | 'ai';
   description: string;
   default_config: Record<string, any>;
   is_dummy: boolean;
@@ -75,6 +75,71 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       category: 'trigger',
       description: 'Trigger this workflow from another workflow.',
       default_config: {},
+      is_dummy: false,
+    },
+  ],
+  input_output: [
+    {
+      type: 'http_request',
+      label: 'HTTP Request',
+      category: 'input_output',
+      description: 'Call external APIs with any HTTP method and auth mode.',
+      default_config: {
+        url: '',
+        method: 'GET',
+        auth_mode: 'none',
+        credential_id: '',
+        bearer_token: '',
+        bearer_prefix: 'Bearer',
+        username: '',
+        password: '',
+        api_key_name: 'x-api-key',
+        api_key_value: '',
+        api_key_in: 'header',
+        api_key_prefix: '',
+        headers_json: '{}',
+        query_json: '{}',
+        body_type: 'none',
+        body_json: '{}',
+        body_form_json: '{}',
+        body_raw: '',
+        timeout_seconds: 30,
+        follow_redirects: true,
+        continue_on_fail: false,
+        response_format: 'auto',
+      },
+      is_dummy: false,
+    },
+    {
+      type: 'file_read',
+      label: 'File Read',
+      category: 'input_output',
+      description: 'Read a local file and parse it as text, JSON, CSV, lines, or base64.',
+      default_config: {
+        file_path: '',
+        parse_as: 'auto',
+        encoding: 'utf-8',
+        max_bytes: 5242880,
+        include_metadata: true,
+        csv_delimiter: '',
+      },
+      is_dummy: false,
+    },
+    {
+      type: 'file_write',
+      label: 'File Create/Write',
+      category: 'input_output',
+      description: 'Create or update a local file using workflow data or fixed content.',
+      default_config: {
+        file_path: '',
+        content_source: 'input',
+        input_key: '',
+        content_text: '',
+        input_format: 'auto',
+        write_mode: 'create',
+        encoding: 'utf-8',
+        create_dirs: true,
+      },
       is_dummy: false,
     },
   ],
@@ -219,18 +284,6 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       icon: 'slack',
     },
     {
-      type: 'delay',
-      label: 'Delay',
-      category: 'action',
-      description: 'Pause workflow for a duration, then continue.',
-      default_config: {
-        amount: '1',
-        unit: 'minutes',
-        until_datetime: '',
-      },
-      is_dummy: false,
-    },
-    {
       type: 'linkedin',
       label: 'LinkedIn Post',
       category: 'action',
@@ -240,6 +293,7 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
         post_text: '',
         visibility: 'PUBLIC',
       },
+      is_dummy: false,
       icon: 'linkedin',
     },
   ],
@@ -342,6 +396,18 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       },
       is_dummy: false,
     },
+    {
+      type: 'delay',
+      label: 'Delay',
+      category: 'transform',
+      description: 'Pause workflow for a duration, then continue.',
+      default_config: {
+        amount: '1',
+        unit: 'minutes',
+        until_datetime: '',
+      },
+      is_dummy: false,
+    },
   ],
   ai: [
     {
@@ -387,6 +453,7 @@ export const CATEGORY_STYLES = {
   trigger: 'border-l-4 border-emerald-500 bg-white text-slate-700 hover:bg-slate-50',
   action: 'border-l-4 border-blue-500 bg-white text-slate-700 hover:bg-slate-50',
   transform: 'border-l-4 border-amber-500 bg-white text-slate-700 hover:bg-slate-50',
+  input_output: 'border-l-4 border-cyan-500 bg-white text-slate-700 hover:bg-slate-50',
   ai: 'border-l-4 border-purple-500 bg-white text-slate-700 hover:bg-slate-50',
 };
 
@@ -394,5 +461,6 @@ export const CATEGORY_ACCENTS = {
   trigger: '#10b981', // emerald-500
   action: '#3b82f6', // blue-500
   transform: '#f59e0b', // amber-500
+  input_output: '#06b6d4', // cyan-500
   ai: '#a855f7', // purple-500
 };

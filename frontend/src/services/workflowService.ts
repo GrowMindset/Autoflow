@@ -13,6 +13,33 @@ export interface WorkflowSaveData {
   is_published?: boolean;
 }
 
+export interface WorkflowPublicRunUrl {
+  node_id: string;
+  path_token: string;
+  is_active: boolean;
+  method: string;
+  path: string;
+  url: string;
+}
+
+export interface PublicFormField {
+  name: string;
+  label: string;
+  type: string;
+  required: boolean;
+}
+
+export interface PublicFormDefinition {
+  workflow_id: string;
+  workflow_name: string;
+  path_token: string;
+  submit_url: string;
+  form_node_id: string;
+  form_title: string;
+  form_description: string;
+  fields: PublicFormField[];
+}
+
 export const workflowService = {
   /**
    * Save workflow to backend
@@ -78,8 +105,36 @@ export const workflowService = {
    * Update publish status specifically
    */
   updatePublishStatus: async (id: string, isPublished: boolean): Promise<any> => {
-    const response = await api.put(`/workflows/${id}`, {
-      is_published: isPublished
+    const action = isPublished ? 'publish' : 'unpublish';
+    const response = await api.post(`/workflows/${id}/${action}`);
+    return response.data;
+  },
+
+  /**
+   * Get workflow public run URL (stable webhook token URL).
+   */
+  getPublicRunUrl: async (id: string): Promise<WorkflowPublicRunUrl> => {
+    const response = await api.get(`/workflows/${id}/public-run-url`);
+    return response.data;
+  },
+
+  /**
+   * Get token-based public form definition for published workflows.
+   */
+  getPublicFormDefinition: async (pathToken: string): Promise<PublicFormDefinition> => {
+    const response = await api.get(`/public/forms/${pathToken}`);
+    return response.data;
+  },
+
+  /**
+   * Submit token-based public form.
+   */
+  submitPublicForm: async (
+    pathToken: string,
+    formData: Record<string, any>,
+  ): Promise<{ execution_id: string; message: string }> => {
+    const response = await api.post(`/public/forms/${pathToken}/submit`, {
+      form_data: formData,
     });
     return response.data;
   }

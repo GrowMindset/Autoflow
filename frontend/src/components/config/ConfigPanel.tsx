@@ -512,7 +512,8 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
             <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 shadow-sm">
               <div className={`w-4 h-4 rounded-full ${node.data.category === 'trigger' ? 'bg-emerald-500' :
                 node.data.category === 'action' ? 'bg-blue-500' :
-                  node.data.category === 'transform' ? 'bg-amber-500' : 'bg-purple-500'
+                  node.data.category === 'transform' ? 'bg-amber-500' :
+                    node.data.category === 'input_output' ? 'bg-cyan-500' : 'bg-purple-500'
                 } shadow-[0_0_10px_rgba(0,0,0,0.1)]`} />
 
               {node.data.status && (

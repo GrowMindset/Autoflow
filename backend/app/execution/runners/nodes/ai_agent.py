@@ -164,9 +164,61 @@ class AIAgentRunner:
     def _normalize_response_text(response: str | None) -> str:
         text = str(response or "")
         text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = AIAgentRunner._strip_markdown_code_fences(text)
         text = re.sub(r"[ \t]+\n", "\n", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
+
+    @staticmethod
+    def _strip_markdown_code_fences(text: str) -> str:
+        """
+        Removes top-level markdown code fences from model output.
+
+        Examples:
+        - ```json\n{...}\n``` -> {...}
+        - ```\nhello\n``` -> hello
+        - AI Response\n```json\n{...}\n``` -> {...}
+        """
+        normalized = str(text or "").strip()
+        if "```" not in normalized:
+            return text
+
+        fence_pattern = re.compile(r"```[^\n`]*\n?(?P<body>[\s\S]*?)```")
+        matches = list(fence_pattern.finditer(normalized))
+        if not matches:
+            return text
+
+        # Common case: exactly one fenced block with optional light prefix
+        # like "AI Response:" and no meaningful suffix.
+        if len(matches) == 1:
+            match = matches[0]
+            prefix = normalized[: match.start()].strip()
+            suffix = normalized[match.end() :].strip()
+            prefix_allowed = (
+                not prefix
+                or re.fullmatch(
+                    r"(?:ai\s*response|response|output|result|json)\s*:?",
+                    prefix,
+                    flags=re.IGNORECASE,
+                )
+                is not None
+            )
+            if prefix_allowed and not suffix:
+                return match.group("body").strip()
+
+        # Fallback for strict full-text fenced payloads.
+        match = re.match(
+            r"^```[^\n]*\n(?P<body>[\s\S]*?)\n```$",
+            normalized,
+        )
+        if match:
+            return match.group("body").strip()
+
+        inline_match = re.match(r"^```[^\n]*\s*(?P<body>[\s\S]*?)\s*```$", normalized)
+        if inline_match:
+            return inline_match.group("body").strip()
+
+        return text
 
     def _assess_response_quality(self, response_text: str, command: str) -> dict[str, Any]:
         issues: list[str] = []
@@ -257,6 +309,7 @@ class AIAgentRunner:
             f"Issues to fix:\n{issues_text}\n\n"
             "Requirements:\n"
             "- Remove unresolved placeholders or meta talk.\n"
+            "- Do not wrap output in markdown code fences.\n"
             "- Keep it concise but complete.\n"
             "- Use short bullets if multiple points are needed.\n"
             "- Return only the improved response."

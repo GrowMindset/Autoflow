@@ -19,6 +19,9 @@ from .update_google_docs import UpdateGoogleDocsRunner
 from .telegram import TelegramRunner
 from .whatsapp import WhatsAppRunner
 from .linkedin import LinkedInRunner
+from .http_request import HttpRequestRunner
+from .file_read import FileReadRunner
+from .file_write import FileWriteRunner
 
 try:
     from .datetime_format import DateTimeFormatRunner
@@ -47,6 +50,9 @@ __all__ = [
     "TelegramRunner",
     "WhatsAppRunner",
     "LinkedInRunner",
+    "HttpRequestRunner",
+    "FileReadRunner",
+    "FileWriteRunner",
 ]
 
 if DateTimeFormatRunner is not None:

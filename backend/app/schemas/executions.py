@@ -23,6 +23,10 @@ class RunFormRequest(BaseModel):
     loop_control_override: LoopControlOverride | None = None
 
 
+class PublicFormSubmitRequest(BaseModel):
+    form_data: dict[str, Any]
+
+
 class RunWorkflowRequest(BaseModel):
     start_node_id: str | None = None
     loop_control_override: LoopControlOverride | None = None
@@ -47,6 +51,24 @@ class ExecutionEnqueueResponse(BaseModel):
 class WebhookEnqueueResponse(BaseModel):
     execution_id: UUID
     message: str
+
+
+class PublicFormField(BaseModel):
+    name: str
+    label: str
+    type: str
+    required: bool = False
+
+
+class PublicFormDefinitionResponse(BaseModel):
+    workflow_id: UUID
+    workflow_name: str
+    path_token: str
+    submit_url: str
+    form_node_id: str
+    form_title: str
+    form_description: str
+    fields: list[PublicFormField]
 
 
 class NodeExecutionResult(BaseModel):
