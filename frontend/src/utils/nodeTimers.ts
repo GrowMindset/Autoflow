@@ -7,6 +7,10 @@ const DELAY_UNIT_SECONDS: Record<string, number> = {
   minutes: 60,
   hour: 3600,
   hours: 3600,
+  day: 86400,
+  days: 86400,
+  month: 2592000,
+  months: 2592000,
 };
 
 const WEEKDAY_NAME_TO_INT: Record<string, number> = {

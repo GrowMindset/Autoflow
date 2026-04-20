@@ -4,7 +4,7 @@ import { useAuthStore } from '../store/authStore';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
-  timeout: 120000,
+  timeout: 300000,
 });
 
 const ACCESS_TOKEN_KEY = 'token';

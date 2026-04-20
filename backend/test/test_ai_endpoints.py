@@ -6,40 +6,44 @@ from uuid import uuid4
 from app.main import app
 from app.models.user import User
 from app.routers.ai import get_llm_service
-from app.services.llm_service import WorkflowGenerationError
+from app.services.llm_service import GeneratedWorkflowResult, WorkflowGenerationError
+from app.schemas.workflows import WorkflowDefinition
 from test.asgi_client import ASGITestClient
 
 
 class _SuccessfulLLMService:
     async def generate_workflow_definition(self, prompt: str):
-        return {
-            "nodes": [
-                {
-                    "id": "n1",
-                    "type": "manual_trigger",
-                    "label": "Manual Trigger",
-                    "position": {"x": 100, "y": 150},
-                    "config": {},
-                },
-                {
-                    "id": "n2",
-                    "type": "telegram",
-                    "label": "Send Telegram Message",
-                    "position": {"x": 360, "y": 150},
-                    "config": {"chat_id": "", "message": "Hello"},
-                },
-            ],
-            "edges": [
-                {
-                    "id": "e1",
-                    "source": "n1",
-                    "target": "n2",
-                    "sourceHandle": None,
-                    "targetHandle": None,
-                    "branch": None,
-                }
-            ],
-        }
+        definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "manual_trigger",
+                        "label": "Manual Trigger",
+                        "position": {"x": 100, "y": 150},
+                        "config": {},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "telegram",
+                        "label": "Send Telegram Message",
+                        "position": {"x": 360, "y": 150},
+                        "config": {"chat_id": "", "message": "Hello"},
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "n1",
+                        "target": "n2",
+                        "sourceHandle": None,
+                        "targetHandle": None,
+                        "branch": None,
+                    }
+                ],
+            }
+        )
+        return GeneratedWorkflowResult(definition=definition, name="Sample Workflow")
 
 
 class _FailingLLMService:

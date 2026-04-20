@@ -237,13 +237,13 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Return ONLY one valid JSON object.", prompt)
         self.assertIn('Edges leaving if_else must set branch to "true" or "false".', prompt)
-        self.assertIn("Edges leaving switch must set branch to a case label", prompt)
+        self.assertIn("Edges leaving switch must set branch to a case id", prompt)
         self.assertIn('targetHandle to "chat_model"', prompt)
 
     def test_validate_generated_workflow_accepts_definition_wrapper(self) -> None:
         raw_content = json.dumps({"definition": _valid_definition()})
 
-        definition = LLMService.validate_generated_workflow(raw_content)
+        definition, _ = LLMService.validate_generated_workflow(raw_content)
 
         self.assertEqual(len(definition.nodes), 2)
         self.assertEqual(definition.nodes[1].type, "telegram")
@@ -295,12 +295,12 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(WorkflowGenerationError) as context:
             LLMService.validate_generated_workflow(json.dumps(payload))
 
-        self.assertIn("if_else edges must use branch", str(context.exception))
+        self.assertIn("invalid if_else branch labels", str(context.exception))
 
     def test_validate_generated_workflow_accepts_ai_agent_with_chat_model_subnode(self) -> None:
         raw_content = json.dumps({"definition": _definition_for_prompt_kind("manual_ai_agent_openai")})
 
-        definition = LLMService.validate_generated_workflow(raw_content)
+        definition, _ = LLMService.validate_generated_workflow(raw_content)
 
         actual_node_types = {node.type for node in definition.nodes}
         self.assertEqual(
@@ -333,7 +333,7 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(WorkflowGenerationError) as context:
             LLMService.validate_generated_workflow(json.dumps(payload))
 
-        self.assertIn("non-existent source node", str(context.exception))
+        self.assertIn("edges with unknown nodes", str(context.exception))
 
     def test_validate_generated_workflow_rejects_non_existent_edge_target_cleanly(self) -> None:
         payload = _valid_definition()
@@ -342,7 +342,7 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(WorkflowGenerationError) as context:
             LLMService.validate_generated_workflow(json.dumps(payload))
 
-        self.assertIn("targets non-existent node", str(context.exception))
+        self.assertIn("edges with unknown nodes", str(context.exception))
 
     async def test_generate_workflow_definition_fails_lazily_without_api_key(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -362,11 +362,11 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         service = LLMService(client=fake_client, model="test-model", max_retries=1)
 
-        definition = await service.generate_workflow_definition(
+        result = await service.generate_workflow_definition(
             "Send a telegram message when I manually run the workflow"
         )
 
-        self.assertEqual(definition.nodes[1].type, "telegram")
+        self.assertEqual(result.definition.nodes[1].type, "telegram")
         self.assertEqual(len(fake_client.completions.calls), 2)
         self.assertEqual(
             fake_client.completions.calls[0]["response_format"],
@@ -403,10 +403,265 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
             )
             service = LLMService(client=fake_client, model="test-model")
 
-            definition = await service.generate_workflow_definition(prompt)
+            result = await service.generate_workflow_definition(prompt)
 
-            actual_node_types = {node.type for node in definition.nodes}
+            actual_node_types = {node.type for node in result.definition.nodes}
             self.assertTrue(
                 expected_node_types.issubset(actual_node_types),
                 msg=f"Prompt {prompt!r} produced node types {actual_node_types}, expected at least {expected_node_types}",
             )
+
+    def test_validate_generated_workflow_applies_schedule_hint_from_user_prompt(self) -> None:
+        payload = _valid_definition()
+        payload["nodes"][0]["type"] = "manual_trigger"
+        payload["nodes"][0]["config"] = {}
+
+        definition, _ = LLMService.validate_generated_workflow(
+            json.dumps(payload),
+            user_prompt="Run this every 15 minutes and send Telegram message",
+        )
+
+        self.assertEqual(definition.nodes[0].type, "schedule_trigger")
+        self.assertEqual(definition.nodes[0].config["rules"][0]["interval"], "minutes")
+        self.assertEqual(definition.nodes[0].config["rules"][0]["every"], 15)
+
+    def test_validate_generated_workflow_prefers_groq_chat_model_when_prompt_mentions_groq(self) -> None:
+        payload = _definition_for_prompt_kind("manual_ai_agent_openai")
+
+        definition, _ = LLMService.validate_generated_workflow(
+            json.dumps(payload),
+            user_prompt="Use Groq model for this AI workflow",
+        )
+
+        node_types = {node.type for node in definition.nodes}
+        self.assertIn("chat_model_groq", node_types)
+        self.assertNotIn("chat_model_openai", node_types)
+
+    def test_validate_generated_workflow_filters_unknown_config_keys(self) -> None:
+        payload = _valid_definition()
+        payload["nodes"][1]["config"]["unknown_extra_key"] = "drop_me"
+
+        definition, _ = LLMService.validate_generated_workflow(json.dumps(payload))
+
+        self.assertNotIn("unknown_extra_key", definition.nodes[1].config)
+
+    def test_validate_generated_workflow_normalizes_single_brace_templates(self) -> None:
+        payload = _valid_definition()
+        payload["nodes"][1]["config"]["message"] = "Hi {form.email}"
+
+        definition, _ = LLMService.validate_generated_workflow(json.dumps(payload))
+
+        self.assertEqual(definition.nodes[1].config["message"], "Hi {{form.email}}")
+
+    def test_validate_generated_workflow_accepts_delay_days_unit(self) -> None:
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "manual_trigger",
+                    "label": "Start",
+                    "position": {"x": 0, "y": 0},
+                    "config": {},
+                },
+                {
+                    "id": "n2",
+                    "type": "delay",
+                    "label": "Wait",
+                    "position": {"x": 200, "y": 0},
+                    "config": {"amount": "7", "unit": "days", "until_datetime": ""},
+                },
+                {
+                    "id": "n3",
+                    "type": "telegram",
+                    "label": "Notify",
+                    "position": {"x": 400, "y": 0},
+                    "config": {"credential_id": "", "message": "Done", "parse_mode": ""},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+            ],
+        }
+
+        definition, _ = LLMService.validate_generated_workflow(json.dumps(payload))
+
+        delay_node = next(node for node in definition.nodes if node.type == "delay")
+        self.assertEqual(delay_node.config["unit"], "days")
+        self.assertEqual(delay_node.config["amount"], "7")
+
+    def test_validate_generated_workflow_accepts_delay_months_unit(self) -> None:
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "manual_trigger",
+                    "label": "Start",
+                    "position": {"x": 0, "y": 0},
+                    "config": {},
+                },
+                {
+                    "id": "n2",
+                    "type": "delay",
+                    "label": "Wait",
+                    "position": {"x": 200, "y": 0},
+                    "config": {"amount": "1", "unit": "months", "until_datetime": ""},
+                },
+                {
+                    "id": "n3",
+                    "type": "telegram",
+                    "label": "Notify",
+                    "position": {"x": 400, "y": 0},
+                    "config": {"credential_id": "", "message": "Done", "parse_mode": ""},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+            ],
+        }
+
+        definition, _ = LLMService.validate_generated_workflow(json.dumps(payload))
+
+        delay_node = next(node for node in definition.nodes if node.type == "delay")
+        self.assertEqual(delay_node.config["unit"], "months")
+
+    def test_validate_generated_workflow_rejects_too_short_sequence_duration(self) -> None:
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "manual_trigger",
+                    "label": "Start",
+                    "position": {"x": 0, "y": 0},
+                    "config": {},
+                },
+                {
+                    "id": "n2",
+                    "type": "delay",
+                    "label": "Wait",
+                    "position": {"x": 200, "y": 0},
+                    "config": {"amount": "1", "unit": "hours", "until_datetime": ""},
+                },
+                {
+                    "id": "n3",
+                    "type": "telegram",
+                    "label": "Notify",
+                    "position": {"x": 400, "y": 0},
+                    "config": {"credential_id": "", "message": "Done", "parse_mode": ""},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+            ],
+        }
+
+        with self.assertRaises(WorkflowGenerationError) as context:
+            LLMService.validate_generated_workflow(
+                json.dumps(payload),
+                user_prompt="Build a 14-day sequence to nurture leads",
+            )
+
+        self.assertIn("Sequence duration does not match", str(context.exception))
+
+    def test_validate_generated_workflow_rejects_linear_flow_when_prompt_requests_branching(self) -> None:
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "form_trigger",
+                    "label": "Lead Form",
+                    "position": {"x": 0, "y": 0},
+                    "config": {
+                        "form_title": "Lead Form",
+                        "form_description": "",
+                        "fields": [{"name": "email", "label": "Email", "type": "email", "required": True}],
+                    },
+                },
+                {
+                    "id": "n2",
+                    "type": "send_gmail_message",
+                    "label": "Email",
+                    "position": {"x": 200, "y": 0},
+                    "config": {"credential_id": "", "to": "{{email}}", "cc": "", "bcc": "", "reply_to": "", "subject": "Hi", "body": "Hello", "is_html": False},
+                },
+                {
+                    "id": "n3",
+                    "type": "whatsapp",
+                    "label": "WhatsApp",
+                    "position": {"x": 400, "y": 0},
+                    "config": {"credential_id": "", "to_number": "{{phone}}", "template_name": "hello_world", "template_params": [], "language_code": "en_US"},
+                },
+                {
+                    "id": "n4",
+                    "type": "telegram",
+                    "label": "Telegram",
+                    "position": {"x": 600, "y": 0},
+                    "config": {"credential_id": "", "message": "Hello", "parse_mode": ""},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+                {"id": "e3", "source": "n3", "target": "n4"},
+            ],
+        }
+
+        with self.assertRaises(WorkflowGenerationError) as context:
+            LLMService.validate_generated_workflow(
+                json.dumps(payload),
+                user_prompt="Create a 14-day lead nurture flow with email, WhatsApp, Telegram in parallel branches",
+            )
+
+        self.assertIn("does not fan out enough branches", str(context.exception))
+
+    def test_validate_generated_workflow_accepts_trigger_fanout_for_multi_channel_prompt(self) -> None:
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "form_trigger",
+                    "label": "Lead Form",
+                    "position": {"x": 0, "y": 0},
+                    "config": {
+                        "form_title": "Lead Form",
+                        "form_description": "",
+                        "fields": [{"name": "email", "label": "Email", "type": "email", "required": True}],
+                    },
+                },
+                {
+                    "id": "n2",
+                    "type": "send_gmail_message",
+                    "label": "Email",
+                    "position": {"x": 200, "y": -80},
+                    "config": {"credential_id": "", "to": "{{email}}", "cc": "", "bcc": "", "reply_to": "", "subject": "Hi", "body": "Hello", "is_html": False},
+                },
+                {
+                    "id": "n3",
+                    "type": "whatsapp",
+                    "label": "WhatsApp",
+                    "position": {"x": 200, "y": 0},
+                    "config": {"credential_id": "", "to_number": "{{phone}}", "template_name": "hello_world", "template_params": [], "language_code": "en_US"},
+                },
+                {
+                    "id": "n4",
+                    "type": "telegram",
+                    "label": "Telegram",
+                    "position": {"x": 200, "y": 80},
+                    "config": {"credential_id": "", "message": "Hello", "parse_mode": ""},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n1", "target": "n3"},
+                {"id": "e3", "source": "n1", "target": "n4"},
+            ],
+        }
+
+        definition, _ = LLMService.validate_generated_workflow(
+            json.dumps(payload),
+            user_prompt="Create a 14-day lead nurture flow with email, WhatsApp, Telegram in parallel branches",
+        )
+
+        self.assertEqual(len(definition.edges), 3)

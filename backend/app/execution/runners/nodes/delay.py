@@ -20,6 +20,11 @@ class DelayRunner:
         "minutes": 60.0,
         "hour": 3600.0,
         "hours": 3600.0,
+        "day": 86400.0,
+        "days": 86400.0,
+        # Month is approximated as 30 days for fixed-duration delays.
+        "month": 2592000.0,
+        "months": 2592000.0,
     }
 
     def run(
@@ -72,7 +77,9 @@ class DelayRunner:
         unit = str(config.get("unit") or "seconds").strip().lower()
         multiplier = cls.UNIT_SECONDS.get(unit)
         if multiplier is None:
-            raise ValueError("Delay node: unit must be one of seconds, minutes, hours.")
+            raise ValueError(
+                "Delay node: unit must be one of seconds, minutes, hours, days, months."
+            )
 
         return amount * multiplier
 

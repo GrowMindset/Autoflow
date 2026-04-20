@@ -6,7 +6,7 @@ from app.schemas.workflows import WorkflowDefinition
 
 
 class GenerateWorkflowRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=1500)
+    prompt: str = Field(min_length=1, max_length=4000)
 
 
 class GenerateWorkflowResponse(BaseModel):

@@ -449,7 +449,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       key: 'unit',
       label: 'Delay Unit',
       type: 'select',
-      options: ['seconds', 'minutes', 'hours'],
+      options: ['seconds', 'minutes', 'hours', 'days', 'months'],
       helperText: 'Used when "Run At (ISO datetime)" is empty.',
     },
     {

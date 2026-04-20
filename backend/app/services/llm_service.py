@@ -4,6 +4,7 @@ import json
 import os
 import re
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from textwrap import dedent
 from typing import Any
@@ -28,6 +29,28 @@ SHARED_OPERATORS = (
 )
 
 AI_CHAT_MODEL_NODE_TYPES = {"chat_model_openai", "chat_model_groq"}
+TEMPLATE_SINGLE_BRACE_PATTERN = re.compile(r"(?<!\{)\{([a-zA-Z_][a-zA-Z0-9_.]*)\}(?!\})")
+SEQUENCE_DAYS_PATTERN = re.compile(r"\b(\d{1,2})\s*-\s*day\b|\b(\d{1,2})\s*day\b")
+
+TRIGGER_KEYWORD_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("workflow_trigger", ("workflow trigger", "from another workflow", "parent workflow")),
+    ("form_trigger", ("form", "submission", "submit", "user input form")),
+    ("webhook_trigger", ("webhook", "endpoint", "api call", "http request", "callback")),
+    (
+        "schedule_trigger",
+        (
+            "schedule",
+            "cron",
+            "hourly",
+            "daily",
+            "weekly",
+            "monthly",
+            "every ",
+            "each day",
+        ),
+    ),
+    ("manual_trigger", ("manual", "manually", "on demand", "run button")),
+)
 
 NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     "manual_trigger": {
@@ -79,6 +102,7 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "rules": [
             "Use config keys: credential_id, to, cc, bcc, reply_to, subject, body, is_html.",
             "Use comma-separated emails in to/cc/bcc when multiple recipients are needed.",
+            "Use Autoflow template syntax {{...}} for dynamic values, not {....}.",
         ],
     },
     "create_google_sheets": {
@@ -128,6 +152,7 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "description": "Sends a Telegram message. Use credential_id and message. The credential stores bot token + chat_id.",
         "rules": [
             "Optional parse_mode can be one of: HTML, Markdown, MarkdownV2.",
+            "Use Autoflow template syntax {{...}} for dynamic values, not {....}.",
         ],
     },
     "whatsapp": {
@@ -140,6 +165,7 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
             "template_name must be a Meta-approved template (e.g. hello_world).",
             "template_params is an optional list of string values for body placeholders.",
             "language_code defaults to en_US.",
+            "Use Autoflow template syntax {{...}} for dynamic values, not {....}.",
         ],
     },
     "linkedin": {
@@ -224,7 +250,7 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "description": "Pauses workflow execution for a configured time, then forwards data unchanged.",
         "rules": [
             "Use config keys: amount, unit, until_datetime.",
-            "Preferred unit values: seconds, minutes, hours.",
+            "Preferred unit values: seconds, minutes, hours, days, months.",
             "until_datetime is optional ISO datetime and overrides amount/unit when provided.",
         ],
     },
@@ -311,19 +337,20 @@ class LLMService:
         client = self._get_client()
         generation_temperature = self._resolve_generation_temperature()
 
+        initial_user_prompt = self._build_generation_user_prompt(cleaned_prompt)
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": cleaned_prompt},
+            {"role": "user", "content": initial_user_prompt},
         ]
         last_error: WorkflowGenerationError | None = None
 
         for _ in range(self.max_retries + 1):
             if isinstance(client, BaseLLMProvider):
-                user_prompt = cleaned_prompt
+                user_prompt = initial_user_prompt
                 if last_error is not None:
-                    user_prompt = (
-                        f"{cleaned_prompt}\n\nYour previous response was invalid. "
-                        f"Fix these issues and return only corrected JSON: {last_error}"
+                    user_prompt = self._build_generation_user_prompt(
+                        cleaned_prompt,
+                        validation_error=str(last_error),
                     )
 
                 raw_content = await client.complete(
@@ -346,7 +373,10 @@ class LLMService:
                 raw_content = self._extract_response_text(response)
 
             try:
-                definition, suggested_name = self.validate_generated_workflow(raw_content)
+                definition, suggested_name = self.validate_generated_workflow(
+                    raw_content,
+                    user_prompt=cleaned_prompt,
+                )
                 if not suggested_name:
                     suggested_name = self._derive_workflow_name(cleaned_prompt)
                 return GeneratedWorkflowResult(definition=definition, name=suggested_name)
@@ -358,9 +388,9 @@ class LLMService:
                             {"role": "assistant", "content": raw_content},
                             {
                                 "role": "user",
-                                "content": (
-                                    "Your previous response was invalid. "
-                                    f"Fix these issues and return only corrected JSON: {exc}"
+                                "content": self._build_generation_user_prompt(
+                                    cleaned_prompt,
+                                    validation_error=str(exc),
                                 ),
                             },
                         ]
@@ -443,6 +473,13 @@ class LLMService:
             - Never invent extra config keys that are not part of the schema below.
             - If you use ai_agent, also include exactly one connected chat_model_openai or chat_model_groq node for it.
             - Chat model nodes are configuration sub-nodes, not normal workflow steps.
+            - Think step-by-step internally: infer trigger, identify major actions, then connect nodes in execution order.
+            - Prefer explicit integration nodes when the user names a channel (Telegram, Gmail, Slack, WhatsApp, Sheets, Docs, LinkedIn).
+            - Use real templating placeholders for dynamic values (for example {{email}}, {{form.email}}, {{items}}, {{response.body.id}}).
+            - Never use single-brace placeholders like {{email}} or {{form.email}}; always use double braces {{{{email}}}} or {{{{form.email}}}}.
+            - For complex requests, include all required intermediate logic nodes (if_else, switch, filter, merge, split_in/split_out, aggregate, delay) instead of collapsing logic into one node.
+            - If the request asks for an N-day sequence, design a clear day-by-day cadence and keep timing consistent with the requested duration.
+            - If the request asks to use multiple channels (for example email + WhatsApp + Telegram), fan out into parallel channel branches from the trigger (or immediately after one router node) instead of serially chaining all channels in one line.
 
             Edge rules:
             - Standard linear edges may omit branch or set it to null.
@@ -456,9 +493,44 @@ class LLMService:
             """
         ).strip()
 
+    @staticmethod
+    def _build_generation_user_prompt(
+        prompt: str,
+        *,
+        validation_error: str | None = None,
+    ) -> str:
+        validation_suffix = ""
+        if validation_error:
+            validation_suffix = (
+                "\n\nValidation issues from your previous response:\n"
+                f"- {validation_error}\n"
+                "Fix every issue and regenerate the full workflow JSON."
+            )
+        return dedent(
+            f"""
+            User request:
+            {prompt}
+
+            Generation checklist:
+            1. Pick the best trigger from the request intent.
+            2. Include all necessary nodes to complete the business flow end-to-end.
+            3. Fill node configs using the schema keys and realistic defaults/placeholders.
+            4. Wire edges correctly, including branch labels for if_else/switch.
+            5. If ai_agent exists, connect exactly one chat model sub-node to targetHandle "chat_model".
+            6. Always use Autoflow template syntax {{...}} for dynamic values; do not use single braces.
+            7. If the request specifies a multi-day sequence (for example 14-day), ensure cadence/timing truly matches that duration.
+            8. For multi-channel nurture flows, branch channels in parallel rather than chaining all channels serially.
+            9. Return only one JSON object; no explanation text.
+            {validation_suffix}
+            """
+        ).strip()
+
     @classmethod
     def validate_generated_workflow(
-        cls, raw_content: str
+        cls,
+        raw_content: str,
+        *,
+        user_prompt: str | None = None,
     ) -> tuple[WorkflowDefinition, str | None]:
         if not raw_content.strip():
             raise WorkflowGenerationError("Model response was empty.")
@@ -475,8 +547,14 @@ class LLMService:
         if not isinstance(definition_payload, Mapping):
             raise WorkflowGenerationError("Workflow definition must be a JSON object.")
 
+        hinted_payload = cls._apply_prompt_hints_to_definition_payload(
+            definition_payload,
+            user_prompt=user_prompt,
+        )
+        sanitized_definition_payload = cls._sanitize_generated_definition_payload(hinted_payload)
+
         try:
-            definition = WorkflowDefinition.model_validate(definition_payload)
+            definition = WorkflowDefinition.model_validate(sanitized_definition_payload)
         except ValidationError as exc:
             raise WorkflowGenerationError(str(exc)) from exc
 
@@ -484,7 +562,335 @@ class LLMService:
         cls._validate_trigger_structure(definition)
         cls._validate_branch_edges(definition)
         cls._validate_ai_subnode_structure(definition)
+        cls._validate_delay_configs(definition)
+        cls._validate_placeholder_syntax(definition)
+        cls._validate_sequence_duration_expectation(definition, user_prompt=user_prompt)
+        cls._validate_multi_channel_branching_expectation(definition, user_prompt=user_prompt)
         return definition, cls._extract_workflow_name(payload)
+
+    @classmethod
+    def _sanitize_generated_definition_payload(
+        cls,
+        definition_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        sanitized: dict[str, Any] = deepcopy(dict(definition_payload))
+        raw_nodes = sanitized.get("nodes")
+        if isinstance(raw_nodes, list):
+            sanitized_nodes: list[Any] = []
+            for raw_node in raw_nodes:
+                if not isinstance(raw_node, Mapping):
+                    sanitized_nodes.append(raw_node)
+                    continue
+
+                node = deepcopy(dict(raw_node))
+                node_type = str(node.get("type") or "").strip()
+                defaults = NODE_CONFIG_DEFAULTS.get(node_type)
+                raw_config = node.get("config")
+                if defaults is not None:
+                    filtered_config: dict[str, Any] = {}
+                    if isinstance(raw_config, Mapping):
+                        filtered_config = {
+                            key: value
+                            for key, value in raw_config.items()
+                            if key in defaults
+                        }
+                    node["config"] = {
+                        **deepcopy(defaults),
+                        **filtered_config,
+                    }
+                    node["config"] = cls._normalize_config_values(
+                        node_type=node_type,
+                        config=node["config"],
+                    )
+
+                label = str(node.get("label") or "").strip()
+                if not label and node_type:
+                    node["label"] = cls._humanize_node_type(node_type)
+
+                sanitized_nodes.append(node)
+            sanitized["nodes"] = sanitized_nodes
+
+        raw_edges = sanitized.get("edges")
+        if isinstance(raw_edges, list):
+            sanitized_edges: list[Any] = []
+            for raw_edge in raw_edges:
+                if not isinstance(raw_edge, Mapping):
+                    sanitized_edges.append(raw_edge)
+                    continue
+                edge = deepcopy(dict(raw_edge))
+                for nullable_key in ("sourceHandle", "targetHandle", "branch"):
+                    if nullable_key in edge and str(edge.get(nullable_key) or "").strip() == "":
+                        edge[nullable_key] = None
+                sanitized_edges.append(edge)
+            sanitized["edges"] = sanitized_edges
+
+        return sanitized
+
+    @classmethod
+    def _normalize_config_values(
+        cls,
+        *,
+        node_type: str,
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = cls._normalize_template_placeholders(config)
+
+        return normalized
+
+    @classmethod
+    def _normalize_template_placeholders(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return TEMPLATE_SINGLE_BRACE_PATTERN.sub(r"{{\1}}", value)
+        if isinstance(value, list):
+            return [cls._normalize_template_placeholders(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: cls._normalize_template_placeholders(item)
+                for key, item in value.items()
+            }
+        return value
+
+    @classmethod
+    def _apply_prompt_hints_to_definition_payload(
+        cls,
+        definition_payload: Mapping[str, Any],
+        *,
+        user_prompt: str | None,
+    ) -> dict[str, Any]:
+        hinted: dict[str, Any] = deepcopy(dict(definition_payload))
+        if not user_prompt:
+            return hinted
+
+        prompt_text = user_prompt.strip()
+        if not prompt_text:
+            return hinted
+
+        raw_nodes = hinted.get("nodes")
+        raw_edges = hinted.get("edges")
+        if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
+            return hinted
+
+        preferred_trigger_type = cls._infer_trigger_type_from_prompt(prompt_text)
+        start_trigger_index = cls._find_start_trigger_node_index(raw_nodes, raw_edges)
+        if (
+            preferred_trigger_type
+            and start_trigger_index is not None
+            and isinstance(raw_nodes[start_trigger_index], Mapping)
+        ):
+            start_node = deepcopy(dict(raw_nodes[start_trigger_index]))
+            current_type = str(start_node.get("type") or "").strip()
+            if current_type != preferred_trigger_type:
+                defaults = deepcopy(NODE_CONFIG_DEFAULTS.get(preferred_trigger_type, {}))
+                existing_config = start_node.get("config")
+                if isinstance(existing_config, Mapping):
+                    for key, value in existing_config.items():
+                        if key in defaults:
+                            defaults[key] = value
+                if preferred_trigger_type == "schedule_trigger":
+                    defaults = cls._hydrate_schedule_config_from_prompt(defaults, prompt_text)
+                start_node["type"] = preferred_trigger_type
+                start_node["config"] = defaults
+                if not str(start_node.get("label") or "").strip():
+                    start_node["label"] = cls._humanize_node_type(preferred_trigger_type)
+                raw_nodes[start_trigger_index] = start_node
+            elif preferred_trigger_type == "schedule_trigger":
+                schedule_config = cls._hydrate_schedule_config_from_prompt(
+                    start_node.get("config"),
+                    prompt_text,
+                )
+                start_node["config"] = schedule_config
+                raw_nodes[start_trigger_index] = start_node
+
+        preferred_chat_model_type = cls._infer_chat_model_type_from_prompt(prompt_text)
+        if preferred_chat_model_type:
+            for index, raw_node in enumerate(raw_nodes):
+                if not isinstance(raw_node, Mapping):
+                    continue
+                node_type = str(raw_node.get("type") or "").strip()
+                if node_type not in AI_CHAT_MODEL_NODE_TYPES or node_type == preferred_chat_model_type:
+                    continue
+                node = deepcopy(dict(raw_node))
+                node["type"] = preferred_chat_model_type
+                node["label"] = cls._humanize_node_type(preferred_chat_model_type)
+                node["config"] = cls._convert_chat_model_config(
+                    raw_config=node.get("config"),
+                    target_node_type=preferred_chat_model_type,
+                )
+                raw_nodes[index] = node
+
+        hinted["nodes"] = raw_nodes
+        hinted["edges"] = raw_edges
+        return hinted
+
+    @staticmethod
+    def _infer_trigger_type_from_prompt(prompt: str) -> str | None:
+        lowered = prompt.lower()
+        for trigger_type, keywords in TRIGGER_KEYWORD_HINTS:
+            if any(keyword in lowered for keyword in keywords):
+                return trigger_type
+        return None
+
+    @staticmethod
+    def _infer_chat_model_type_from_prompt(prompt: str) -> str | None:
+        lowered = prompt.lower()
+        mentions_openai = any(token in lowered for token in ("openai", "gpt-4", "gpt-5", "chatgpt"))
+        mentions_groq = any(token in lowered for token in ("groq", "llama-3", "mixtral"))
+        if mentions_openai and mentions_groq:
+            return None
+        if mentions_groq:
+            return "chat_model_groq"
+        if mentions_openai:
+            return "chat_model_openai"
+        return None
+
+    @staticmethod
+    def _find_start_trigger_node_index(nodes: list[Any], edges: list[Any]) -> int | None:
+        node_ids = {
+            str(node.get("id") or "").strip()
+            for node in nodes
+            if isinstance(node, Mapping) and str(node.get("id") or "").strip()
+        }
+        if not node_ids:
+            return None
+
+        indegree = {node_id: 0 for node_id in node_ids}
+        for edge in edges:
+            if not isinstance(edge, Mapping):
+                continue
+            target = str(edge.get("target") or "").strip()
+            if target in indegree:
+                indegree[target] += 1
+
+        for index, node in enumerate(nodes):
+            if not isinstance(node, Mapping):
+                continue
+            node_id = str(node.get("id") or "").strip()
+            node_type = str(node.get("type") or "").strip()
+            if node_type in TRIGGER_NODE_TYPES and indegree.get(node_id, 0) == 0:
+                return index
+        return None
+
+    @classmethod
+    def _hydrate_schedule_config_from_prompt(
+        cls,
+        existing_config: Any,
+        prompt: str,
+    ) -> dict[str, Any]:
+        defaults = deepcopy(NODE_CONFIG_DEFAULTS["schedule_trigger"])
+        config: dict[str, Any] = {}
+        if isinstance(existing_config, Mapping):
+            config = {
+                key: value
+                for key, value in existing_config.items()
+                if key in defaults
+            }
+
+        timezone = str(config.get("timezone") or "").strip()
+        resolved_timezone = timezone or defaults["timezone"]
+        enabled = config.get("enabled")
+        if enabled is None:
+            enabled = True
+
+        rule = cls._extract_schedule_rule_from_prompt(prompt)
+        rules = [rule] if rule else deepcopy(defaults.get("rules", []))
+
+        return {
+            **defaults,
+            **config,
+            "timezone": resolved_timezone,
+            "enabled": bool(enabled),
+            "rules": rules,
+        }
+
+    @staticmethod
+    def _extract_schedule_rule_from_prompt(prompt: str) -> dict[str, Any] | None:
+        lowered = prompt.lower()
+        cron_match = re.search(
+            r"cron(?:\s+expression)?\s*[:=]\s*([^\n;,]+)",
+            lowered,
+        )
+        if cron_match:
+            cron_value = cron_match.group(1).strip()
+            if cron_value:
+                return {
+                    "id": "rule_1",
+                    "interval": "custom",
+                    "cron": cron_value,
+                    "enabled": True,
+                }
+
+        match = re.search(
+            r"\bevery\s+(\d+)?\s*(minute|minutes|min|hour|hours|day|days|week|weeks|month|months)\b",
+            lowered,
+        )
+        if not match:
+            return None
+
+        raw_every = match.group(1)
+        every = int(raw_every) if raw_every else 1
+        unit = match.group(2)
+        interval = {
+            "minute": "minutes",
+            "minutes": "minutes",
+            "min": "minutes",
+            "hour": "hours",
+            "hours": "hours",
+            "day": "days",
+            "days": "days",
+            "week": "weeks",
+            "weeks": "weeks",
+            "month": "months",
+            "months": "months",
+        }[unit]
+
+        rule: dict[str, Any] = {
+            "id": "rule_1",
+            "interval": interval,
+            "every": every,
+            "trigger_minute": 0,
+            "trigger_hour": 0,
+            "trigger_weekday": 1,
+            "trigger_day_of_month": 1,
+            "enabled": True,
+        }
+        return rule
+
+    @staticmethod
+    def _convert_chat_model_config(
+        *,
+        raw_config: Any,
+        target_node_type: str,
+    ) -> dict[str, Any]:
+        defaults = deepcopy(NODE_CONFIG_DEFAULTS[target_node_type])
+        if not isinstance(raw_config, Mapping):
+            return defaults
+
+        for key in ("credential_id", "temperature", "max_tokens"):
+            if key in raw_config:
+                defaults[key] = raw_config[key]
+
+        raw_model = str(raw_config.get("model") or "").strip()
+        if raw_model:
+            looks_openai_model = raw_model.startswith("gpt-") or "openai" in raw_model.lower()
+            looks_groq_model = (
+                "llama" in raw_model.lower()
+                or "mixtral" in raw_model.lower()
+                or "qwen" in raw_model.lower()
+            )
+            if target_node_type == "chat_model_openai":
+                defaults["model"] = (
+                    defaults["model"] if looks_groq_model else raw_model
+                )
+            else:
+                defaults["model"] = (
+                    defaults["model"] if looks_openai_model else raw_model
+                )
+
+        return defaults
+
+    @staticmethod
+    def _humanize_node_type(node_type: str) -> str:
+        return " ".join(part.capitalize() for part in node_type.split("_"))
 
     @staticmethod
     def _extract_workflow_name(payload: Mapping[str, Any]) -> str | None:
@@ -718,3 +1124,177 @@ class LLMService:
                     f"ai_agent node '{node.id}' must receive its chat model on "
                     "targetHandle 'chat_model'."
                 )
+
+    @staticmethod
+    def _validate_delay_configs(definition: WorkflowDefinition) -> None:
+        allowed_units = {
+            "seconds",
+            "minutes",
+            "hours",
+            "days",
+            "months",
+            "second",
+            "minute",
+            "hour",
+            "day",
+            "month",
+        }
+        for node in definition.nodes:
+            if node.type != "delay":
+                continue
+            unit = str(node.config.get("unit") or "").strip().lower()
+            if unit and unit not in allowed_units:
+                raise WorkflowGenerationError(
+                    f"Delay node '{node.id}' has unsupported unit '{unit}'. "
+                    "Use seconds, minutes, hours, days, or months."
+                )
+
+    @classmethod
+    def _validate_placeholder_syntax(cls, definition: WorkflowDefinition) -> None:
+        single_brace_hits: list[str] = []
+        for node in definition.nodes:
+            config_values = cls._iter_scalar_strings(node.config)
+            for value in config_values:
+                if TEMPLATE_SINGLE_BRACE_PATTERN.search(value):
+                    single_brace_hits.append(node.id)
+                    break
+        if single_brace_hits:
+            raise WorkflowGenerationError(
+                "Workflow contains invalid single-brace template placeholders. "
+                "Use {{...}} syntax. "
+                f"Affected node ids: {', '.join(single_brace_hits)}"
+            )
+
+    @classmethod
+    def _validate_sequence_duration_expectation(
+        cls,
+        definition: WorkflowDefinition,
+        *,
+        user_prompt: str | None,
+    ) -> None:
+        if not user_prompt:
+            return
+        normalized_prompt = user_prompt.lower()
+        if "sequence" not in normalized_prompt:
+            return
+
+        match = SEQUENCE_DAYS_PATTERN.search(normalized_prompt)
+        if not match:
+            return
+        requested_days = int(match.group(1) or match.group(2) or 0)
+        if requested_days < 2:
+            return
+
+        total_hours = 0.0
+        for node in definition.nodes:
+            if node.type != "delay":
+                continue
+            unit = str(node.config.get("unit") or "").strip().lower()
+            amount_raw = node.config.get("amount")
+            if amount_raw is None:
+                continue
+            try:
+                amount = float(str(amount_raw).strip())
+            except Exception:
+                continue
+
+            unit_hours = {
+                "hour": 1.0,
+                "hours": 1.0,
+                "minute": 1.0 / 60.0,
+                "minutes": 1.0 / 60.0,
+                "second": 1.0 / 3600.0,
+                "seconds": 1.0 / 3600.0,
+                "day": 24.0,
+                "days": 24.0,
+                "month": 24.0 * 30.0,
+                "months": 24.0 * 30.0,
+            }.get(unit)
+            if unit_hours is None:
+                continue
+            total_hours += amount * unit_hours
+
+        minimum_hours = max(0.0, float(requested_days - 1) * 24.0 * 0.8)
+        if total_hours and total_hours < minimum_hours:
+            raise WorkflowGenerationError(
+                "Sequence duration does not match the requested timeline. "
+                f"Requested about {requested_days} days but generated delays total only "
+                f"{total_hours:.1f} hours."
+            )
+
+    @classmethod
+    def _validate_multi_channel_branching_expectation(
+        cls,
+        definition: WorkflowDefinition,
+        *,
+        user_prompt: str | None,
+    ) -> None:
+        if not user_prompt:
+            return
+
+        prompt = user_prompt.lower()
+        if not any(token in prompt for token in ("branch", "parallel")):
+            return
+
+        requested_channels = cls._infer_requested_channel_node_types(prompt)
+        if len(requested_channels) < 2:
+            return
+
+        start_trigger_id = cls._resolve_start_trigger_node_id(definition)
+        if not start_trigger_id:
+            return
+
+        outgoing_targets = {
+            edge.target
+            for edge in definition.edges
+            if edge.source == start_trigger_id
+        }
+        if len(outgoing_targets) < len(requested_channels):
+            raise WorkflowGenerationError(
+                "Prompt requests multi-channel branching, but workflow does not fan out enough "
+                f"branches from start trigger '{start_trigger_id}'. Expected at least "
+                f"{len(requested_channels)} branches."
+            )
+
+    @staticmethod
+    def _infer_requested_channel_node_types(prompt: str) -> set[str]:
+        channel_map = {
+            "send_gmail_message": ("email", "gmail", "mail"),
+            "whatsapp": ("whatsapp", "wa"),
+            "telegram": ("telegram",),
+            "slack_send_message": ("slack",),
+        }
+        requested: set[str] = set()
+        for node_type, tokens in channel_map.items():
+            if any(token in prompt for token in tokens):
+                requested.add(node_type)
+        return requested
+
+    @staticmethod
+    def _resolve_start_trigger_node_id(definition: WorkflowDefinition) -> str | None:
+        node_ids = {node.id for node in definition.nodes}
+        indegree = {node.id: 0 for node in definition.nodes}
+        for edge in definition.edges:
+            if edge.source in node_ids and edge.target in node_ids:
+                indegree[edge.target] += 1
+
+        for node in definition.nodes:
+            if node.type in TRIGGER_NODE_TYPES and indegree.get(node.id, 0) == 0:
+                return node.id
+        return None
+
+    @classmethod
+    def _iter_scalar_strings(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, list):
+            values: list[str] = []
+            for item in value:
+                values.extend(cls._iter_scalar_strings(item))
+            return values
+        if isinstance(value, dict):
+            values = []
+            for item in value.values():
+                values.extend(cls._iter_scalar_strings(item))
+            return values
+        return []

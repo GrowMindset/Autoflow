@@ -29,8 +29,8 @@ interface GenerateWorkflowApiResponse {
   message?: string;
 }
 
-const MAX_PROMPT_LENGTH = 1500;
-const SAFETY_PROMPT_LENGTH = 1450;
+const MAX_PROMPT_LENGTH = 4000;
+const SAFETY_PROMPT_LENGTH = 3900;
 
 class AIService {
   private buildPrompt(trimmedPrompt: string, currentWorkflow?: WorkflowDefinition): string {

@@ -403,6 +403,16 @@ class RunnerTests(unittest.TestCase):
         seconds = runner._resolve_delay_seconds({"amount": "2", "unit": "minutes"})
         self.assertEqual(seconds, 120)
 
+    def test_delay_runner_supports_days(self):
+        runner = DelayRunner()
+        seconds = runner._resolve_delay_seconds({"amount": "2", "unit": "days"})
+        self.assertEqual(seconds, 172800)
+
+    def test_delay_runner_supports_months_as_30_days(self):
+        runner = DelayRunner()
+        seconds = runner._resolve_delay_seconds({"amount": "1", "unit": "months"})
+        self.assertEqual(seconds, 2592000)
+
     def test_delay_runner_supports_until_datetime(self):
         runner = DelayRunner()
         output = runner.run(

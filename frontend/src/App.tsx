@@ -19,6 +19,7 @@ const App: React.FC = () => {
           {/* Public Routes */}
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
+          <Route path="/forms/:pathToken" element={<PublicWorkflowFormPage />} />
           <Route path="/public/forms/:pathToken" element={<PublicWorkflowFormPage />} />
 
           {/* Protected Routes */}
