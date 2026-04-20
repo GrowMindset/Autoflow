@@ -169,6 +169,7 @@ class WorkflowService:
         workflow_id: UUID,
         user_id: UUID,
         base_url: str,
+        frontend_base_url: str | None = None,
     ) -> dict[str, Any] | None:
         workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
         if workflow is None:
@@ -203,7 +204,7 @@ class WorkflowService:
         form_node = self._resolve_form_trigger_node(workflow.definition)
         if form_node is not None:
             frontend_base = str(
-                os.getenv("FRONTEND_BASE_URL") or stripped_base
+                os.getenv("FRONTEND_BASE_URL") or frontend_base_url or stripped_base
             ).rstrip("/")
             return {
                 "node_id": row.node_id,
@@ -218,7 +219,7 @@ class WorkflowService:
             "node_id": row.node_id,
             "path_token": row.path_token,
             "is_active": bool(row.is_active),
-            "method": "POST",
+            "method": "GET",
             "path": PUBLISHED_RUN_PATH_HINT,
             "url": f"{stripped_base}/webhook/{row.path_token}",
         }

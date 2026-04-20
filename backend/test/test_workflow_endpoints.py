@@ -281,7 +281,7 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
             headers=_auth_headers(user.id),
         )
         self.assertEqual(first_status, 200)
-        self.assertEqual(first_payload["method"], "POST")
+        self.assertEqual(first_payload["method"], "GET")
         self.assertEqual(first_payload["path"], "published-run")
         self.assertTrue(first_payload["is_active"])
         self.assertIn("/webhook/", first_payload["url"])
@@ -370,6 +370,43 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["path"].startswith("public/forms/"))
         self.assertIn("/public/forms/", payload["url"])
         self.assertEqual(payload["path_token"], payload["path"].split("/")[-1])
+
+    async def test_public_run_url_for_form_prefers_request_origin_when_available(self) -> None:
+        user = await self._create_user(
+            email="public-form-origin@example.com",
+            username="public-form-origin-user",
+        )
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Public Form Origin Workflow",
+            is_published=True,
+            definition={
+                "nodes": [
+                    {
+                        "id": "form_start",
+                        "type": "form_trigger",
+                        "label": "Form Trigger",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "fields": [
+                                {"name": "email", "label": "Email", "type": "email", "required": True}
+                            ],
+                        },
+                    }
+                ],
+                "edges": [],
+            },
+        )
+
+        headers = _auth_headers(user.id)
+        headers["origin"] = "http://localhost:5173"
+        status_code, payload = await self.client.get(
+            f"/workflows/{workflow.id}/public-run-url",
+            headers=headers,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["url"].startswith("http://localhost:5173/public/forms/"))
 
     async def test_public_form_definition_and_submit_work_for_published_form_workflow(self) -> None:
         user = await self._create_user(
@@ -541,7 +578,7 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(execution.triggered_by, "form")
             self.assertNotEqual(execution.status, "SUCCEEDED")
 
-    async def test_published_token_webhook_requires_post_method(self) -> None:
+    async def test_published_token_webhook_allows_get_and_post_methods(self) -> None:
         user = await self._create_user(
             email="published-method@example.com",
             username="published-method-user",
@@ -560,8 +597,8 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
         token = endpoint_payload["path_token"]
 
         get_status, get_payload = await self.client.get(f"/webhook/{token}")
-        self.assertEqual(get_status, 405)
-        self.assertIn("method not allowed", str(get_payload.get("detail", "")).lower())
+        self.assertEqual(get_status, 202)
+        self.assertEqual(get_payload["message"], "Workflow execution enqueued")
 
         post_status, post_payload = await self.client.post(f"/webhook/{token}")
         self.assertEqual(post_status, 202)

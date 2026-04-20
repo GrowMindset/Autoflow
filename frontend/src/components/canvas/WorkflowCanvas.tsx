@@ -52,6 +52,7 @@ const AUTO_LAYOUT_NODE_GAP = 40;
 const AUTO_LAYOUT_RANK_GAP = 95;
 const FORM_EXECUTION_MESSAGE_TYPE = 'autoflow:form-execution-started';
 const EXECUTION_POLL_INTERVAL_MS = 300;
+const EXTERNAL_EXECUTION_SYNC_INTERVAL_MS = 2500;
 const UNDO_REDO_HISTORY_LIMIT = 100;
 const UNDO_REDO_COMMIT_DEBOUNCE_MS = 180;
 const AI_APPLY_PROCESS_MS = 950;
@@ -237,6 +238,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const { isDark } = useTheme();
   const [activeTab, setActiveTab] = useState<'editor' | 'executions'>('editor');
   const [executionHistory, setExecutionHistory] = useState<ExecutionHistoryEntry[]>([]);
+  const executionHistoryRef = useRef<ExecutionHistoryEntry[]>([]);
   const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(null);
   const [selectedExecutionDetail, setSelectedExecutionDetail] = useState<ExecutionDetail | null>(null);
   const [isExecutionDetailLoading, setIsExecutionDetailLoading] = useState(false);
@@ -438,6 +440,39 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   };
 
   useEffect(() => {
+    executionHistoryRef.current = executionHistory;
+  }, [executionHistory]);
+
+  const toExecutionHistoryEntry = useCallback((exe: any): ExecutionHistoryEntry => {
+    const executionId = String(exe?.executionId ?? exe?.id ?? '');
+    return {
+      executionId,
+      status: String(exe?.status || 'PENDING').toUpperCase(),
+      triggeredBy: String(exe?.triggeredBy ?? exe?.triggered_by ?? 'manual'),
+      startedAt: exe?.startedAt ?? exe?.started_at ?? null,
+      finishedAt: exe?.finishedAt ?? exe?.finished_at ?? null,
+      errorMessage: exe?.errorMessage ?? exe?.error_message ?? null,
+      durationMs:
+        (exe?.startedAt ?? exe?.started_at) && (exe?.finishedAt ?? exe?.finished_at)
+          ? Date.parse(exe?.finishedAt ?? exe?.finished_at) - Date.parse(exe?.startedAt ?? exe?.started_at)
+          : undefined,
+    };
+  }, []);
+
+  const upsertExecutionHistoryEntry = useCallback((entry: ExecutionHistoryEntry) => {
+    if (!entry.executionId) return;
+    setExecutionHistory((history) => {
+      const index = history.findIndex((item) => item.executionId === entry.executionId);
+      if (index === -1) {
+        return [entry, ...history];
+      }
+      const next = [...history];
+      next[index] = { ...next[index], ...entry };
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
     nodesRef.current = nodes;
     edgesRef.current = edges;
   }, [nodes, edges]);
@@ -472,21 +507,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       return;
     }
 
+    let cancelled = false;
     const fetchExecutions = async () => {
       try {
         const response = await executionService.listExecutions(workflowId);
         if (response && response.executions) {
-          const formattedHistory = response.executions.map((exe: any) => ({
-            executionId: exe.id,
-            status: exe.status,
-            triggeredBy: exe.triggered_by || 'manual',
-            startedAt: exe.started_at,
-            finishedAt: exe.finished_at,
-            errorMessage: exe.error_message || null,
-            durationMs: exe.started_at && exe.finished_at
-              ? Date.parse(exe.finished_at) - Date.parse(exe.started_at)
-              : undefined
-          }));
+          if (cancelled) return;
+          const formattedHistory = response.executions.map((exe: any) => toExecutionHistoryEntry(exe));
           setExecutionHistory(formattedHistory);
         }
       } catch (error) {
@@ -494,8 +521,16 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }
     };
 
-    fetchExecutions();
-  }, [workflowId]);
+    void fetchExecutions();
+    const intervalId = window.setInterval(() => {
+      void fetchExecutions();
+    }, EXTERNAL_EXECUTION_SYNC_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [toExecutionHistoryEntry, workflowId]);
 
   useEffect(() => {
     setNodes((nds) =>
@@ -1013,22 +1048,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           return node;
         })
       );
-      setExecutionHistory((history) =>
-        history.map((entry) =>
-          entry.executionId === executionId
-            ? {
-              ...entry,
-              status: detail.status,
-              errorMessage: detail.error_message,
-              startedAt: detail.started_at,
-              finishedAt: detail.finished_at,
-              durationMs:
-                detail.started_at && detail.finished_at
-                  ? Date.parse(detail.finished_at) - Date.parse(detail.started_at)
-                  : entry.durationMs,
-            }
-            : entry
-        )
+      upsertExecutionHistoryEntry(
+        toExecutionHistoryEntry({
+          id: detail.id,
+          status: detail.status,
+          triggered_by: detail.triggered_by,
+          started_at: detail.started_at,
+          finished_at: detail.finished_at,
+          error_message: detail.error_message,
+        }),
       );
       executionDetailCacheRef.current[executionId] = detail;
       if (selectedExecutionId === executionId) {
@@ -1060,7 +1088,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       console.error('Polling failed:', error);
       stopPolling();
     }
-  }, [onExecutionUpdate, selectedExecutionId, setNodes, stopPolling]);
+  }, [onExecutionUpdate, selectedExecutionId, setNodes, stopPolling, toExecutionHistoryEntry, upsertExecutionHistoryEntry]);
 
   const beginExecutionTracking = useCallback((
     executionId: string,
@@ -1186,6 +1214,90 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }))
     );
   }, [setNodes]);
+
+  useEffect(() => {
+    if (!workflowId || workflowId === 'new') return;
+
+    let cancelled = false;
+    const seenPublishedExecutionIds = new Set<string>();
+
+    const syncLatestExternalExecution = async () => {
+      try {
+        const detail = await executionService.getLatestExecution(workflowId);
+        if (cancelled || !detail?.id) return;
+
+        const executionId = String(detail.id);
+        executionDetailCacheRef.current[executionId] = detail;
+        upsertExecutionHistoryEntry(
+          toExecutionHistoryEntry({
+            id: detail.id,
+            status: detail.status,
+            triggered_by: detail.triggered_by,
+            started_at: detail.started_at,
+            finished_at: detail.finished_at,
+            error_message: detail.error_message,
+          }),
+        );
+
+        const isActiveExecution = activeExecutionIdRef.current === executionId;
+        const isRunningExecution = detail.status === 'RUNNING' || detail.status === 'PENDING';
+        const isKnownInHistory = executionHistoryRef.current.some((item) => item.executionId === executionId);
+
+        if (isActiveExecution) {
+          if (selectedExecutionId === executionId) {
+            setSelectedExecutionDetail(detail);
+          }
+          onExecutionUpdate?.(detail);
+          return;
+        }
+
+        if (isRunningExecution) {
+          resetNodeExecutionVisualState();
+          beginExecutionTracking(executionId, {
+            triggeredBy: detail.triggered_by,
+          });
+          if (!seenPublishedExecutionIds.has(executionId)) {
+            seenPublishedExecutionIds.add(executionId);
+            toast('Published URL run detected. Showing live status in editor.', { icon: 'ℹ️' });
+          }
+          return;
+        }
+
+        if (!isKnownInHistory) {
+          onExecutionStart?.(executionId);
+        }
+        onExecutionUpdate?.(detail);
+        applyExecutionDetailToCanvas(detail);
+        if (selectedExecutionId === executionId) {
+          setSelectedExecutionDetail(detail);
+        }
+      } catch (error: any) {
+        if (error?.response?.status === 404) {
+          return;
+        }
+      }
+    };
+
+    void syncLatestExternalExecution();
+    const intervalId = window.setInterval(() => {
+      void syncLatestExternalExecution();
+    }, EXTERNAL_EXECUTION_SYNC_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [
+    applyExecutionDetailToCanvas,
+    beginExecutionTracking,
+    onExecutionStart,
+    onExecutionUpdate,
+    resetNodeExecutionVisualState,
+    selectedExecutionId,
+    toExecutionHistoryEntry,
+    upsertExecutionHistoryEntry,
+    workflowId,
+  ]);
 
   const hasRuntimeCycle = useCallback((): boolean => {
     const allNodes = nodesRef.current;

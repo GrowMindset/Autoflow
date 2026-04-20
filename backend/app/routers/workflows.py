@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from uuid import UUID
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,20 @@ from app.schemas.workflows import (
 from app.services.workflow_service import WorkflowService
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
+
+
+def _resolve_frontend_base_from_request(request: Request) -> str | None:
+    origin = str(request.headers.get("origin") or "").strip()
+    if origin.startswith("http://") or origin.startswith("https://"):
+        return origin.rstrip("/")
+
+    referer = str(request.headers.get("referer") or "").strip()
+    if not referer:
+        return None
+    parsed = urlparse(referer)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
 
 def get_workflow_service(db: AsyncSession = Depends(get_db)) -> WorkflowService:
@@ -179,6 +194,7 @@ async def get_public_run_url(
         workflow_id=workflow_id,
         user_id=current_user.id,
         base_url=str(request.base_url),
+        frontend_base_url=_resolve_frontend_base_from_request(request),
     )
     if endpoint is None:
         raise HTTPException(

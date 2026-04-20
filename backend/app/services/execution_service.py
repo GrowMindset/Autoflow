@@ -183,10 +183,11 @@ class ExecutionService:
 
         if webhook.node_id == PUBLISHED_RUN_NODE_ID:
             incoming_method = (request_method or "POST").upper()
-            expected_method = "POST"
-            if incoming_method != expected_method:
+            allowed_methods = {"GET", "POST"}
+            if incoming_method not in allowed_methods:
+                allowed = ", ".join(sorted(allowed_methods))
                 raise ValueError(
-                    f"Webhook method not allowed. Expected {expected_method}, received {incoming_method}"
+                    f"Webhook method not allowed. Allowed methods: {allowed}. Received {incoming_method}"
                 )
 
             user = await self.db.get(User, workflow.user_id)

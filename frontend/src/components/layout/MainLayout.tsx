@@ -453,7 +453,10 @@ const MainLayout: React.FC = () => {
     }
     try {
       const publicRun = await workflowService.getPublicRunUrl(workflowId);
-      const url = publicRun?.url || null;
+      const path = String(publicRun?.path || '').replace(/^\/+/, '');
+      const url = path.startsWith('public/forms/')
+        ? `${window.location.origin}/${path}`
+        : (publicRun?.url || null);
       setPublishedRunUrl(url);
       return url;
     } catch {
