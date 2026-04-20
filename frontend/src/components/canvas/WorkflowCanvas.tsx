@@ -246,6 +246,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const isHydratingCanvasRef = useRef(false);
   const isApplyingHistoryRef = useRef(false);
   const executionDetailCacheRef = useRef<Record<string, ExecutionDetail>>({});
+  const latestSyncedExecutionIdRef = useRef<string | null>(null);
+  const externalExecutionToastShownRef = useRef<Set<string>>(new Set());
   const executionDetailRequestIdRef = useRef(0);
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
@@ -493,6 +495,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setExecutionDetailError(null);
     setIsExecutionDetailLoading(false);
     executionDetailCacheRef.current = {};
+    latestSyncedExecutionIdRef.current = null;
+    externalExecutionToastShownRef.current = new Set();
     executionDetailRequestIdRef.current = 0;
     setHasPickedNewWorkflowStarter(false);
     setShowRunFlowSelector(false);
@@ -1217,85 +1221,68 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   useEffect(() => {
     if (!workflowId || workflowId === 'new') return;
+    const latestEntry = executionHistoryRef.current[0];
+    if (!latestEntry?.executionId) return;
 
     let cancelled = false;
-    const seenPublishedExecutionIds = new Set<string>();
+    const syncFromLatestHistory = async () => {
+      const executionId = String(latestEntry.executionId || '');
+      if (!executionId) return;
 
-    const syncLatestExternalExecution = async () => {
+      if (activeExecutionIdRef.current === executionId) {
+        return;
+      }
+
+      const latestStatus = String(latestEntry.status || '').toUpperCase();
+      const isRunningExecution = latestStatus === 'RUNNING' || latestStatus === 'PENDING';
+
+      if (isRunningExecution) {
+        latestSyncedExecutionIdRef.current = executionId;
+        resetNodeExecutionVisualState();
+        beginExecutionTracking(executionId, {
+          triggeredBy: latestEntry.triggeredBy || 'webhook',
+        });
+        if (!externalExecutionToastShownRef.current.has(executionId)) {
+          externalExecutionToastShownRef.current.add(executionId);
+          toast('Published URL run detected. Showing live status in editor.', { icon: 'ℹ️' });
+        }
+        return;
+      }
+
+      if (latestSyncedExecutionIdRef.current === executionId) {
+        return;
+      }
+
       try {
-        const detail = await executionService.getLatestExecution(workflowId);
-        if (cancelled || !detail?.id) return;
+        const detail = executionDetailCacheRef.current[executionId]
+          || await executionService.getExecution(executionId);
+        if (cancelled || !detail) return;
 
-        const executionId = String(detail.id);
         executionDetailCacheRef.current[executionId] = detail;
-        upsertExecutionHistoryEntry(
-          toExecutionHistoryEntry({
-            id: detail.id,
-            status: detail.status,
-            triggered_by: detail.triggered_by,
-            started_at: detail.started_at,
-            finished_at: detail.finished_at,
-            error_message: detail.error_message,
-          }),
-        );
-
-        const isActiveExecution = activeExecutionIdRef.current === executionId;
-        const isRunningExecution = detail.status === 'RUNNING' || detail.status === 'PENDING';
-        const isKnownInHistory = executionHistoryRef.current.some((item) => item.executionId === executionId);
-
-        if (isActiveExecution) {
-          if (selectedExecutionId === executionId) {
-            setSelectedExecutionDetail(detail);
-          }
-          onExecutionUpdate?.(detail);
-          return;
-        }
-
-        if (isRunningExecution) {
-          resetNodeExecutionVisualState();
-          beginExecutionTracking(executionId, {
-            triggeredBy: detail.triggered_by,
-          });
-          if (!seenPublishedExecutionIds.has(executionId)) {
-            seenPublishedExecutionIds.add(executionId);
-            toast('Published URL run detected. Showing live status in editor.', { icon: 'ℹ️' });
-          }
-          return;
-        }
-
-        if (!isKnownInHistory) {
-          onExecutionStart?.(executionId);
-        }
+        latestSyncedExecutionIdRef.current = executionId;
+        onExecutionStart?.(executionId);
         onExecutionUpdate?.(detail);
         applyExecutionDetailToCanvas(detail);
         if (selectedExecutionId === executionId) {
           setSelectedExecutionDetail(detail);
         }
-      } catch (error: any) {
-        if (error?.response?.status === 404) {
-          return;
-        }
+      } catch (_error) {
+        // Ignore transient lookup failures for historical rows.
       }
     };
 
-    void syncLatestExternalExecution();
-    const intervalId = window.setInterval(() => {
-      void syncLatestExternalExecution();
-    }, EXTERNAL_EXECUTION_SYNC_INTERVAL_MS);
-
+    void syncFromLatestHistory();
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
     };
   }, [
     applyExecutionDetailToCanvas,
     beginExecutionTracking,
+    executionHistory,
     onExecutionStart,
     onExecutionUpdate,
     resetNodeExecutionVisualState,
     selectedExecutionId,
-    toExecutionHistoryEntry,
-    upsertExecutionHistoryEntry,
     workflowId,
   ]);
 

@@ -196,13 +196,6 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
     [data, nowMs],
   );
 
-  // Debug log whenever data changes
-  useEffect(() => {
-    if (data.status) {
-      console.log(`BaseNode ${id} status changed to:`, data.status);
-    }
-  }, [data.status, id]);
-
   useEffect(() => {
     if (!shouldShowLiveCountdown) return;
     setNowMs(Date.now());
