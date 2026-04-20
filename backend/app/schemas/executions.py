@@ -34,6 +34,7 @@ class RunWorkflowRequest(BaseModel):
 
 class RunScheduleRequest(BaseModel):
     start_node_id: str | None = None
+    respect_schedule: bool = False
     loop_control_override: LoopControlOverride | None = None
 
 

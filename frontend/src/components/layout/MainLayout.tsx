@@ -810,6 +810,7 @@ const MainLayout: React.FC = () => {
             <WorkflowCanvas
               key={currentWorkflowId}
               workflowId={currentWorkflowId}
+              isPublished={isPublished}
               footerOffset={footerOffset}
               onCanvasMutated={handleCanvasMutated}
               onToggleAiAssistant={() => setIsAiAssistantOpen(!isAiAssistantOpen)}

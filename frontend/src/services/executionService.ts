@@ -19,6 +19,7 @@ export interface RunWorkflowPayload {
 
 export interface RunSchedulePayload {
   start_node_id?: string;
+  respect_schedule?: boolean;
   loop_control_override?: LoopControlOverridePayload;
 }
 

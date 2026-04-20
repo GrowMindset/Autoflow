@@ -63,6 +63,28 @@ const DEFAULT_LOOP_CONTROL = {
   max_total_node_executions: 500,
 } as const;
 
+const parseBooleanLike = (rawValue: unknown, fallback = true): boolean => {
+  if (rawValue === undefined || rawValue === null) return fallback;
+  if (typeof rawValue === 'boolean') return rawValue;
+  if (typeof rawValue === 'number') return rawValue !== 0;
+  if (typeof rawValue === 'string') {
+    const normalized = rawValue.trim().toLowerCase();
+    if (!normalized) return fallback;
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  }
+  return fallback;
+};
+
+const isScheduleVisualActive = (
+  nodeType: string,
+  config: Record<string, any> | undefined,
+  workflowPublished: boolean,
+): boolean => {
+  if (nodeType !== 'schedule_trigger') return false;
+  return Boolean(workflowPublished) && parseBooleanLike(config?.enabled, true);
+};
+
 type SwitchBranchLookup = {
   caseIds: Set<string>;
   labelToId: Map<string, string>;
@@ -184,6 +206,7 @@ interface AiPreviewGraph {
 
 interface WorkflowCanvasProps {
   workflowId: string;
+  isPublished?: boolean;
   footerOffset?: number;
   onExecutionStart?: (executionId: string) => void;
   onExecutionUpdate?: (detail: ExecutionDetail) => void;
@@ -194,6 +217,7 @@ interface WorkflowCanvasProps {
 
 const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   workflowId,
+  isPublished = false,
   footerOffset = 0,
   onExecutionStart,
   onExecutionUpdate,
@@ -472,6 +496,29 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
     fetchExecutions();
   }, [workflowId]);
+
+  useEffect(() => {
+    setNodes((nds) =>
+      nds.map((node) => {
+        if (node.data.type !== 'schedule_trigger') return node;
+        const scheduleIsActive = isScheduleVisualActive(
+          node.data.type,
+          node.data.config,
+          isPublished,
+        );
+        if (node.data.schedule_is_active === scheduleIsActive) {
+          return node;
+        }
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            schedule_is_active: scheduleIsActive,
+          },
+        };
+      }),
+    );
+  }, [isPublished, setNodes]);
 
   const applyExecutionDetailToCanvas = useCallback((detail: ExecutionDetail) => {
     const nodeResultById = new Map(detail.node_results.map((nodeResult) => [nodeResult.node_id, nodeResult]));
@@ -1264,9 +1311,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       } else if (trigger.data.type === 'schedule_trigger') {
         const enqueue = await executionService.runWorkflowSchedule(workflowId, {
           start_node_id: trigger.id,
+          respect_schedule: false,
           loop_control_override: runtimeLoopOverride || undefined,
         });
-        toast.success('Schedule execution queued. It will run at the next matching schedule time.');
+        toast.success(
+          'Manual schedule test run queued now. Automatic recurring runs need a published workflow with Celery beat + worker running.',
+        );
         beginExecutionTracking(enqueue.execution_id, {
           triggeredBy: enqueue.triggered_by,
         });
@@ -1682,7 +1732,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           label: n.label,
           config: normalizedConfig,
           type: n.type,
-          category: category
+          category: category,
+          schedule_is_active: isScheduleVisualActive(
+            n.type,
+            normalizedConfig,
+            isPublished,
+          ),
         }
       };
     });
@@ -1747,7 +1802,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     requestAnimationFrame(() => {
       isHydratingCanvasRef.current = false;
     });
-  }, [setNodes, setEdges, resetUndoRedoHistory, workflowId]);
+  }, [setNodes, setEdges, resetUndoRedoHistory, workflowId, isPublished]);
 
   const applyHistoryEntry = useCallback((entry: CanvasHistoryEntry) => {
     isApplyingHistoryRef.current = true;
@@ -1964,12 +2019,18 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setNodes((nds) =>
       nds.map((node) => {
         if (node.id === id) {
+          const scheduleIsActive = isScheduleVisualActive(
+            node.data.type,
+            config,
+            isPublished,
+          );
           return {
             ...node,
             data: {
               ...node.data,
               config,
-              last_output: output || node.data.last_output
+              last_output: output || node.data.last_output,
+              schedule_is_active: scheduleIsActive,
             },
           };
         }
@@ -1977,7 +2038,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       })
     );
     emitCanvasMutation('node_config_change');
-  }, [setNodes, emitCanvasMutation]);
+  }, [setNodes, emitCanvasMutation, isPublished]);
 
   const updateNodeLabel = useCallback((id: string, label: string) => {
     setNodes((nds) =>

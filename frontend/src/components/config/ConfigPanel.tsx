@@ -53,6 +53,19 @@ const toSafeInt = (rawValue: any, fallback: number) => {
   return Number.isFinite(value) ? value : fallback;
 };
 
+const toSafeBool = (rawValue: any, fallback = true): boolean => {
+  if (rawValue === undefined || rawValue === null) return fallback;
+  if (typeof rawValue === 'boolean') return rawValue;
+  if (typeof rawValue === 'number') return rawValue !== 0;
+  if (typeof rawValue === 'string') {
+    const normalized = rawValue.trim().toLowerCase();
+    if (!normalized) return fallback;
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  }
+  return fallback;
+};
+
 const getSchedulePreviewLines = (config: Record<string, any> | undefined) => {
   if (!config || typeof config !== 'object') return ['* * * * *'];
 
@@ -161,6 +174,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const schedulePreviewLines = useMemo(
     () => getSchedulePreviewLines(node.data.config),
     [node.data.config],
+  );
+  const isScheduleEnabled = useMemo(
+    () => toSafeBool(node.data.config?.enabled, true),
+    [node.data.config?.enabled],
   );
 
   useEffect(() => {
@@ -321,6 +338,18 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const handleConfigChange = (key: string, value: any) => {
     const nextConfig = { ...node.data.config, [key]: value };
     onUpdate(node.id, nextConfig);
+  };
+
+  const handleScheduleToggle = () => {
+    if (node.data.type !== 'schedule_trigger') return;
+    const nextEnabled = !isScheduleEnabled;
+    const nextConfig = { ...node.data.config, enabled: nextEnabled };
+    onUpdate(node.id, nextConfig);
+    toast.success(
+      nextEnabled
+        ? 'Schedule resumed. Save/publish to keep recurring runs active.'
+        : 'Schedule paused. Save/publish to stop recurring runs.',
+    );
   };
 
   const commitNodeLabelChange = () => {
@@ -824,9 +853,35 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                 {node.data.type === 'schedule_trigger' && (
                   <div className="mt-10 space-y-8">
                     <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 flex flex-col gap-3">
-                      <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Schedule Preview</h3>
+                      <div className="flex items-center justify-between gap-3">
+                        <h3 className="text-sm font-black text-slate-800 dark:text-slate-100">Schedule Preview</h3>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full border ${
+                            isScheduleEnabled
+                              ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                              : 'text-amber-700 bg-amber-50 border-amber-200'
+                          }`}>
+                            {isScheduleEnabled ? 'Active' : 'Paused'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleScheduleToggle}
+                            className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-colors ${
+                              isScheduleEnabled
+                                ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                            }`}
+                            title={isScheduleEnabled ? 'Pause schedule' : 'Resume schedule'}
+                          >
+                            {isScheduleEnabled ? 'Stop Schedule' : 'Start Schedule'}
+                          </button>
+                        </div>
+                      </div>
                       <p className="text-xs text-slate-500 dark:text-slate-400">
                         This trigger runs automatically when workflow is published and scheduler workers are running.
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Intervals align to clock boundaries (for example: hourly at minute 0 runs at :00, not exactly 60 minutes from save time).
                       </p>
                       <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 space-y-1">
                         {schedulePreviewLines.map((line, idx) => (

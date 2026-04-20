@@ -161,6 +161,7 @@ async def run_workflow_schedule(
     current_user: User = Depends(get_current_user),
     execution_service: ExecutionService = Depends(get_execution_service),
 ) -> ExecutionEnqueueResponse:
+    should_respect_schedule = payload.respect_schedule if payload else False
     try:
         execution = await execution_service.create_schedule_execution(
             workflow_id=workflow_id,
@@ -168,10 +169,14 @@ async def run_workflow_schedule(
             start_node_id=(payload.start_node_id if payload else None),
             schedule_payload={
                 "scheduled_at": datetime.now(timezone.utc).astimezone(APP_TIMEZONE).isoformat(),
-                "source": "manual_schedule_run",
+                "source": (
+                    "manual_schedule_run_next_due"
+                    if should_respect_schedule
+                    else "manual_schedule_run_now"
+                ),
             },
             require_published=False,
-            respect_schedule=True,
+            respect_schedule=should_respect_schedule,
             loop_control_override=(
                 payload.loop_control_override.model_dump(exclude_none=True)
                 if payload and payload.loop_control_override

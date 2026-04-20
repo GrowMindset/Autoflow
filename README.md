@@ -9,3 +9,38 @@ The current goal is to deliver the MVP in three phases:
 
 This README is a starter placeholder and will be expanded later with setup steps, architecture, API details, and deployment notes.
 
+
+## Run The App (4 Required Commands)
+
+Open 4 terminals and run these commands from the project root.
+
+### Terminal 1: Backend API (FastAPI)
+```bash
+cd backend
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Terminal 2: Frontend (React + Vite)
+```bash
+cd frontend
+npm run dev
+```
+
+### Terminal 3: Celery Worker (workflow + node tests + system queue)
+```bash
+cd backend
+celery -A celery\_config.celery\_app worker --loglevel=info
+```
+
+### Terminal 4: Celery Beat (required for schedule trigger recurring runs)
+```bash
+cd backend
+celery -A celery_config beat -l info
+```
+
+## Notes
+
+- Schedule Trigger recurring execution needs both:
+  - Celery worker running `system` queue.
+  - Celery beat running.
+- Without beat, schedule triggers will not auto-scan/run repeatedly.

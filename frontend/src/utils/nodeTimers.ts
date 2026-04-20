@@ -526,8 +526,9 @@ const getScheduleCountdownLabel = (
   const isActiveScheduleRun =
     (runtimeStatus === 'RUNNING' || runtimeStatus === 'PENDING')
     && (executionStatus === 'RUNNING' || executionStatus === 'PENDING');
+  const isScheduleLive = Boolean(data?.schedule_is_active);
 
-  if (data.type !== 'schedule_trigger' || !isActiveScheduleRun) {
+  if (data.type !== 'schedule_trigger' || (!isActiveScheduleRun && !isScheduleLive)) {
     return null;
   }
 
@@ -549,6 +550,9 @@ export const shouldShowLiveNodeCountdown = (data: WorkflowNodeData): boolean => 
     return data.status === 'RUNNING';
   }
   if (data.type === 'schedule_trigger') {
+    if (data.schedule_is_active) {
+      return true;
+    }
     const runtimeStatus = String(data?.status || '').toUpperCase();
     const executionStatus = String(data?.last_execution_result?.status || '').toUpperCase();
     return (

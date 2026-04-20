@@ -27,6 +27,9 @@ const App: React.FC = () => {
             <Route path="/app/*" element={<MainLayout />} />
             <Route path="/app/forms/:workflowId" element={<WorkflowFormPage />} />
             <Route path="/app/oauth/google/callback" element={<GoogleOAuthCallback />} />
+            <Route path="/app/oauth/gmail/callback" element={<GoogleOAuthCallback />} />
+            <Route path="/app/oauth/sheets/callback" element={<GoogleOAuthCallback />} />
+            <Route path="/app/oauth/docs/callback" element={<GoogleOAuthCallback />} />
             <Route path="/app/oauth/linkedin/callback" element={<LinkedInOAuthCallback />} />
           </Route>
 

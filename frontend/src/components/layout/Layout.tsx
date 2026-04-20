@@ -20,7 +20,7 @@ function Layout() {
         <Sidebar />
         <main className="min-h-0 flex-1 bg-slate-50 p-4">
           <div className="h-full w-full overflow-hidden rounded-lg border border-slate-200 bg-white">
-            <WorkflowCanvas />
+            <WorkflowCanvas workflowId="new" isPublished={false} />
           </div>
         </main>
       </div>

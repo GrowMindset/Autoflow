@@ -93,14 +93,16 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "search_update_google_sheets": {
         "category": "action",
-        "description": "Searches rows in Google Sheets and updates one or more columns on the first matched row.",
+        "description": "Performs Google Sheets operations like append row, delete rows, overwrite row, upsert row, add columns, and delete columns.",
         "rules": [
-            "Use config keys: credential_id, spreadsheet_id, sheet_name, search_column, search_value, update_mappings, ensure_columns, auto_create_headers, upsert_if_not_found.",
-            "update_mappings should be an array of objects like {\"column\": \"Status\", \"value\": \"Processed\"}.",
-            "ensure_columns is optional and should be an array of extra header names to create if missing.",
+            "Use config keys: credential_id, spreadsheet_source_type, spreadsheet_id, spreadsheet_url, sheet_name, operation, key_column, key_value, update_mappings, append_columns, append_values, columns_to_add, columns_to_delete, auto_create_headers.",
+            "sheet_name should be the worksheet tab title (for example Sheet1), not the spreadsheet document title.",
+            "operation should be one of append_row, delete_rows, overwrite_row, upsert_row, add_columns, delete_columns (aliases like append/delete/overwrite/upsert are also accepted).",
+            "For overwrite_row/upsert_row use key_column + key_value and update_mappings like [{\"column\": \"Status\", \"value\": \"Processed\"}].",
+            "For append_row prefer update_mappings like overwrite/upsert; legacy append_columns + append_values is also supported.",
+            "For add_columns and delete_columns use columns_to_add / columns_to_delete arrays.",
             "Legacy fallback update_column + update_value is still supported for backward compatibility.",
-            "search_column and mapping column values can be header names, column letters (A/B/C), or column numbers.",
-            "Prefer upsert_if_not_found=false for strict overwrite behavior (no new row when search value is missing).",
+            "Column references can be header names, column letters (A/B/C), or column numbers.",
         ],
     },
     "create_google_docs": {

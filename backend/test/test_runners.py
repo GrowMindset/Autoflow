@@ -379,6 +379,25 @@ class RunnerTests(unittest.TestCase):
             [{"column": "Status", "value": "Processed"}],
         )
 
+    def test_sheets_search_update_normalize_operation_supports_aliases(self):
+        self.assertEqual(
+            SearchUpdateGoogleSheetsRunner._normalize_operation({"operation": "overwrite"}),
+            "overwrite_row",
+        )
+        self.assertEqual(
+            SearchUpdateGoogleSheetsRunner._normalize_operation({"operation": "delete_column"}),
+            "delete_columns",
+        )
+
+    def test_sheets_search_update_resolve_spreadsheet_id_from_url(self):
+        spreadsheet_id = SearchUpdateGoogleSheetsRunner._resolve_spreadsheet_id(
+            {
+                "spreadsheet_source_type": "url",
+                "spreadsheet_url": "https://docs.google.com/spreadsheets/d/1aBcD-12345_xyz/edit#gid=0",
+            }
+        )
+        self.assertEqual(spreadsheet_id, "1aBcD-12345_xyz")
+
     def test_delay_runner_resolves_amount_and_unit(self):
         runner = DelayRunner()
         seconds = runner._resolve_delay_seconds({"amount": "2", "unit": "minutes"})

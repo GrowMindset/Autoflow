@@ -9,6 +9,7 @@ export interface WorkflowNodeData {
   last_output?: any;
   status?: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
   last_execution_result?: any;
+  schedule_is_active?: boolean;
 }
 
 export type WorkflowNode = Node<WorkflowNodeData>;

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -15,6 +16,11 @@ GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v2/userinfo"
 GOOGLE_DEFAULT_REDIRECT_PATH = "/app/oauth/google/callback"
 SUPPORTED_GOOGLE_APPS = {"gmail", "sheets", "docs"}
+GOOGLE_LEGACY_CALLBACK_SUFFIXES = (
+    "/app/oauth/gmail/callback",
+    "/app/oauth/sheets/callback",
+    "/app/oauth/docs/callback",
+)
 SHARED_SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -65,10 +71,26 @@ class GoogleOAuthService:
     def resolve_redirect_uri(self, redirect_uri: str | None = None) -> str:
         candidate = (redirect_uri or "").strip()
         if candidate:
-            return candidate
+            return self._normalize_google_redirect_uri(candidate)
         if self.default_redirect_uri:
-            return self.default_redirect_uri
-        return f"{self.frontend_base_url}{GOOGLE_DEFAULT_REDIRECT_PATH}"
+            return self._normalize_google_redirect_uri(self.default_redirect_uri)
+        return self._normalize_google_redirect_uri(
+            f"{self.frontend_base_url}{GOOGLE_DEFAULT_REDIRECT_PATH}"
+        )
+
+    @staticmethod
+    def _normalize_google_redirect_uri(redirect_uri: str) -> str:
+        """
+        Normalize legacy per-app callback paths to one stable Google callback URL.
+        This avoids redirect_uri_mismatch when older clients pass:
+        /app/oauth/gmail|sheets|docs/callback.
+        """
+        parsed = urlparse(redirect_uri)
+        path = parsed.path or ""
+        if path in GOOGLE_LEGACY_CALLBACK_SUFFIXES:
+            parsed = parsed._replace(path=GOOGLE_DEFAULT_REDIRECT_PATH)
+            return urlunparse(parsed)
+        return redirect_uri
 
     def get_scopes(self, app_name: str) -> list[str]:
         normalized = self.normalize_app_name(app_name)

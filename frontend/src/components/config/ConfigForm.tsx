@@ -107,6 +107,34 @@ const PATH_STYLE_FIELD_KEYS = new Set([
   'output_key',
 ]);
 
+const SHEETS_OPERATION_ALIASES: Record<string, string> = {
+  append: 'append_row',
+  append_rows: 'append_row',
+  add_row: 'append_row',
+  add_rows: 'append_row',
+  delete: 'delete_rows',
+  delete_row: 'delete_rows',
+  remove_row: 'delete_rows',
+  remove_rows: 'delete_rows',
+  overwrite: 'overwrite_row',
+  override: 'overwrite_row',
+  update: 'overwrite_row',
+  upsert: 'upsert_row',
+  add_column: 'add_columns',
+  create_columns: 'add_columns',
+  delete_column: 'delete_columns',
+  remove_column: 'delete_columns',
+  remove_columns: 'delete_columns',
+};
+
+const normalizeSheetsOperation = (rawOperation: any, upsertIfMissing: boolean): string => {
+  const token = String(rawOperation || '').trim().toLowerCase();
+  if (!token) {
+    return upsertIfMissing ? 'upsert_row' : 'overwrite_row';
+  }
+  return SHEETS_OPERATION_ALIASES[token] || token;
+};
+
 const SWITCH_CASE_OPERATORS = [
   'equals',
   'not_equals',
@@ -281,24 +309,54 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       appName: 'sheets',
       helperText: 'OAuth only: connect Google Sheets in Credential Manager, then select it here.',
     },
+    {
+      key: 'spreadsheet_source_type',
+      label: 'Spreadsheet Source',
+      type: 'select',
+      options: ['id', 'url'],
+    },
     { key: 'spreadsheet_id', label: 'Spreadsheet ID', type: 'text', placeholder: 'e.g. 1aBC...xyz' },
-    { key: 'sheet_name', label: 'Sheet Name', type: 'text', placeholder: 'e.g. Sheet1' },
-    { key: 'search_column', label: 'Column to Search', type: 'text', placeholder: 'e.g. Email or A or 1' },
-    { key: 'search_value', label: 'Value to Find', type: 'text', placeholder: 'e.g. {{ $json.email }}' },
+    { key: 'spreadsheet_url', label: 'Spreadsheet URL', type: 'text', placeholder: 'https://docs.google.com/spreadsheets/d/...' },
+    { key: 'sheet_name', label: 'Sheet Name (Tab)', type: 'text', placeholder: 'e.g. Sheet1' },
+    {
+      key: 'operation',
+      label: 'Operation',
+      type: 'select',
+      options: ['append_row', 'delete_rows', 'overwrite_row', 'upsert_row', 'add_columns', 'delete_columns'],
+    },
+    { key: 'key_column', label: 'Key Column', type: 'text', placeholder: 'e.g. Email or A or 1' },
+    { key: 'key_value', label: 'Key Value', type: 'text', placeholder: 'e.g. {{customer.email}}' },
+    {
+      key: 'append_columns',
+      label: 'Append Columns',
+      type: 'string_array',
+      helperText: 'For append_row: column headers/letters/numbers in order.',
+    },
+    {
+      key: 'append_values',
+      label: 'Append Values',
+      type: 'string_array',
+      helperText: 'For append_row: value list aligned with Append Columns.',
+    },
     {
       key: 'update_mappings',
       label: 'Columns to Update',
       type: 'sheet_update_mappings',
-      helperText: 'Add one or more column/value pairs. You can use mapping variables in values.',
+      helperText: 'For append_row / overwrite_row / upsert_row: one or more column/value pairs.',
     },
     {
-      key: 'ensure_columns',
-      label: 'Ensure Extra Columns',
+      key: 'columns_to_add',
+      label: 'Columns to Add',
       type: 'string_array',
-      helperText: 'Optional: these headers are created if missing, even if not updated in this run.',
+      helperText: 'For add_columns operation.',
     },
-    { key: 'auto_create_headers', label: 'Auto Create Headers', type: 'boolean' },
-    { key: 'upsert_if_not_found', label: 'Append Row If No Match', type: 'boolean' },
+    {
+      key: 'columns_to_delete',
+      label: 'Columns to Delete',
+      type: 'string_array',
+      helperText: 'For delete_columns operation. Uses header name, letter, or number.',
+    },
+    { key: 'auto_create_headers', label: 'Create Missing Columns Automatically', type: 'boolean' },
   ],
   create_google_docs: [
     {
@@ -757,7 +815,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
 
     setOauthConnectingApp(normalizedApp);
     try {
-      const redirectUri = `${window.location.origin}/app/oauth/${normalizedApp}/callback`;
+      const redirectUri = normalizedApp === 'linkedin'
+        ? `${window.location.origin}/app/oauth/linkedin/callback`
+        : `${window.location.origin}/app/oauth/google/callback`;
       const result = normalizedApp === 'linkedin'
         ? await credentialService.startLinkedInOAuth(redirectUri)
         : await credentialService.startGoogleOAuth(
@@ -771,6 +831,75 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
       setOauthConnectingApp(null);
     }
   };
+
+  useEffect(() => {
+    if (nodeType !== 'search_update_google_sheets') return;
+
+    const patch: Record<string, any> = {};
+    const sourceTypeRaw = String(config.spreadsheet_source_type || '').trim().toLowerCase();
+    if (!sourceTypeRaw) {
+      patch.spreadsheet_source_type = String(config.spreadsheet_url || '').trim() ? 'url' : 'id';
+    }
+
+    if (typeof config.auto_create_headers === 'undefined') {
+      patch.auto_create_headers = true;
+    }
+
+    if (!String(config.operation || '').trim()) {
+      patch.operation = config.upsert_if_not_found ? 'upsert_row' : 'overwrite_row';
+    } else {
+      const normalizedOperation = normalizeSheetsOperation(config.operation, Boolean(config.upsert_if_not_found));
+      if (normalizedOperation !== String(config.operation || '').trim().toLowerCase()) {
+        patch.operation = normalizedOperation;
+      }
+    }
+
+    if (!String(config.key_column || '').trim() && String(config.search_column || '').trim()) {
+      patch.key_column = config.search_column;
+    }
+    if (!String(config.key_value || '').trim() && String(config.search_value || '').trim()) {
+      patch.key_value = config.search_value;
+    }
+
+    if (!Array.isArray(config.append_columns)) {
+      patch.append_columns = [];
+    }
+    if (!Array.isArray(config.append_values)) {
+      patch.append_values = [];
+    }
+    if (!Array.isArray(config.columns_to_add)) {
+      patch.columns_to_add = Array.isArray(config.ensure_columns) ? config.ensure_columns : [];
+    }
+    if (!Array.isArray(config.columns_to_delete)) {
+      patch.columns_to_delete = [];
+    }
+
+    const operation = normalizeSheetsOperation(config.operation, Boolean(config.upsert_if_not_found));
+    const hasMappings = Array.isArray(config.update_mappings)
+      && config.update_mappings.some((item: any) => String(item?.column || item?.update_column || '').trim() !== '');
+    const appendColumns = Array.isArray(config.append_columns) ? config.append_columns : [];
+    const appendValues = Array.isArray(config.append_values) ? config.append_values : [];
+    if (operation === 'append_row' && !hasMappings && appendColumns.length > 0) {
+      const nextMappings = appendColumns
+        .map((rawColumn: any, idx: number) => {
+          const column = String(rawColumn || '').trim();
+          if (!column) return null;
+          return {
+            id: `mapping_append_${idx}_${Math.random().toString(36).slice(2, 7)}`,
+            column,
+            value: idx < appendValues.length ? appendValues[idx] : '',
+          };
+        })
+        .filter(Boolean);
+      if (nextMappings.length > 0) {
+        patch.update_mappings = nextMappings;
+      }
+    }
+
+    Object.entries(patch).forEach(([key, value]) => {
+      onChange(key, value);
+    });
+  }, [nodeType, config, onChange]);
 
   useEffect(() => {
     if (nodeType !== 'schedule_trigger') return;
@@ -1854,6 +1983,39 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
     }
   };
 
+  const shouldRenderField = (field: any): boolean => {
+    if (nodeType !== 'search_update_google_sheets') {
+      return true;
+    }
+
+    const sourceType = String(config.spreadsheet_source_type || 'id').trim().toLowerCase();
+    const operation = normalizeSheetsOperation(config.operation, Boolean(config.upsert_if_not_found));
+
+    if (field.key === 'spreadsheet_id') return sourceType !== 'url';
+    if (field.key === 'spreadsheet_url') return sourceType === 'url';
+
+    if (field.key === 'key_column' || field.key === 'key_value') {
+      return ['delete_rows', 'overwrite_row', 'upsert_row'].includes(operation);
+    }
+    if (field.key === 'append_columns' || field.key === 'append_values') {
+      return false;
+    }
+    if (field.key === 'update_mappings') {
+      return ['append_row', 'overwrite_row', 'upsert_row'].includes(operation);
+    }
+    if (field.key === 'columns_to_add') {
+      return operation === 'add_columns';
+    }
+    if (field.key === 'columns_to_delete') {
+      return operation === 'delete_columns';
+    }
+    if (field.key === 'auto_create_headers') {
+      return ['append_row', 'overwrite_row', 'upsert_row', 'add_columns'].includes(operation);
+    }
+
+    return true;
+  };
+
   return (
     <div className="space-y-6">
       {fields.length === 0 ? (
@@ -1862,11 +2024,11 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
           <span className="text-sm font-medium">No configuration available for this node type.</span>
         </div>
       ) : (
-        fields.map((field) => (
+        fields.filter((field) => shouldRenderField(field)).map((field) => (
           <div key={field.key} className="space-y-2">
             <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-600 flex items-center justify-between">
               {field.label}
-              {(field.type === 'text' || field.type === 'textarea' || field.type === 'sheet_update_mappings') && (
+              {(field.type === 'text' || field.type === 'textarea' || field.type === 'sheet_update_mappings' || field.type === 'string_array') && (
                 <span className="text-[9px] font-medium lowercase text-slate-300 dark:text-slate-700 normal-case">Supports mapping</span>
               )}
             </label>

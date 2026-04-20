@@ -6,6 +6,34 @@ import { CATEGORY_ACCENTS } from '../../constants/nodeLibrary';
 import NodeBadge from '../sidebar/NodeBadge';
 import { getNodeCountdownLabel, shouldShowLiveNodeCountdown } from '../../utils/nodeTimers';
 
+const SHEETS_OPERATION_ALIASES: Record<string, string> = {
+  append: 'append_row',
+  append_rows: 'append_row',
+  add_row: 'append_row',
+  add_rows: 'append_row',
+  delete: 'delete_rows',
+  delete_row: 'delete_rows',
+  remove_row: 'delete_rows',
+  remove_rows: 'delete_rows',
+  overwrite: 'overwrite_row',
+  override: 'overwrite_row',
+  update: 'overwrite_row',
+  upsert: 'upsert_row',
+  add_column: 'add_columns',
+  create_columns: 'add_columns',
+  delete_column: 'delete_columns',
+  remove_column: 'delete_columns',
+  remove_columns: 'delete_columns',
+};
+
+const normalizeSheetsOperation = (rawOperation: any, upsertIfMissing: boolean): string => {
+  const token = String(rawOperation || '').trim().toLowerCase();
+  if (!token) {
+    return upsertIfMissing ? 'upsert_row' : 'overwrite_row';
+  }
+  return SHEETS_OPERATION_ALIASES[token] || token;
+};
+
 const getMissingRequirements = (type: string, config: Record<string, any>, isChatModelConnected: boolean): string[] => {
   const missing: string[] = [];
 
@@ -16,7 +44,6 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     'get_gmail_message': ['credential_id'],
     'send_gmail_message': ['credential_id', 'to', 'subject', 'body'],
     'create_google_sheets': ['credential_id', 'title'],
-    'search_update_google_sheets': ['credential_id', 'spreadsheet_id', 'sheet_name', 'search_column', 'search_value'],
     'delay': ['amount', 'unit'],
     'file_read': ['file_path'],
     'file_write': ['file_path'],
@@ -58,13 +85,73 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
   }
 
   if (type === 'search_update_google_sheets') {
+    const sourceType = String(config.spreadsheet_source_type || 'id').trim().toLowerCase();
+    const operation = normalizeSheetsOperation(config.operation, Boolean(config.upsert_if_not_found));
+
+    if (sourceType === 'url') {
+      if (!String(config.spreadsheet_url || '').trim()) {
+        missing.push("Required field 'spreadsheet_url' is missing for spreadsheet_source_type='url'");
+      }
+    } else if (!String(config.spreadsheet_id || '').trim()) {
+      missing.push("Required field 'spreadsheet_id' is missing");
+    }
+
+    if (!String(config.sheet_name || '').trim()) {
+      missing.push("Required field 'sheet_name' is missing");
+    }
+
     const hasLegacyUpdate =
       String(config.update_column || '').trim() !== '' &&
       Object.prototype.hasOwnProperty.call(config, 'update_value');
     const hasMappings = Array.isArray(config.update_mappings)
       && config.update_mappings.some((item: any) => String(item?.column || '').trim() !== '');
-    if (!hasLegacyUpdate && !hasMappings) {
-      missing.push("Required field 'update_mappings' (or legacy update_column/update_value) is missing");
+
+    const appendColumns = Array.isArray(config.append_columns) ? config.append_columns : [];
+    const appendValues = Array.isArray(config.append_values) ? config.append_values : [];
+    const appendColumnsClean = appendColumns.filter((value: any) => String(value || '').trim() !== '');
+    const columnsToAdd = Array.isArray(config.columns_to_add)
+      ? config.columns_to_add.filter((value: any) => String(value || '').trim() !== '')
+      : [];
+    const columnsToDelete = Array.isArray(config.columns_to_delete)
+      ? config.columns_to_delete.filter((value: any) => String(value || '').trim() !== '')
+      : [];
+
+    if (operation === 'append_row') {
+      if (appendColumnsClean.length === 0 && !hasMappings) {
+        missing.push("Provide 'update_mappings' (or legacy append_columns/append_values) for append_row.");
+      }
+      if (!hasMappings && appendColumnsClean.length > 0 && appendValues.length !== appendColumns.length) {
+        missing.push("'append_columns' and 'append_values' must have the same length.");
+      }
+    } else if (operation === 'delete_rows') {
+      if (!String(config.key_column || config.search_column || '').trim()) {
+        missing.push("Required field 'key_column' is missing for delete_rows.");
+      }
+      if (!String(config.key_value || config.search_value || '').trim()) {
+        missing.push("Required field 'key_value' is missing for delete_rows.");
+      }
+    } else if (operation === 'overwrite_row' || operation === 'upsert_row') {
+      if (!String(config.key_column || config.search_column || '').trim()) {
+        missing.push("Required field 'key_column' is missing.");
+      }
+      if (!String(config.key_value || config.search_value || '').trim()) {
+        missing.push("Required field 'key_value' is missing.");
+      }
+      if (!hasMappings && appendColumnsClean.length === 0 && !hasLegacyUpdate) {
+        missing.push("Provide 'update_mappings' (or append columns/values) for row update.");
+      }
+    } else if (operation === 'add_columns') {
+      if (columnsToAdd.length === 0) {
+        missing.push("Required field 'columns_to_add' is missing.");
+      }
+    } else if (operation === 'delete_columns') {
+      if (columnsToDelete.length === 0) {
+        missing.push("Required field 'columns_to_delete' is missing.");
+      }
+    } else if (!operation) {
+      if (!hasLegacyUpdate && !hasMappings) {
+        missing.push("Required field 'update_mappings' (or legacy update_column/update_value) is missing");
+      }
     }
   }
 
@@ -101,6 +188,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
   const aiNodeErrorPreview = aiNodeErrorMessage.length > 90
     ? `${aiNodeErrorMessage.slice(0, 90)}...`
     : aiNodeErrorMessage;
+  const isScheduleLive = data.type === 'schedule_trigger' && Boolean(data.schedule_is_active);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const shouldShowLiveCountdown = shouldShowLiveNodeCountdown(data);
   const countdownLabel = useMemo(
@@ -205,6 +293,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
     <div
       className={`px-3 py-2.5 rounded-xl border-2 transition-colors duration-200 shadow-none min-w-[150px] max-w-[150px] group/node relative 
         ${selected ? 'ring-2 ring-blue-500/10 border-blue-500' : 'border-slate-200 dark:border-slate-800'}
+        ${isScheduleLive ? 'shadow-[0_0_20px_rgba(6,182,212,0.18)]' : ''}
         ${data.status === 'RUNNING' ? 'border-emerald-600 ring-[6px] ring-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-900/10 animate-pulse' : ''}
         ${data.status === 'SUCCEEDED' ? 'bg-emerald-50/30 dark:bg-emerald-500/5 border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)] ring-[6px] ring-emerald-500/30' : 'bg-white dark:bg-slate-900'}
         ${data.status === 'FAILED' ? 'bg-rose-50/30 dark:bg-rose-500/5 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.2)] ring-[6px] ring-rose-500/30' : ''}
@@ -212,11 +301,22 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       style={{
         borderTop: `6px solid ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '#10b981' :
             data.status === 'FAILED' ? '#f43f5e' :
+              isScheduleLive ? '#06b6d4' :
               accentColor
           }`
       }}
       title={hasIncomplete ? 'This node is missing required configuration' : ''}
     >
+      {isScheduleLive && (
+        <>
+          <div className="pointer-events-none absolute -inset-[6px] rounded-2xl border border-cyan-400/40 animate-pulse" />
+          <div className="pointer-events-none absolute -bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full border border-cyan-300/70 bg-cyan-50/95 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide text-cyan-700 shadow-sm dark:border-cyan-700/70 dark:bg-cyan-950/90 dark:text-cyan-300">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-cyan-500 animate-pulse" />
+            live
+          </div>
+        </>
+      )}
+
       {countdownLabel && (
         <div className="absolute -top-8 left-1/2 -translate-x-1/2 z-20 px-2 py-1 rounded-md bg-slate-900 text-white text-[9px] font-black tracking-wide border border-slate-700 shadow-lg whitespace-nowrap">
           {countdownLabel}
@@ -232,6 +332,11 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           {data.status === 'RUNNING' && <Loader2 size={12} className="text-emerald-600 dark:text-emerald-400 animate-spin" />}
           {data.status === 'SUCCEEDED' && <Check size={12} className="text-white" strokeWidth={4} />}
           {data.status === 'FAILED' && <AlertCircle size={12} className="text-white" />}
+        </div>
+      )}
+      {!data.status && isScheduleLive && (
+        <div className="absolute -top-3 -right-3 p-1 rounded-full border shadow-md z-20 transition-all duration-300 bg-cyan-50 border-cyan-300 dark:bg-cyan-950/90 dark:border-cyan-700">
+          <Loader2 size={12} className="text-cyan-600 dark:text-cyan-400 animate-spin" />
         </div>
       )}
 
@@ -305,6 +410,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           <div className={`w-1 h-1 rounded-full ${data.status === 'RUNNING' ? 'bg-emerald-500 animate-pulse' :
               data.status === 'SUCCEEDED' ? 'bg-emerald-500' :
                 data.status === 'FAILED' ? 'bg-rose-500' :
+                  isScheduleLive ? 'bg-cyan-500 animate-pulse' :
                   data.is_dummy ? 'bg-slate-200 dark:bg-slate-700' : 'bg-green-400'
             }`} />
         </div>
