@@ -360,6 +360,7 @@ class WorkflowUpdate(BaseModel):
     description: str | None = None
     definition: WorkflowDefinition | None = None
     is_published: bool | None = None
+    is_active: bool | None = None
 
     @model_validator(mode="after")
     def ensure_any_field_present(self) -> "WorkflowUpdate":
@@ -377,6 +378,7 @@ class WorkflowResponse(BaseModel):
     description: str | None
     definition: WorkflowDefinition
     is_published: bool
+    is_active: bool
     created_at: datetime
     updated_at: datetime
 
@@ -389,6 +391,7 @@ class WorkflowListItem(BaseModel):
     name: str
     description: str | None
     is_published: bool
+    is_active: bool
     created_at: datetime
     updated_at: datetime
 

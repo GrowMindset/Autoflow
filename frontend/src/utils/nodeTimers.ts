@@ -507,17 +507,39 @@ const getDelayCountdownLabel = (
   data: WorkflowNodeData,
   nowMs: number,
 ): string | null => {
-  if (data.type !== 'delay' || data.status !== 'RUNNING') {
+  if (data.type !== 'delay') {
     return null;
+  }
+
+  const status = String(data.status || '').toUpperCase();
+  const lastResult = data.last_execution_result || {};
+  const outputData = lastResult.output_data || {};
+  const inputData = lastResult.input_data || {};
+
+  const explicitRunAt = Number(
+    outputData.delay_run_at
+      ?? inputData.delay_run_at
+      ?? Number.NaN,
+  );
+  if (Number.isFinite(explicitRunAt)) {
+    const targetMs = explicitRunAt * 1000;
+    const remainingMs = Math.max(0, targetMs - nowMs);
+    if (remainingMs <= 0 && !['RUNNING', 'WAITING', 'QUEUED'].includes(status)) {
+      return null;
+    }
+    return `Delay: ${formatRemaining(remainingMs)}`;
   }
 
   const startedAt = data.last_execution_result?.started_at;
   const targetMs = parseDelayTargetTime(data.config || {}, startedAt);
   if (!Number.isFinite(targetMs)) {
-    return 'Waiting...';
+    return ['RUNNING', 'WAITING', 'QUEUED'].includes(status) ? 'Waiting...' : null;
   }
 
   const remainingMs = Math.max(0, Number(targetMs) - nowMs);
+  if (remainingMs <= 0 && !['RUNNING', 'WAITING', 'QUEUED'].includes(status)) {
+    return null;
+  }
   return `Delay: ${formatRemaining(remainingMs)}`;
 };
 
@@ -551,7 +573,19 @@ const getScheduleCountdownLabel = (
 
 export const shouldShowLiveNodeCountdown = (data: WorkflowNodeData): boolean => {
   if (data.type === 'delay') {
-    return data.status === 'RUNNING';
+    const status = String(data.status || '').toUpperCase();
+    if (['RUNNING', 'WAITING', 'QUEUED'].includes(status)) {
+      return true;
+    }
+    const runAt = Number(
+      data?.last_execution_result?.output_data?.delay_run_at
+      ?? data?.last_execution_result?.input_data?.delay_run_at
+      ?? Number.NaN,
+    );
+    if (Number.isFinite(runAt)) {
+      return runAt * 1000 > Date.now();
+    }
+    return false;
   }
   if (data.type === 'schedule_trigger') {
     if (data.schedule_is_active) {

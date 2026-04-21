@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -18,6 +19,7 @@ from app.models.nodes_executions import NodeExecution
 from app.models.user import User
 from app.models.workflows import Workflow
 from app.execution.runners.nodes.ai_agent import AIAgentRunner
+from app.services.execution_service import ExecutionService
 from app.tasks import execute_workflow as execute_workflow_tasks
 from test.asgi_client import ASGITestClient
 
@@ -466,3 +468,430 @@ class NodeExecutionTests(unittest.IsolatedAsyncioTestCase):
         node_results = {node["node_id"]: node for node in payload["node_results"]}
         self.assertEqual(node_results["agent"]["output_data"], rows_by_id["agent"].output_data)
         self.assertEqual(node_results["telegram"]["output_data"], rows_by_id["telegram"].output_data)
+
+    async def test_run_execution_schedules_delay_resume_without_blocking_worker(self) -> None:
+        user = await self._create_user("delay-resume@example.com")
+
+        async with self.session_factory() as session:
+            workflow = Workflow(
+                user_id=user.id,
+                name="Delay Resume Workflow",
+                definition={
+                    "nodes": [
+                        {"id": "trigger", "type": "manual_trigger", "config": {}},
+                        {"id": "delay_1", "type": "delay", "config": {"amount": "1", "unit": "days"}},
+                        {"id": "echo_1", "type": "datetime_format", "config": {"field": "date", "output_format": "%Y-%m-%d"}},
+                    ],
+                    "edges": [
+                        {"id": "e1", "source": "trigger", "target": "delay_1"},
+                        {"id": "e2", "source": "delay_1", "target": "echo_1"},
+                    ],
+                },
+            )
+            session.add(workflow)
+            session.add(
+                Execution(
+                    workflow_id=workflow.id,
+                    user_id=user.id,
+                    status="PENDING",
+                    triggered_by="manual",
+                    started_at=None,
+                    finished_at=None,
+                    error_message=None,
+                )
+            )
+            await session.commit()
+            execution = await session.scalar(
+                select(Execution).where(Execution.workflow_id == workflow.id)
+            )
+            self.assertIsNotNone(execution)
+            execution_id = execution.id
+
+        scheduled_jobs: list[dict[str, object]] = []
+
+        def _capture_apply_async(**kwargs):
+            scheduled_jobs.append(kwargs)
+            return None
+
+        with patch.object(execute_workflow_tasks.run_execution, "apply_async", side_effect=_capture_apply_async):
+            await execute_workflow_tasks._run_execution(
+                execution_id=str(execution_id),
+                initial_payload={"date": "2026-01-01"},
+                start_node_id="trigger",
+            )
+
+        self.assertEqual(len(scheduled_jobs), 1)
+        scheduled_kwargs = scheduled_jobs[0].get("kwargs") or {}
+        self.assertEqual(scheduled_kwargs.get("execution_id"), str(execution_id))
+        self.assertEqual(scheduled_kwargs.get("start_node_id"), "echo_1")
+        self.assertTrue(bool(scheduled_kwargs.get("resume")))
+        self.assertTrue(
+            ("eta" in scheduled_jobs[0]) or ("countdown" in scheduled_jobs[0]),
+            "Expected deferred schedule to use eta or countdown for delay resume",
+        )
+
+        async with self.session_factory() as session:
+            execution = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution)
+            self.assertEqual(execution.status, "WAITING")
+
+            rows = (
+                await session.execute(
+                    select(NodeExecution)
+                    .where(NodeExecution.execution_id == execution_id)
+                    .order_by(NodeExecution.node_id)
+                )
+            ).scalars().all()
+
+        rows_by_id = {row.node_id: row for row in rows}
+        self.assertEqual(rows_by_id["trigger"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["delay_1"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["echo_1"].status, "WAITING")
+
+    async def test_run_execution_fans_out_parallel_branches_as_queued_jobs(self) -> None:
+        user = await self._create_user("parallel-fanout@example.com")
+
+        async with self.session_factory() as session:
+            workflow = Workflow(
+                user_id=user.id,
+                name="Parallel Fanout Workflow",
+                definition={
+                    "nodes": [
+                        {"id": "trigger", "type": "manual_trigger", "config": {}},
+                        {"id": "branch_a", "type": "telegram", "config": {"credential_id": "", "message": "A"}},
+                        {"id": "branch_b", "type": "slack_send_message", "config": {"credential_id": "", "message": "B"}},
+                    ],
+                    "edges": [
+                        {"id": "e1", "source": "trigger", "target": "branch_a"},
+                        {"id": "e2", "source": "trigger", "target": "branch_b"},
+                    ],
+                },
+            )
+            session.add(workflow)
+            session.add(
+                Execution(
+                    workflow_id=workflow.id,
+                    user_id=user.id,
+                    status="PENDING",
+                    triggered_by="manual",
+                    started_at=None,
+                    finished_at=None,
+                    error_message=None,
+                )
+            )
+            await session.commit()
+            execution = await session.scalar(
+                select(Execution).where(Execution.workflow_id == workflow.id)
+            )
+            self.assertIsNotNone(execution)
+            execution_id = execution.id
+
+        scheduled_jobs: list[dict[str, object]] = []
+
+        def _capture_apply_async(**kwargs):
+            scheduled_jobs.append(kwargs)
+            return None
+
+        with patch.object(execute_workflow_tasks.run_execution, "apply_async", side_effect=_capture_apply_async):
+            await execute_workflow_tasks._run_execution(
+                execution_id=str(execution_id),
+                initial_payload=None,
+                start_node_id="trigger",
+            )
+
+        self.assertEqual(len(scheduled_jobs), 2)
+        target_nodes = {
+            str((job.get("kwargs") or {}).get("start_node_id"))
+            for job in scheduled_jobs
+        }
+        self.assertEqual(target_nodes, {"branch_a", "branch_b"})
+        self.assertTrue(
+            all("eta" not in job and "countdown" not in job for job in scheduled_jobs),
+            "Immediate branch fanout should queue without delay scheduling",
+        )
+
+        async with self.session_factory() as session:
+            execution = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution)
+            self.assertEqual(execution.status, "WAITING")
+
+            rows = (
+                await session.execute(
+                    select(NodeExecution)
+                    .where(NodeExecution.execution_id == execution_id)
+                    .order_by(NodeExecution.node_id)
+                )
+            ).scalars().all()
+
+        rows_by_id = {row.node_id: row for row in rows}
+        self.assertEqual(rows_by_id["trigger"].status, "SUCCEEDED")
+        self.assertEqual(rows_by_id["branch_a"].status, "QUEUED")
+        self.assertEqual(rows_by_id["branch_b"].status, "QUEUED")
+
+    async def test_run_execution_requeues_when_concurrency_guard_slot_is_unavailable(self) -> None:
+        user = await self._create_user("concurrency-guard@example.com")
+
+        async with self.session_factory() as session:
+            workflow = Workflow(
+                user_id=user.id,
+                name="Concurrency Guard Workflow",
+                definition={
+                    "nodes": [
+                        {"id": "trigger", "type": "manual_trigger", "config": {}},
+                    ],
+                    "edges": [],
+                },
+            )
+            session.add(workflow)
+            session.add(
+                Execution(
+                    workflow_id=workflow.id,
+                    user_id=user.id,
+                    status="PENDING",
+                    triggered_by="manual",
+                    started_at=None,
+                    finished_at=None,
+                    error_message=None,
+                )
+            )
+            await session.commit()
+            execution = await session.scalar(
+                select(Execution).where(Execution.workflow_id == workflow.id)
+            )
+            self.assertIsNotNone(execution)
+            execution_id = execution.id
+
+        scheduled_jobs: list[dict[str, object]] = []
+
+        def _capture_apply_async(**kwargs):
+            scheduled_jobs.append(kwargs)
+            return None
+
+        class _DummyRedis:
+            async def aclose(self) -> None:
+                return None
+
+        with (
+            patch.object(execute_workflow_tasks, "WORKFLOW_MAX_PARALLEL_NODES", 1),
+            patch.object(
+                execute_workflow_tasks,
+                "_create_redis_client",
+                new=AsyncMock(return_value=_DummyRedis()),
+            ),
+            patch.object(
+                execute_workflow_tasks,
+                "_acquire_execution_inflight_slot",
+                new=AsyncMock(return_value=False),
+            ),
+            patch.object(execute_workflow_tasks.run_execution, "apply_async", side_effect=_capture_apply_async),
+        ):
+            await execute_workflow_tasks._run_execution(
+                execution_id=str(execution_id),
+                initial_payload=None,
+                start_node_id="trigger",
+                guard_retry_count=0,
+            )
+
+        self.assertEqual(len(scheduled_jobs), 1)
+        queued_job = scheduled_jobs[0]
+        self.assertEqual(queued_job.get("queue"), execute_workflow_tasks.WORKFLOW_EXECUTION_QUEUE)
+        self.assertIn("countdown", queued_job)
+        self.assertEqual((queued_job.get("kwargs") or {}).get("guard_retry_count"), 1)
+
+        async with self.session_factory() as session:
+            execution = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution)
+            self.assertEqual(execution.status, "WAITING")
+
+            rows = (
+                await session.execute(
+                    select(NodeExecution).where(NodeExecution.execution_id == execution_id)
+                )
+            ).scalars().all()
+
+        rows_by_id = {row.node_id: row for row in rows}
+        self.assertEqual(rows_by_id["trigger"].status, "QUEUED")
+
+    async def test_stale_recovery_keeps_waiting_executions_recoverable(self) -> None:
+        user = await self._create_user("stale-recovery@example.com")
+        old_started_at = datetime.now(timezone.utc) - timedelta(minutes=90)
+
+        async with self.session_factory() as session:
+            workflow = Workflow(
+                user_id=user.id,
+                name="Stale Recovery Workflow",
+                definition={
+                    "nodes": [
+                        {"id": "trigger", "type": "manual_trigger", "config": {}},
+                        {"id": "branch_a", "type": "telegram", "config": {"credential_id": "", "message": "A"}},
+                        {"id": "branch_b", "type": "slack_send_message", "config": {"credential_id": "", "message": "B"}},
+                    ],
+                    "edges": [],
+                },
+            )
+            session.add(workflow)
+            await session.flush()
+
+            execution = Execution(
+                workflow_id=workflow.id,
+                user_id=user.id,
+                status="RUNNING",
+                triggered_by="manual",
+                started_at=old_started_at,
+                finished_at=None,
+                error_message=None,
+            )
+            session.add(execution)
+            await session.flush()
+
+            session.add_all(
+                [
+                    NodeExecution(
+                        execution_id=execution.id,
+                        node_id="trigger",
+                        node_type="manual_trigger",
+                        status="SUCCEEDED",
+                        input_data=None,
+                        output_data={},
+                        error_message=None,
+                        started_at=old_started_at,
+                        finished_at=old_started_at,
+                    ),
+                    NodeExecution(
+                        execution_id=execution.id,
+                        node_id="branch_a",
+                        node_type="telegram",
+                        status="WAITING",
+                        input_data={},
+                        output_data=None,
+                        error_message=None,
+                        started_at=old_started_at,
+                        finished_at=None,
+                    ),
+                    NodeExecution(
+                        execution_id=execution.id,
+                        node_id="branch_b",
+                        node_type="slack_send_message",
+                        status="RUNNING",
+                        input_data={},
+                        output_data=None,
+                        error_message=None,
+                        started_at=old_started_at,
+                        finished_at=None,
+                    ),
+                ]
+            )
+            await session.commit()
+
+            service = ExecutionService(session)
+            await service._mark_stale_running_executions(user_id=user.id)
+
+            refreshed_execution = await session.get(Execution, execution.id)
+            self.assertIsNotNone(refreshed_execution)
+            self.assertEqual(refreshed_execution.status, "WAITING")
+
+            refreshed_rows = (
+                await session.execute(
+                    select(NodeExecution)
+                    .where(NodeExecution.execution_id == execution.id)
+                    .order_by(NodeExecution.node_id)
+                )
+            ).scalars().all()
+
+        rows_by_id = {row.node_id: row for row in refreshed_rows}
+        self.assertEqual(rows_by_id["branch_a"].status, "WAITING")
+        self.assertEqual(rows_by_id["branch_b"].status, "QUEUED")
+
+    async def test_deferred_merge_resume_accumulates_inputs_until_ready(self) -> None:
+        user = await self._create_user("merge-resume@example.com")
+
+        async with self.session_factory() as session:
+            workflow = Workflow(
+                user_id=user.id,
+                name="Deferred Merge Resume Workflow",
+                definition={
+                    "nodes": [
+                        {"id": "trigger", "type": "manual_trigger", "config": {}},
+                        {"id": "delay_a", "type": "delay", "config": {"amount": "1", "unit": "days"}},
+                        {"id": "delay_b", "type": "delay", "config": {"amount": "1", "unit": "days"}},
+                        {"id": "merge_1", "type": "merge", "config": {}},
+                    ],
+                    "edges": [
+                        {"id": "e1", "source": "trigger", "target": "delay_a"},
+                        {"id": "e2", "source": "trigger", "target": "delay_b"},
+                        {"id": "e3", "source": "delay_a", "target": "merge_1"},
+                        {"id": "e4", "source": "delay_b", "target": "merge_1"},
+                    ],
+                },
+            )
+            session.add(workflow)
+            session.add(
+                Execution(
+                    workflow_id=workflow.id,
+                    user_id=user.id,
+                    status="PENDING",
+                    triggered_by="manual",
+                    started_at=None,
+                    finished_at=None,
+                    error_message=None,
+                )
+            )
+            await session.commit()
+            execution = await session.scalar(
+                select(Execution).where(Execution.workflow_id == workflow.id)
+            )
+            self.assertIsNotNone(execution)
+            execution_id = execution.id
+
+        scheduled_jobs: list[dict[str, object]] = []
+
+        def _capture_apply_async(**kwargs):
+            scheduled_jobs.append(kwargs)
+            return None
+
+        with patch.object(execute_workflow_tasks.run_execution, "apply_async", side_effect=_capture_apply_async):
+            await execute_workflow_tasks._run_execution(
+                execution_id=str(execution_id),
+                initial_payload=None,
+                start_node_id="trigger",
+            )
+
+        self.assertEqual(len(scheduled_jobs), 2)
+        resume_jobs = [
+            (job.get("kwargs") or {})
+            for job in scheduled_jobs
+            if str((job.get("kwargs") or {}).get("start_node_id")) == "merge_1"
+        ]
+        self.assertEqual(len(resume_jobs), 2)
+
+        with patch.object(execute_workflow_tasks.run_execution, "apply_async", side_effect=_capture_apply_async):
+            await execute_workflow_tasks._run_execution(**resume_jobs[0])
+
+        async with self.session_factory() as session:
+            execution_mid = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution_mid)
+            self.assertEqual(execution_mid.status, "WAITING")
+            merge_mid = await session.scalar(
+                select(NodeExecution).where(
+                    NodeExecution.execution_id == execution_id,
+                    NodeExecution.node_id == "merge_1",
+                )
+            )
+            self.assertIsNotNone(merge_mid)
+            self.assertEqual(merge_mid.status, "QUEUED")
+
+        with patch.object(execute_workflow_tasks.run_execution, "apply_async", side_effect=_capture_apply_async):
+            await execute_workflow_tasks._run_execution(**resume_jobs[1])
+
+        async with self.session_factory() as session:
+            execution_done = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution_done)
+            self.assertEqual(execution_done.status, "SUCCEEDED")
+            merge_done = await session.scalar(
+                select(NodeExecution).where(
+                    NodeExecution.execution_id == execution_id,
+                    NodeExecution.node_id == "merge_1",
+                )
+            )
+            self.assertIsNotNone(merge_done)
+            self.assertEqual(merge_done.status, "SUCCEEDED")

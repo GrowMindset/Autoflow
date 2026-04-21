@@ -579,7 +579,7 @@ class ExecutionService:
         if execution is None:
             raise ValueError("Execution not found")
 
-        if execution.status in {"PENDING", "RUNNING"}:
+        if execution.status in {"PENDING", "QUEUED", "WAITING", "RUNNING"}:
             now = datetime.now(timezone.utc)
             execution.status = "FAILED"
             execution.finished_at = now
@@ -589,7 +589,7 @@ class ExecutionService:
                 await self.db.scalars(
                     select(NodeExecution).where(
                         NodeExecution.execution_id == execution.id,
-                        NodeExecution.status.in_(["PENDING", "RUNNING"]),
+                        NodeExecution.status.in_(["PENDING", "QUEUED", "WAITING", "RUNNING"]),
                     )
                 )
             ).all()
@@ -844,10 +844,10 @@ class ExecutionService:
             "queue": target_queue,
             "retry": True,
             "retry_policy": {
-                "max_retries": 3,
+                "max_retries": 8,
                 "interval_start": 0,
-                "interval_step": 0.5,
-                "interval_max": 2,
+                "interval_step": 1,
+                "interval_max": 8,
             },
         }
         if isinstance(eta, datetime):
@@ -882,30 +882,59 @@ class ExecutionService:
             return
 
         stale_execution_ids = [row.id for row in stale_rows]
-        message = (
+        failure_message = (
             "Execution timed out or worker was interrupted. "
             "Marked as failed by stale-execution recovery."
         )
 
-        for execution in stale_rows:
-            execution.status = "FAILED"
-            execution.finished_at = now
-            if not execution.error_message:
-                execution.error_message = message
-
-        stale_node_rows = (
+        active_node_rows = (
             await self.db.scalars(
                 select(NodeExecution).where(
                     NodeExecution.execution_id.in_(stale_execution_ids),
-                    NodeExecution.status.in_(["PENDING", "RUNNING"]),
+                    NodeExecution.status.in_(["PENDING", "QUEUED", "WAITING", "RUNNING"]),
                 )
             )
         ).all()
-        for node_row in stale_node_rows:
-            node_row.status = "FAILED"
-            node_row.finished_at = now
-            if not node_row.error_message:
-                node_row.error_message = message
+
+        node_rows_by_execution: dict[UUID, list[NodeExecution]] = {}
+        for node_row in active_node_rows:
+            node_rows_by_execution.setdefault(node_row.execution_id, []).append(node_row)
+
+        recoverable_ids: set[UUID] = set()
+        failed_ids: set[UUID] = set()
+
+        for execution in stale_rows:
+            rows = node_rows_by_execution.get(execution.id, [])
+            status_set = {str(row.status or "").upper() for row in rows}
+            has_waiting_or_queued = bool(status_set.intersection({"QUEUED", "WAITING"}))
+
+            if has_waiting_or_queued:
+                execution.status = "WAITING"
+                execution.finished_at = None
+                if execution.error_message == failure_message:
+                    execution.error_message = None
+                recoverable_ids.add(execution.id)
+            else:
+                execution.status = "FAILED"
+                execution.finished_at = now
+                if not execution.error_message:
+                    execution.error_message = failure_message
+                failed_ids.add(execution.id)
+
+        for node_row in active_node_rows:
+            if node_row.execution_id in recoverable_ids:
+                if node_row.status in {"PENDING", "RUNNING"}:
+                    node_row.status = "QUEUED"
+                    node_row.finished_at = None
+                    if node_row.error_message == failure_message:
+                        node_row.error_message = None
+                continue
+
+            if node_row.execution_id in failed_ids and node_row.status in {"PENDING", "RUNNING"}:
+                node_row.status = "FAILED"
+                node_row.finished_at = now
+                if not node_row.error_message:
+                    node_row.error_message = failure_message
 
         await self.db.commit()
 

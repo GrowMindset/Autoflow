@@ -26,7 +26,7 @@ export interface RunSchedulePayload {
 export interface NodeExecutionResult {
   node_id: string;
   node_type: string;
-  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
+  status: 'PENDING' | 'QUEUED' | 'WAITING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'SKIPPED' | string;
   input_data: Record<string, any> | any[] | null;
   output_data: Record<string, any> | any[] | null;
   error_message: string | null;
@@ -38,7 +38,7 @@ export interface ExecutionDetail {
   id: string;
   workflow_id: string;
   user_id: string;
-  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
+  status: 'PENDING' | 'QUEUED' | 'WAITING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'SKIPPED' | string;
   triggered_by: string;
   started_at: string | null;
   finished_at: string | null;

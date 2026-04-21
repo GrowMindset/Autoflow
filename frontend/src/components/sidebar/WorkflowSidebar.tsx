@@ -6,6 +6,7 @@ interface Workflow {
   id: string;
   name: string;
   updated_at?: string;
+  is_active?: boolean;
 }
 
 interface WorkflowSidebarProps {
@@ -163,7 +164,15 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
             )}
 
             <div className="flex flex-col gap-1">
-              {workflows.map((flow) => (
+              {workflows.map((flow) => {
+                const isWorkflowActive = flow.is_active !== false;
+                const dotClass = isWorkflowActive
+                  ? (currentWorkflowId === flow.id
+                      ? 'w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.3)]'
+                      : 'w-1.5 h-1.5 rounded-full bg-emerald-400 dark:bg-emerald-500 group-hover:bg-emerald-500 dark:group-hover:bg-emerald-400')
+                  : 'w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600';
+
+                return (
                 <div key={flow.id} className="relative group/item">
                   <button
                     onClick={() => onSelectWorkflow(flow.id)}
@@ -176,10 +185,7 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
                       <div className="absolute left-0 w-1 h-5 bg-blue-600 rounded-r-full" />
                     )}
 
-                    <div className={`flex-shrink-0 transition-all ${currentWorkflowId === flow.id
-                      ? 'w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.3)]'
-                      : 'w-1.5 h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 group-hover:bg-slate-300 dark:group-hover:bg-slate-600'
-                      }`} />
+                    <div className={`flex-shrink-0 transition-all ${dotClass}`} />
 
                     {!isCollapsed && (
                       <div className="flex flex-col min-w-0 flex-1 text-left">
@@ -216,7 +222,7 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
                     </button>
                   )}
                 </div>
-              ))}
+              )})}
             </div>
           </div>
 

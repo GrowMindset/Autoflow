@@ -16,6 +16,7 @@ interface Workflow {
   name: string;
   description?: string;
   is_published?: boolean;
+  is_active?: boolean;
 }
 
 type ChatHistoryByWorkflow = Record<string, Message[]>;
@@ -213,6 +214,8 @@ const MainLayout: React.FC = () => {
   }, []);
 
   const isPublished = currentWorkflow.is_published || false;
+  const isCurrentWorkflowPollingActive =
+    currentWorkflowId !== 'new' ? currentWorkflow.is_active !== false : true;
   const footerOffset = logsExpanded ? logsPanelHeight : FOOTER_COLLAPSED_HEIGHT;
 
   const clearAutoSaveTimeout = useCallback(() => {
@@ -573,6 +576,32 @@ const MainLayout: React.FC = () => {
     }
   };
 
+  const handleToggleWorkflowActive = useCallback(async (workflowId: string) => {
+    if (!workflowId || workflowId === 'new') {
+      toast('Save workflow first, then control polling.', { icon: 'ℹ️' });
+      return;
+    }
+    const current = workflows.find((workflow) => workflow.id === workflowId);
+    if (!current) {
+      toast.error('Workflow not found.');
+      return;
+    }
+    const currentlyActive = current.is_active !== false;
+    const nextActive = !currentlyActive;
+    try {
+      const updated = await workflowService.updateActiveStatus(workflowId, nextActive);
+      setWorkflows((previous) =>
+        previous.map((workflow) =>
+          workflow.id === workflowId ? { ...workflow, is_active: Boolean(updated?.is_active) } : workflow
+        )
+      );
+      toast.success(nextActive ? 'Workflow activated.' : 'Workflow deactivated.');
+    } catch (error) {
+      console.error('Failed to update workflow active status:', error);
+      toast.error('Failed to update workflow status.');
+    }
+  }, [workflows]);
+
   const handleSendMessage = useCallback(async (content: string) => {
     clearAiReviewState();
     const scopeId = currentWorkflowId || 'new';
@@ -816,6 +845,8 @@ const MainLayout: React.FC = () => {
             <WorkflowCanvas
               key={currentWorkflowId}
               workflowId={currentWorkflowId}
+              isPollingEnabled={isCurrentWorkflowPollingActive}
+              onTogglePollingEnabled={() => handleToggleWorkflowActive(currentWorkflowId)}
               isPublished={isPublished}
               footerOffset={footerOffset}
               onCanvasMutated={handleCanvasMutated}

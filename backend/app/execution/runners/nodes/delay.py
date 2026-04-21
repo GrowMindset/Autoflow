@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -34,8 +33,6 @@ class DelayRunner:
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         delay_seconds = self._resolve_delay_seconds(config)
-        if delay_seconds > 0:
-            time.sleep(delay_seconds)
 
         if isinstance(input_data, dict):
             result: dict[str, Any] = dict(input_data)
@@ -45,7 +42,12 @@ class DelayRunner:
             result = {"_default": input_data}
 
         result["delay_seconds"] = delay_seconds
-        result["delay_completed_at"] = datetime.now(UTC).astimezone(APP_TIMEZONE).isoformat()
+        now_utc = datetime.now(UTC)
+        result["delay_completed_at"] = now_utc.astimezone(APP_TIMEZONE).isoformat()
+        if delay_seconds > 0:
+            result["delay_run_at"] = (
+                now_utc.timestamp() + delay_seconds
+            )
         return result
 
     @classmethod

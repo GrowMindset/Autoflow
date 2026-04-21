@@ -42,6 +42,8 @@ result_backend = os.getenv("CELERY_RESULT_BACKEND", _with_redis_db(redis_url, 1)
 
 WORKFLOW_EXECUTION_QUEUE = os.getenv("CELERY_WORKFLOW_QUEUE", "workflow.executions")
 WORKFLOW_NODE_TEST_QUEUE = os.getenv("CELERY_NODE_TEST_QUEUE", "workflow.node_tests")
+WORKFLOW_NODE_EXECUTE_QUEUE = os.getenv("CELERY_NODE_EXECUTE_QUEUE", "workflow.node.execute")
+WORKFLOW_NODE_RESUME_QUEUE = os.getenv("CELERY_NODE_RESUME_QUEUE", "workflow.node.resume")
 SYSTEM_QUEUE = os.getenv("CELERY_SYSTEM_QUEUE", "system")
 SCHEDULE_SCANNER_TASK = "app.tasks.scheduled_triggers.scan_scheduled_workflows"
 SCHEDULE_SCANNER_ENABLED = _env_bool("SCHEDULE_TRIGGER_ENABLED", True)
@@ -85,11 +87,16 @@ celery_app.conf.update(
     task_queues=(
         Queue(WORKFLOW_EXECUTION_QUEUE),
         Queue(WORKFLOW_NODE_TEST_QUEUE),
+        Queue(WORKFLOW_NODE_EXECUTE_QUEUE),
+        Queue(WORKFLOW_NODE_RESUME_QUEUE),
         Queue(SYSTEM_QUEUE),
     ),
     task_routes={
         "app.tasks.execute_workflow.run_execution": {"queue": WORKFLOW_EXECUTION_QUEUE},
         "app.tasks.execute_workflow.run_node_test": {"queue": WORKFLOW_NODE_TEST_QUEUE},
+        # Reserved routing for node-level runtime orchestration tasks.
+        "app.tasks.node_runtime.run_node_task": {"queue": WORKFLOW_NODE_EXECUTE_QUEUE},
+        "app.tasks.node_runtime.resume_node_task": {"queue": WORKFLOW_NODE_RESUME_QUEUE},
         "app.tasks.demo.ping": {"queue": SYSTEM_QUEUE},
         SCHEDULE_SCANNER_TASK: {"queue": SYSTEM_QUEUE},
     },
@@ -121,6 +128,12 @@ celery_app.conf.update(
     task_soft_time_limit=_env_int("CELERY_TASK_SOFT_TIME_LIMIT", 60 * 8),
     task_time_limit=_env_int("CELERY_TASK_TIME_LIMIT", 60 * 10),
     task_ignore_result=_env_bool("CELERY_TASK_IGNORE_RESULT", True),
+    task_annotations={
+        # Keep orchestration task results available for future Celery chord/group usage.
+        "app.tasks.execute_workflow.run_execution": {"ignore_result": False},
+        "app.tasks.node_runtime.run_node_task": {"ignore_result": False},
+        "app.tasks.node_runtime.resume_node_task": {"ignore_result": False},
+    },
     result_expires=_env_int("CELERY_RESULT_EXPIRES", 60 * 60 * 6),
     task_always_eager=_env_bool("CELERY_TASK_ALWAYS_EAGER", False),
     task_eager_propagates=_env_bool("CELERY_TASK_EAGER_PROPAGATES", True),

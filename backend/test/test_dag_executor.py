@@ -3,6 +3,7 @@ import unittest
 from app.execution.dag_executor import DagExecutor, NodeExecutionError
 from app.execution.registry import RunnerRegistry
 from app.execution.runners.nodes.ai_agent import AIAgentRunner
+from app.execution.runners.nodes.delay import DelayRunner
 
 
 class _RecordingRunner:
@@ -843,6 +844,152 @@ class DagExecutorTests(unittest.TestCase):
                 "trigger_tone": "friendly",
             },
         )
+
+    def test_execute_delay_defers_downstream_edges_when_delay_positive(self):
+        deferred_calls: list[dict[str, object]] = []
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: {
+                            "triggered": True,
+                            "trigger_type": "manual",
+                            **(input_data or {}),
+                        }
+                    ),
+                    "delay": DelayRunner(),
+                    "echo": _RecordingRunner(result={"ok": True}),
+                }
+            )
+        )
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "delay", "config": {"amount": "1", "unit": "seconds"}},
+                {"id": "n3", "type": "echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+            ],
+        }
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"name": "Asha"},
+            defer_callback=lambda **kwargs: deferred_calls.append(kwargs),
+        )
+
+        self.assertEqual(result["visited_nodes"], ["n1", "n2"])
+        self.assertNotIn("n3", result["node_outputs"])
+        self.assertEqual(len(deferred_calls), 1)
+        self.assertEqual(deferred_calls[0]["source_node_id"], "n2")
+        self.assertEqual(deferred_calls[0]["target_node_id"], "n3")
+
+    def test_execute_defers_immediate_parallel_fanout_for_independent_branches(self):
+        deferred_calls: list[dict[str, object]] = []
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: {
+                            "triggered": True,
+                            "trigger_type": "manual",
+                            **(input_data or {}),
+                        }
+                    ),
+                    "echo": _RecordingRunner(result={"ok": True}),
+                }
+            )
+        )
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "echo", "config": {}},
+                {"id": "n3", "type": "echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n1", "target": "n3"},
+            ],
+        }
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"name": "Asha"},
+            defer_callback=lambda **kwargs: deferred_calls.append(kwargs),
+        )
+
+        self.assertEqual(result["visited_nodes"], ["n1"])
+        self.assertEqual(len(deferred_calls), 2)
+        self.assertEqual(
+            {str(item["target_node_id"]) for item in deferred_calls},
+            {"n2", "n3"},
+        )
+        self.assertTrue(all(float(item["delay_seconds"]) == 0.0 for item in deferred_calls))
+
+    def test_execute_keeps_inline_path_when_fanout_reaches_join_node(self):
+        deferred_calls: list[dict[str, object]] = []
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: {
+                            "triggered": True,
+                            "trigger_type": "manual",
+                            **(input_data or {}),
+                        }
+                    ),
+                    "echo": _RecordingRunner(result=lambda _config, input_data, _ctx: input_data or {}),
+                }
+            )
+        )
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "echo", "config": {}},
+                {"id": "n3", "type": "echo", "config": {}},
+                {"id": "n4", "type": "echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n1", "target": "n3"},
+                {"id": "e3", "source": "n2", "target": "n4"},
+                {"id": "e4", "source": "n3", "target": "n4"},
+            ],
+        }
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"value": 42},
+            defer_callback=lambda **kwargs: deferred_calls.append(kwargs),
+        )
+
+        self.assertEqual(result["visited_nodes"], ["n1", "n2", "n3", "n4"])
+        self.assertEqual(deferred_calls, [])
+
+    def test_execute_allows_explicit_non_trigger_start_node(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "filter", "config": {
+                    "input_key": "items",
+                    "field": "amount",
+                    "operator": "greater_than",
+                    "value": "100",
+                }},
+            ],
+            "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+        }
+
+        result = self.executor.execute(
+            definition=definition,
+            initial_payload={"items": [{"amount": 50}, {"amount": 150}]},
+            start_node_id="n2",
+        )
+
+        self.assertEqual(result["visited_nodes"], ["n2"])
+        self.assertEqual(result["node_outputs"]["n2"]["items"], [{"amount": 150}])
 
 
 if __name__ == "__main__":

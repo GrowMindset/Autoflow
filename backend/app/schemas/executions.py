@@ -7,7 +7,16 @@ from uuid import UUID
 from pydantic import BaseModel
 
 
-ExecutionStatus = Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED"]
+ExecutionStatus = Literal[
+    "PENDING",
+    "QUEUED",
+    "WAITING",
+    "RUNNING",
+    "SUCCEEDED",
+    "FAILED",
+    "BLOCKED",
+    "SKIPPED",
+]
 TriggeredBy = str
 
 

@@ -58,6 +58,12 @@ class Workflow(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default=False,
         server_default=text("false"),
     )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
 
     user: Mapped["User"] = relationship("User", back_populates="workflows")
     executions: Mapped[list["Execution"]] = relationship(

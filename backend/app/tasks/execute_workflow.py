@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+from math import ceil
 from datetime import datetime, timezone
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -16,9 +18,43 @@ from app.execution.dag_executor import DagExecutor, NodeExecutionError, Workflow
 from app.models.executions import Execution
 from app.models.nodes_executions import NodeExecution
 from app.models.workflows import Workflow
-from celery_config import celery_app
+from celery_config import (
+    WORKFLOW_EXECUTION_QUEUE,
+    WORKFLOW_NODE_RESUME_QUEUE,
+    celery_app,
+)
+
+try:
+    from redis.asyncio import Redis
+except Exception:  # pragma: no cover - optional runtime dependency
+    Redis = Any  # type: ignore[assignment]
 
 load_dotenv()
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+WORKFLOW_MAX_PARALLEL_NODES = max(0, _env_int("WORKFLOW_MAX_PARALLEL_NODES", 5))
+WORKFLOW_INFLIGHT_TTL_SECONDS = max(10, _env_int("WORKFLOW_INFLIGHT_TTL_SECONDS", 60 * 15))
+WORKFLOW_CONCURRENCY_REQUEUE_MIN_SECONDS = max(
+    1, _env_int("WORKFLOW_CONCURRENCY_REQUEUE_MIN_SECONDS", 1)
+)
+WORKFLOW_CONCURRENCY_REQUEUE_MAX_SECONDS = max(
+    WORKFLOW_CONCURRENCY_REQUEUE_MIN_SECONDS,
+    _env_int("WORKFLOW_CONCURRENCY_REQUEUE_MAX_SECONDS", 3),
+)
+WORKFLOW_CONCURRENCY_REQUEUE_MAX_ATTEMPTS = max(
+    1,
+    _env_int("WORKFLOW_CONCURRENCY_REQUEUE_MAX_ATTEMPTS", 120),
+)
 
 
 def _utcnow() -> datetime:
@@ -27,6 +63,66 @@ def _utcnow() -> datetime:
 
 def _is_manual_stop_error(message: str | None) -> bool:
     return str(message or "").strip().startswith(MANUAL_STOP_ERROR_MESSAGE)
+
+
+def _redis_url() -> str:
+    return (os.getenv("REDIS_URL") or "redis://localhost:6379/0").strip()
+
+
+async def _create_redis_client() -> Any | None:
+    if Redis is Any:
+        return None
+    try:
+        return Redis.from_url(_redis_url(), decode_responses=True)
+    except Exception:
+        return None
+
+
+async def _acquire_execution_inflight_slot(
+    redis_client: Any,
+    *,
+    execution_id: str,
+    max_parallel_nodes: int,
+) -> bool:
+    key = f"autoflow:exec:{execution_id}:inflight"
+    try:
+        count = int(await redis_client.incr(key))
+        await redis_client.expire(key, WORKFLOW_INFLIGHT_TTL_SECONDS)
+        if count > max_parallel_nodes:
+            await redis_client.decr(key)
+            return False
+        return True
+    except Exception:
+        # Fail-open if Redis is unavailable so execution is not blocked.
+        return True
+
+
+async def _release_execution_inflight_slot(
+    redis_client: Any,
+    *,
+    execution_id: str,
+) -> None:
+    key = f"autoflow:exec:{execution_id}:inflight"
+    try:
+        raw = await redis_client.get(key)
+        if raw is None:
+            return
+        remaining = int(await redis_client.decr(key))
+        if remaining <= 0:
+            await redis_client.delete(key)
+        else:
+            await redis_client.expire(key, WORKFLOW_INFLIGHT_TTL_SECONDS)
+    except Exception:
+        return
+
+
+def _compute_concurrency_requeue_seconds(retry_count: int) -> int:
+    bounded_retry = max(0, int(retry_count))
+    base = WORKFLOW_CONCURRENCY_REQUEUE_MIN_SECONDS * (2 ** min(2, bounded_retry))
+    return max(
+        WORKFLOW_CONCURRENCY_REQUEUE_MIN_SECONDS,
+        min(WORKFLOW_CONCURRENCY_REQUEUE_MAX_SECONDS, base),
+    )
 
 
 async def _resolve_credentials(
@@ -245,12 +341,19 @@ async def _run_execution(
     execution_id: str,
     initial_payload: dict[str, Any] | None = None,
     start_node_id: str | None = None,
+    start_target_handle: str | None = None,
+    resume: bool = False,
+    merge_source_node_id: str | None = None,
+    guard_retry_count: int = 0,
     loop_control_override: dict[str, Any] | None = None,
 ) -> None:
     session_factory = _create_task_session_factory()
     engine = session_factory.kw["bind"]
+    redis_client: Any | None = None
+    inflight_slot_acquired = False
 
     try:
+        redis_client = await _create_redis_client()
         async with session_factory() as db:
             execution = await db.scalar(
                 select(Execution).where(Execution.id == UUID(execution_id))
@@ -271,11 +374,89 @@ async def _run_execution(
 
             if execution.status == "FAILED" and _is_manual_stop_error(execution.error_message):
                 return
+            if execution.status == "FAILED":
+                return
             if execution.status == "SUCCEEDED":
                 return
 
+            if WORKFLOW_MAX_PARALLEL_NODES > 0 and redis_client is not None:
+                inflight_slot_acquired = await _acquire_execution_inflight_slot(
+                    redis_client,
+                    execution_id=str(execution.id),
+                    max_parallel_nodes=WORKFLOW_MAX_PARALLEL_NODES,
+                )
+                if not inflight_slot_acquired:
+                    if guard_retry_count >= WORKFLOW_CONCURRENCY_REQUEUE_MAX_ATTEMPTS:
+                        execution.status = "FAILED"
+                        execution.finished_at = _utcnow()
+                        execution.error_message = (
+                            "Concurrency guard retry limit reached while waiting for an "
+                            "execution slot. Increase WORKFLOW_MAX_PARALLEL_NODES or reduce fan-out."
+                        )
+                        await db.commit()
+                        return
+
+                    if start_node_id:
+                        start_node = next(
+                            (
+                                node
+                                for node in workflow.definition.get("nodes", [])
+                                if node.get("id") == start_node_id
+                            ),
+                            None,
+                        )
+                        start_row = await db.scalar(
+                            select(NodeExecution).where(
+                                NodeExecution.execution_id == execution.id,
+                                NodeExecution.node_id == start_node_id,
+                            )
+                        )
+                        if start_row is None:
+                            start_row = NodeExecution(
+                                execution_id=execution.id,
+                                node_id=start_node_id,
+                                node_type=str(
+                                    start_node.get("type")
+                                    if isinstance(start_node, dict)
+                                    else "unknown"
+                                ),
+                            )
+                            db.add(start_row)
+                        start_row.status = "QUEUED"
+                        if initial_payload is not None and start_row.input_data is None:
+                            start_row.input_data = initial_payload
+                        start_row.error_message = None
+                    execution.status = "WAITING"
+                    execution.finished_at = None
+                    execution.error_message = None
+                    await db.commit()
+
+                    run_execution.apply_async(
+                        kwargs={
+                            "execution_id": str(execution.id),
+                            "initial_payload": initial_payload,
+                            "start_node_id": start_node_id,
+                            "start_target_handle": start_target_handle,
+                            "resume": resume,
+                            "merge_source_node_id": merge_source_node_id,
+                            "guard_retry_count": int(guard_retry_count) + 1,
+                            "loop_control_override": loop_control_override,
+                        },
+                        queue=(WORKFLOW_NODE_RESUME_QUEUE if resume else WORKFLOW_EXECUTION_QUEUE),
+                        countdown=_compute_concurrency_requeue_seconds(guard_retry_count),
+                        retry=True,
+                        retry_policy={
+                            "max_retries": 8,
+                            "interval_start": 0,
+                            "interval_step": 1,
+                            "interval_max": 8,
+                        },
+                    )
+                    return
+
+            is_resume_run = resume or execution.status in {"WAITING", "QUEUED"}
             execution.status = "RUNNING"
-            execution.started_at = _utcnow()
+            execution.started_at = execution.started_at or _utcnow()
             execution.finished_at = None
             execution.error_message = None
 
@@ -285,22 +466,161 @@ async def _run_execution(
                 )
             ).all()
             node_execution_by_id = {row.node_id: row for row in node_execution_rows}
-            for row in node_execution_rows:
-                row.status = "PENDING"
-                row.input_data = None
-                row.output_data = None
-                row.error_message = None
-                row.started_at = None
-                row.finished_at = None
+            nodes_by_id = {
+                node.get("id"): node
+                for node in workflow.definition.get("nodes", [])
+                if node.get("id")
+            }
+            if not is_resume_run:
+                for row in node_execution_rows:
+                    row.status = "PENDING"
+                    row.input_data = None
+                    row.output_data = None
+                    row.error_message = None
+                    row.started_at = None
+                    row.finished_at = None
+            elif start_node_id:
+                start_node = next(
+                    (
+                        node
+                        for node in workflow.definition.get("nodes", [])
+                        if node.get("id") == start_node_id
+                    ),
+                    None,
+                )
+                start_row = _upsert_node_row(
+                    node_execution_by_id=node_execution_by_id,
+                    execution=execution,
+                    db=db,
+                    node_id=start_node_id,
+                    node_type=str(start_node.get("type") if isinstance(start_node, dict) else "unknown"),
+                )
+                start_row.status = "QUEUED"
+                if initial_payload is not None:
+                    start_row.input_data = initial_payload
+                start_row.error_message = None
+
+                # Merge resume hardening:
+                # delayed branches can arrive in separate worker tasks, so we persist
+                # arrival state on the merge row until all required inputs are accounted.
+                if isinstance(start_node, dict) and str(start_node.get("type")) == "merge":
+                    subnode_types = {"chat_model_openai", "chat_model_groq"}
+                    incoming_parent_ids = [
+                        str(edge.get("source"))
+                        for edge in workflow.definition.get("edges", [])
+                        if str(edge.get("target")) == start_node_id
+                        and str(edge.get("source")) in nodes_by_id
+                        and str(
+                            (nodes_by_id.get(str(edge.get("source"))) or {}).get("type") or ""
+                        )
+                        not in subnode_types
+                    ]
+                    expected_inputs = len(incoming_parent_ids)
+
+                    runtime_state: dict[str, Any] = {}
+                    if isinstance(start_row.output_data, dict):
+                        runtime_state = dict(
+                            start_row.output_data.get("__runtime_merge_state") or {}
+                        )
+                    raw_payload_by_source = runtime_state.get("payload_by_source")
+                    payload_by_source = (
+                        dict(raw_payload_by_source)
+                        if isinstance(raw_payload_by_source, dict)
+                        else {}
+                    )
+
+                    source_key = str(
+                        merge_source_node_id
+                        or f"__arrival_{len(payload_by_source) + 1}"
+                    )
+                    payload_by_source[source_key] = (
+                        initial_payload
+                        if isinstance(initial_payload, dict)
+                        else {"_default": initial_payload}
+                    )
+
+                    parent_rows = []
+                    if incoming_parent_ids:
+                        parent_rows = (
+                            await db.scalars(
+                                select(NodeExecution).where(
+                                    NodeExecution.execution_id == execution.id,
+                                    NodeExecution.node_id.in_(incoming_parent_ids),
+                                )
+                            )
+                        ).all()
+                    status_by_parent = {
+                        row.node_id: str(row.status or "").upper()
+                        for row in parent_rows
+                    }
+
+                    received_parents = [
+                        parent_id
+                        for parent_id in incoming_parent_ids
+                        if parent_id in payload_by_source
+                    ]
+                    blocked_parents = [
+                        parent_id
+                        for parent_id in incoming_parent_ids
+                        if parent_id not in payload_by_source
+                        and status_by_parent.get(parent_id) in {"SKIPPED", "BLOCKED"}
+                    ]
+
+                    received_inputs = len(received_parents)
+                    blocked_inputs = len(blocked_parents)
+                    accounted_inputs = received_inputs + blocked_inputs
+
+                    runtime_state.update(
+                        {
+                            "payload_by_source": payload_by_source,
+                            "received_inputs": received_inputs,
+                            "blocked_inputs": blocked_inputs,
+                            "expected_inputs": expected_inputs,
+                            "last_update_at": _utcnow().isoformat(),
+                        }
+                    )
+
+                    start_row.status = "QUEUED"
+                    start_row.input_data = {
+                        "received_inputs": received_inputs,
+                        "blocked_inputs": blocked_inputs,
+                        "expected_inputs": expected_inputs,
+                    }
+                    start_row.output_data = {"__runtime_merge_state": runtime_state}
+                    start_row.error_message = None
+
+                    if expected_inputs > 0 and accounted_inputs < expected_inputs:
+                        execution.status = "WAITING"
+                        execution.finished_at = None
+                        execution.error_message = None
+                        await db.commit()
+                        return
+
+                    if expected_inputs > 0 and received_inputs == 0 and accounted_inputs >= expected_inputs:
+                        start_row.status = "SKIPPED"
+                        start_row.error_message = "All incoming merge branches were blocked."
+                        start_row.finished_at = _utcnow()
+                        execution.status = "WAITING"
+                        execution.finished_at = None
+                        execution.error_message = None
+                        await db.commit()
+                        return
+
+                    if expected_inputs > 0:
+                        initial_payload = {
+                            "__merge_inputs__": [
+                                payload_by_source[parent_id]
+                                for parent_id in incoming_parent_ids
+                                if parent_id in payload_by_source
+                            ],
+                            "__merge_blocked_inputs__": blocked_inputs,
+                        }
+                        # Clear runtime buffer once merge is ready to run.
+                        start_row.output_data = None
 
             await db.commit()
 
             try:
-                nodes_by_id = {
-                    node.get("id"): node
-                    for node in workflow.definition.get("nodes", [])
-                    if node.get("id")
-                }
                 resolved_credential_data = await _resolve_credentials(
                     definition=workflow.definition,
                     db=db,
@@ -316,6 +636,7 @@ async def _run_execution(
 
                 progress_lock = asyncio.Lock()
                 loop = asyncio.get_running_loop()
+                deferred_branch_count = 0
 
                 effective_definition = _build_effective_definition(
                     workflow.definition,
@@ -333,7 +654,7 @@ async def _run_execution(
                 ) -> None:
                     async with progress_lock:
                         await db.refresh(execution)
-                        if execution.status != "RUNNING":
+                        if execution.status not in {"RUNNING", "WAITING"}:
                             raise WorkflowStopRequested(
                                 execution.error_message or MANUAL_STOP_ERROR_MESSAGE
                             )
@@ -369,6 +690,19 @@ async def _run_execution(
                             row.error_message = error_message
                             row.started_at = row.started_at or now
                             row.finished_at = now
+                        elif status in {"QUEUED", "WAITING", "SKIPPED", "BLOCKED"}:
+                            row.status = status
+                            if input_data is not None:
+                                row.input_data = input_data
+                            if output_data is not None:
+                                row.output_data = output_data
+                            row.error_message = error_message
+                            if status == "WAITING":
+                                row.started_at = row.started_at or now
+                                row.finished_at = None
+                            elif status in {"SKIPPED", "BLOCKED"}:
+                                row.started_at = row.started_at or now
+                                row.finished_at = row.finished_at or now
                         else:
                             row.status = status
 
@@ -401,17 +735,138 @@ async def _run_execution(
                     )
                     future.result()
 
+                async def _schedule_deferred_branch(
+                    *,
+                    source_node_id: str,
+                    source_node_type: str,
+                    target_node_id: str,
+                    target_handle: str | None,
+                    payload: Any,
+                    delay_seconds: float,
+                    delay_run_at: Any = None,
+                ) -> None:
+                    nonlocal deferred_branch_count
+                    async with progress_lock:
+                        await db.refresh(execution)
+                        if execution.status == "FAILED" and _is_manual_stop_error(execution.error_message):
+                            raise WorkflowStopRequested(
+                                execution.error_message or MANUAL_STOP_ERROR_MESSAGE
+                            )
+
+                        safe_delay_seconds = 0.0
+                        try:
+                            safe_delay_seconds = max(0.0, float(delay_seconds or 0.0))
+                        except Exception:
+                            safe_delay_seconds = 0.0
+
+                        eta: datetime | None = None
+                        if isinstance(delay_run_at, (int, float)):
+                            eta = datetime.fromtimestamp(float(delay_run_at), tz=timezone.utc)
+                        elif isinstance(delay_run_at, str) and delay_run_at.strip():
+                            candidate = delay_run_at.strip()
+                            if candidate.endswith("Z"):
+                                candidate = f"{candidate[:-1]}+00:00"
+                            try:
+                                parsed = datetime.fromisoformat(candidate)
+                                if parsed.tzinfo is None:
+                                    parsed = parsed.replace(tzinfo=timezone.utc)
+                                eta = parsed.astimezone(timezone.utc)
+                            except Exception:
+                                eta = None
+
+                        if eta is None and safe_delay_seconds > 0:
+                            eta = _utcnow() + timedelta(seconds=safe_delay_seconds)
+                        if eta is None:
+                            eta = _utcnow()
+                        if eta < _utcnow() and safe_delay_seconds > 0:
+                            eta = _utcnow() + timedelta(seconds=safe_delay_seconds)
+                        elif eta < _utcnow():
+                            eta = _utcnow()
+
+                        target_node = nodes_by_id.get(target_node_id, {})
+                        deferred_is_time_wait = safe_delay_seconds > 0
+                        target_row = _upsert_node_row(
+                            node_execution_by_id=node_execution_by_id,
+                            execution=execution,
+                            db=db,
+                            node_id=target_node_id,
+                            node_type=str(target_node.get("type") or "unknown"),
+                        )
+                        target_row.status = "WAITING" if deferred_is_time_wait else "QUEUED"
+                        target_row.input_data = payload if isinstance(payload, dict) else {"_default": payload}
+                        target_row.output_data = None
+                        target_row.error_message = None
+                        now_for_row = _utcnow()
+                        target_row.started_at = target_row.started_at or now_for_row
+                        target_row.finished_at = None
+                        await db.commit()
+
+                        apply_async_kwargs: dict[str, Any] = {
+                            "kwargs": {
+                                "execution_id": str(execution.id),
+                                "initial_payload": payload if isinstance(payload, dict) else {"_default": payload},
+                                "start_node_id": target_node_id,
+                                "start_target_handle": target_handle,
+                                "resume": True,
+                                "merge_source_node_id": source_node_id,
+                                "guard_retry_count": 0,
+                                "loop_control_override": loop_control_override,
+                            },
+                            "queue": WORKFLOW_NODE_RESUME_QUEUE,
+                            "retry": True,
+                            "retry_policy": {
+                                "max_retries": 8,
+                                "interval_start": 0,
+                                "interval_step": 1,
+                                "interval_max": 8,
+                            },
+                        }
+                        now = _utcnow()
+                        if eta > now:
+                            apply_async_kwargs["eta"] = eta
+                        elif safe_delay_seconds > 0:
+                            apply_async_kwargs["countdown"] = max(1, int(ceil(safe_delay_seconds)))
+                        run_execution.apply_async(**apply_async_kwargs)
+                        deferred_branch_count += 1
+
+                def _on_deferred_branch(
+                    *,
+                    source_node_id: str,
+                    source_node_type: str,
+                    target_node_id: str,
+                    target_handle: str | None,
+                    payload: Any,
+                    delay_seconds: float,
+                    delay_run_at: Any = None,
+                ) -> None:
+                    future = asyncio.run_coroutine_threadsafe(
+                        _schedule_deferred_branch(
+                            source_node_id=source_node_id,
+                            source_node_type=source_node_type,
+                            target_node_id=target_node_id,
+                            target_handle=target_handle,
+                            payload=payload,
+                            delay_seconds=delay_seconds,
+                            delay_run_at=delay_run_at,
+                        ),
+                        loop,
+                    )
+                    future.result()
+
                 result = await asyncio.to_thread(
                     DagExecutor().execute,
                     definition=effective_definition,
                     initial_payload=initial_payload,
                     start_node_id=start_node_id,
+                    start_target_handle=start_target_handle,
                     runner_context={
                         "user_id": execution.user_id,
                         "resolved_credentials": resolved_credentials,
                         "resolved_credential_data": resolved_credential_data,
+                        "parallel_fanout_enabled": True,
                     },
                     progress_callback=_on_node_progress,
+                    defer_callback=_on_deferred_branch,
                 )
 
                 await db.refresh(execution)
@@ -421,8 +876,6 @@ async def _run_execution(
                 visited_nodes = result.get("visited_nodes", [])
                 node_inputs = result.get("node_inputs", {})
                 node_outputs = result.get("node_outputs", {})
-
-                visited_node_ids = set(visited_nodes)
 
                 # Persist succeeded nodes in the actual execution order.
                 # This allows frontends to sort logs by the order nodes were visited.
@@ -442,27 +895,17 @@ async def _run_execution(
                     row.started_at = row.started_at or execution.started_at
                     row.finished_at = row.finished_at or _utcnow()
 
-                # Mark non-visited nodes as pending
-                for node in workflow.definition.get("nodes", []):
-                    if node["id"] in visited_node_ids:
-                        continue
-
-                    row = _upsert_node_row(
-                        node_execution_by_id=node_execution_by_id,
-                        execution=execution,
-                        db=db,
-                        node_id=node["id"],
-                        node_type=node["type"],
-                    )
-                    row.status = "PENDING"
-                    row.input_data = None
-                    row.output_data = None
-                    row.error_message = None
-                    row.started_at = None
-                    row.finished_at = None
-
-                execution.status = "SUCCEEDED"
-                execution.finished_at = _utcnow()
+                active_statuses = {"RUNNING", "QUEUED", "WAITING"}
+                has_active_nodes = any(
+                    (row.status or "").upper() in active_statuses
+                    for row in node_execution_by_id.values()
+                )
+                if deferred_branch_count > 0 or has_active_nodes:
+                    execution.status = "WAITING"
+                    execution.finished_at = None
+                else:
+                    execution.status = "SUCCEEDED"
+                    execution.finished_at = _utcnow()
                 execution.error_message = None
                 await db.commit()
             except NodeExecutionError as exc:
@@ -544,6 +987,16 @@ async def _run_execution(
                 await db.commit()
                 raise
     finally:
+        if inflight_slot_acquired and redis_client is not None:
+            await _release_execution_inflight_slot(
+                redis_client,
+                execution_id=execution_id,
+            )
+        if redis_client is not None:
+            try:
+                await redis_client.aclose()
+            except Exception:
+                pass
         await engine.dispose()
 
 
@@ -655,17 +1108,42 @@ def run_execution(
     execution_id: str,
     initial_payload: dict[str, Any] | None = None,
     start_node_id: str | None = None,
+    start_target_handle: str | None = None,
+    resume: bool = False,
+    merge_source_node_id: str | None = None,
+    guard_retry_count: int = 0,
     loop_control_override: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> None:
     # Forward-compatible shim: ignore unexpected kwargs from mixed-version senders.
     if loop_control_override is None and isinstance(kwargs.get("loop_control_override"), dict):
         loop_control_override = kwargs.get("loop_control_override")
+    if start_target_handle is None and kwargs.get("start_target_handle") is not None:
+        start_target_handle = str(kwargs.get("start_target_handle"))
+    if not resume and kwargs.get("resume") is not None:
+        raw_resume = kwargs.get("resume")
+        if isinstance(raw_resume, bool):
+            resume = raw_resume
+        elif isinstance(raw_resume, (int, float)):
+            resume = bool(raw_resume)
+        elif isinstance(raw_resume, str):
+            resume = raw_resume.strip().lower() in {"1", "true", "yes", "on"}
+    if kwargs.get("guard_retry_count") is not None:
+        try:
+            guard_retry_count = max(0, int(kwargs.get("guard_retry_count")))
+        except Exception:
+            guard_retry_count = 0
+    if merge_source_node_id is None and kwargs.get("merge_source_node_id") is not None:
+        merge_source_node_id = str(kwargs.get("merge_source_node_id"))
     asyncio.run(
         _run_execution(
             execution_id=execution_id,
             initial_payload=initial_payload,
             start_node_id=start_node_id,
+            start_target_handle=start_target_handle,
+            resume=resume,
+            merge_source_node_id=merge_source_node_id,
+            guard_retry_count=guard_retry_count,
             loop_control_override=loop_control_override,
         )
     )

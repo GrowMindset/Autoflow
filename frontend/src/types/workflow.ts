@@ -7,7 +7,7 @@ export interface WorkflowNodeData {
   config: Record<string, any>;
   is_dummy?: boolean;
   last_output?: any;
-  status?: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
+  status?: 'PENDING' | 'QUEUED' | 'WAITING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'SKIPPED' | string;
   last_execution_result?: any;
   schedule_is_active?: boolean;
 }

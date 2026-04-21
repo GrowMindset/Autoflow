@@ -37,6 +37,7 @@ class WorkflowService:
             description=payload.description,
             definition=definition,
             is_published=False,
+            is_active=True,
         )
         self.db.add(workflow)
         await self.db.commit()

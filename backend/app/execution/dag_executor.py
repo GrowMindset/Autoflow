@@ -56,25 +56,33 @@ class DagExecutor:
     def __init__(self, registry: RunnerRegistry | None = None) -> None:
         self.registry = registry or RunnerRegistry()
         self._progress_callback: Callable[..., None] | None = None
+        self._defer_callback: Callable[..., None] | None = None
+        self._parallel_fanout_enabled = True
 
     def execute(
         self,
         definition: dict[str, Any],
         initial_payload: dict[str, Any] | None = None,
         start_node_id: str | None = None,
+        start_target_handle: str | None = None,
         runner_context: dict[str, Any] | None = None,
         progress_callback: Callable[..., None] | None = None,
+        defer_callback: Callable[..., None] | None = None,
     ) -> dict[str, Any]:
         self._progress_callback = progress_callback
+        self._defer_callback = defer_callback
         context = self.build_context(definition)
         context.runner_context = runner_context or {}
+        self._parallel_fanout_enabled = bool(
+            (context.runner_context or {}).get("parallel_fanout_enabled", True)
+        )
         chosen_start_node_id = start_node_id or self._resolve_start_node(context)
 
         if chosen_start_node_id not in context.nodes_by_id:
             raise ValueError(f"Start node '{chosen_start_node_id}' was not found")
 
         start_node = context.nodes_by_id[chosen_start_node_id]
-        if start_node["type"] not in TRIGGER_NODE_TYPES:
+        if start_node_id is None and start_node["type"] not in TRIGGER_NODE_TYPES:
             raise ValueError(
                 f"Start node '{chosen_start_node_id}' must be a trigger node"
             )
@@ -84,6 +92,7 @@ class DagExecutor:
                 context=context,
                 node_id=chosen_start_node_id,
                 input_data=initial_payload,
+                target_handle=start_target_handle,
             )
         except NodeExecutionError as exc:
             # Preserve partial progress so callers can persist exactly how far
@@ -94,6 +103,8 @@ class DagExecutor:
             raise
         finally:
             self._progress_callback = None
+            self._defer_callback = None
+            self._parallel_fanout_enabled = True
 
         terminal_outputs = {
             node_id: context.node_outputs[node_id]
@@ -778,6 +789,36 @@ class DagExecutor:
             return
 
         # Store input data mapped by handle
+        merge_seed_payloads: list[Any] = []
+        merge_seed_blocked_inputs = 0
+        if (
+            node_type == "merge"
+            and isinstance(input_data, dict)
+            and "__merge_inputs__" in input_data
+        ):
+            raw_merge_inputs = input_data.get("__merge_inputs__")
+            if isinstance(raw_merge_inputs, list):
+                merge_seed_payloads = list(raw_merge_inputs)
+            raw_blocked = input_data.get("__merge_blocked_inputs__", 0)
+            try:
+                merge_seed_blocked_inputs = max(0, int(raw_blocked))
+            except Exception:
+                merge_seed_blocked_inputs = 0
+            input_data = None
+
+        if merge_seed_payloads:
+            for payload in merge_seed_payloads:
+                context.pending_inputs[node_id].append(
+                    {
+                        "handle": None,
+                        "data": payload,
+                    }
+                )
+            context.blocked_input_counts[node_id] = max(
+                context.blocked_input_counts[node_id],
+                merge_seed_blocked_inputs,
+            )
+
         if input_data is not None:
             context.pending_inputs[node_id].append({
                 "handle": target_handle,
@@ -944,6 +985,71 @@ class DagExecutor:
         )
 
         next_input = self._strip_internal_fields(output_data)
+        # Join-aware deferral:
+        # If downstream target is a merge node, defer that edge into its own task
+        # so merge input accounting can happen durably outside this in-memory context.
+        if self._defer_callback is not None and node_type != "delay":
+            deferred_merge_edges: list[dict[str, Any]] = []
+            remaining_selected_edges: list[dict[str, Any]] = []
+            for edge in selected_edges:
+                target_node = context.nodes_by_id.get(edge.get("target"), {})
+                if target_node.get("type") == "merge":
+                    deferred_merge_edges.append(edge)
+                else:
+                    remaining_selected_edges.append(edge)
+
+            for edge in deferred_merge_edges:
+                self._defer_callback(
+                    source_node_id=node_id,
+                    source_node_type=node_type,
+                    target_node_id=edge["target"],
+                    target_handle=edge.get("targetHandle"),
+                    payload=next_input,
+                    delay_seconds=0.0,
+                    delay_run_at=None,
+                )
+
+            selected_edges = remaining_selected_edges
+
+        if (
+            self._parallel_fanout_enabled
+            and self._defer_callback is not None
+            and len(selected_edges) > 1
+            and self._can_parallelize_fanout(context=context, selected_edges=selected_edges)
+        ):
+            for edge in selected_edges:
+                self._defer_callback(
+                    source_node_id=node_id,
+                    source_node_type=node_type,
+                    target_node_id=edge["target"],
+                    target_handle=edge.get("targetHandle"),
+                    payload=next_input,
+                    delay_seconds=0.0,
+                    delay_run_at=None,
+                )
+            for edge in blocked_edges:
+                self._block_path(context=context, node_id=edge["target"])
+            return
+
+        if node_type == "delay":
+            delay_seconds = float(output_data.get("delay_seconds") or 0)
+            if delay_seconds > 0 and selected_edges:
+                delay_run_at = output_data.get("delay_run_at")
+                for edge in selected_edges:
+                    if self._defer_callback is not None:
+                        self._defer_callback(
+                            source_node_id=node_id,
+                            source_node_type=node_type,
+                            target_node_id=edge["target"],
+                            target_handle=edge.get("targetHandle"),
+                            payload=next_input,
+                            delay_seconds=delay_seconds,
+                            delay_run_at=delay_run_at,
+                        )
+                for edge in blocked_edges:
+                    self._block_path(context=context, node_id=edge["target"])
+                return
+
         for edge in selected_edges:
             self._execute_from_node(
                 context=context,
@@ -954,6 +1060,47 @@ class DagExecutor:
 
         for edge in blocked_edges:
             self._block_path(context=context, node_id=edge["target"])
+
+    def _can_parallelize_fanout(
+        self,
+        *,
+        context: ExecutionContext,
+        selected_edges: list[dict[str, Any]],
+    ) -> bool:
+        # Only parallelize when branch paths are independent (no downstream joins).
+        # If any reachable node has indegree > 1, keep existing in-process traversal.
+        for edge in selected_edges:
+            target_node_id = edge.get("target")
+            if not target_node_id:
+                return False
+            if self._reachable_join_exists(context=context, start_node_id=target_node_id):
+                return False
+        return True
+
+    @staticmethod
+    def _reachable_join_exists(
+        *,
+        context: ExecutionContext,
+        start_node_id: str,
+    ) -> bool:
+        queue = deque([start_node_id])
+        seen: set[str] = set()
+
+        while queue:
+            node_id = queue.popleft()
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+
+            if context.indegree.get(node_id, 0) > 1:
+                return True
+
+            for edge in context.outgoing_edges.get(node_id, []):
+                next_node_id = edge.get("target")
+                if next_node_id and next_node_id not in seen:
+                    queue.append(next_node_id)
+
+        return False
 
     def _handle_split_in(
         self,
@@ -1240,6 +1387,12 @@ class DagExecutor:
 
         node_type = context.nodes_by_id[node_id]["type"]
         if node_type == "merge":
+            self._emit_node_progress(
+                node_id=node_id,
+                node_type=node_type,
+                status="BLOCKED",
+                error_message="An upstream branch was not taken.",
+            )
             accounted_inputs = (
                 len(context.pending_inputs[node_id]) + context.blocked_input_counts[node_id]
             )
@@ -1249,14 +1402,32 @@ class DagExecutor:
                     self._handle_merge_execution(context=context, node_id=node_id, merge_inputs=merge_data_list)
                 else:
                     context.node_states[node_id] = "skipped"
+                    self._emit_node_progress(
+                        node_id=node_id,
+                        node_type=node_type,
+                        status="SKIPPED",
+                        error_message="All incoming branches were blocked.",
+                    )
                     for edge in context.outgoing_edges.get(node_id, []):
                         self._block_path(context=context, node_id=edge["target"])
             return
 
         if context.blocked_input_counts[node_id] < context.indegree[node_id]:
+            self._emit_node_progress(
+                node_id=node_id,
+                node_type=node_type,
+                status="BLOCKED",
+                error_message="Waiting for remaining unblocked inputs.",
+            )
             return
 
         context.node_states[node_id] = "skipped"
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type=node_type,
+            status="SKIPPED",
+            error_message="All incoming branches were blocked.",
+        )
         for edge in context.outgoing_edges.get(node_id, []):
             self._block_path(context=context, node_id=edge["target"])
 

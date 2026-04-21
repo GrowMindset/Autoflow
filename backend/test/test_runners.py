@@ -422,6 +422,16 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(output["ok"], True)
         self.assertEqual(output["delay_seconds"], 0)
 
+    def test_delay_runner_emits_run_at_for_positive_delay(self):
+        runner = DelayRunner()
+        output = runner.run(
+            config={"amount": "1", "unit": "seconds"},
+            input_data={"ok": True},
+        )
+        self.assertEqual(output["ok"], True)
+        self.assertGreater(output["delay_seconds"], 0)
+        self.assertIn("delay_run_at", output)
+
     def test_if_else_runner_raises_for_unknown_operator(self):
         runner = IfElseRunner()
         with self.assertRaises(ValueError):

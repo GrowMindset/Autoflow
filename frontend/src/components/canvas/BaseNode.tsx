@@ -195,6 +195,11 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
     () => getNodeCountdownLabel(data, nowMs),
     [data, nowMs],
   );
+  const normalizedStatus = String(data.status || '').toUpperCase();
+  const isWaitingLike = normalizedStatus === 'WAITING' || normalizedStatus === 'QUEUED';
+  const isRunningLike = normalizedStatus === 'RUNNING' || isWaitingLike;
+  const isSucceeded = normalizedStatus === 'SUCCEEDED';
+  const isFailed = normalizedStatus === 'FAILED';
 
   useEffect(() => {
     if (!shouldShowLiveCountdown) return;
@@ -287,13 +292,13 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       className={`px-3 py-2.5 rounded-xl border-2 transition-colors duration-200 shadow-none min-w-[150px] max-w-[150px] group/node relative 
         ${selected ? 'ring-2 ring-blue-500/10 border-blue-500' : 'border-slate-200 dark:border-slate-800'}
         ${isScheduleLive ? 'shadow-[0_0_20px_rgba(6,182,212,0.18)]' : ''}
-        ${data.status === 'RUNNING' ? 'border-emerald-600 ring-[6px] ring-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-900/10 animate-pulse' : ''}
-        ${data.status === 'SUCCEEDED' ? 'bg-emerald-50/30 dark:bg-emerald-500/5 border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)] ring-[6px] ring-emerald-500/30' : 'bg-white dark:bg-slate-900'}
-        ${data.status === 'FAILED' ? 'bg-rose-50/30 dark:bg-rose-500/5 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.2)] ring-[6px] ring-rose-500/30' : ''}
+        ${isRunningLike ? 'border-emerald-600 ring-[6px] ring-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-900/10 animate-pulse' : ''}
+        ${isSucceeded ? 'bg-emerald-50/30 dark:bg-emerald-500/5 border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)] ring-[6px] ring-emerald-500/30' : 'bg-white dark:bg-slate-900'}
+        ${isFailed ? 'bg-rose-50/30 dark:bg-rose-500/5 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.2)] ring-[6px] ring-rose-500/30' : ''}
       `}
       style={{
-        borderTop: `6px solid ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '#10b981' :
-            data.status === 'FAILED' ? '#f43f5e' :
+        borderTop: `6px solid ${isRunningLike || isSucceeded ? '#10b981' :
+            isFailed ? '#f43f5e' :
               isScheduleLive ? '#06b6d4' :
               accentColor
           }`
@@ -318,13 +323,13 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
 
       {/* Execution Status Icon */}
       {data.status && (
-        <div className={`absolute -top-3 -right-3 p-1 rounded-full border shadow-md z-20 transition-all duration-300 ${data.status === 'SUCCEEDED' ? 'bg-emerald-500 border-emerald-400' :
-            data.status === 'FAILED' ? 'bg-rose-500 border-rose-400' :
+        <div className={`absolute -top-3 -right-3 p-1 rounded-full border shadow-md z-20 transition-all duration-300 ${isSucceeded ? 'bg-emerald-500 border-emerald-400' :
+            isFailed ? 'bg-rose-500 border-rose-400' :
               'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700'
           }`}>
-          {data.status === 'RUNNING' && <Loader2 size={12} className="text-emerald-600 dark:text-emerald-400 animate-spin" />}
-          {data.status === 'SUCCEEDED' && <Check size={12} className="text-white" strokeWidth={4} />}
-          {data.status === 'FAILED' && <AlertCircle size={12} className="text-white" />}
+          {isRunningLike && <Loader2 size={12} className="text-emerald-600 dark:text-emerald-400 animate-spin" />}
+          {isSucceeded && <Check size={12} className="text-white" strokeWidth={4} />}
+          {isFailed && <AlertCircle size={12} className="text-white" />}
         </div>
       )}
       {!data.status && isScheduleLive && (
@@ -359,8 +364,8 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       <Handle
         type="target"
         position={Position.Left}
-        className={`!w-1.5 !h-1.5 border border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '!bg-emerald-500' :
-            data.status === 'FAILED' ? '!bg-rose-500' :
+        className={`!w-1.5 !h-1.5 border border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${isRunningLike || isSucceeded ? '!bg-emerald-500' :
+            isFailed ? '!bg-rose-500' :
               '!bg-slate-200 dark:!bg-slate-700'
           }`}
         style={{ left: -4 }}
@@ -369,8 +374,8 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       <div className="flex flex-col gap-1 mt-0.5">
         <div className="flex items-center justify-between gap-3">
           <span className={`text-[8px] font-black uppercase tracking-widest`} style={{
-            color: data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? '#059669' :
-              data.status === 'FAILED' ? '#e11d48' :
+            color: isRunningLike || isSucceeded ? '#059669' :
+              isFailed ? '#e11d48' :
                 accentColor
           }}>
             {data.category}
@@ -378,8 +383,8 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           {data.is_dummy && <NodeBadge variant="neutral">Soon</NodeBadge>}
         </div>
 
-        <h3 className={`text-xs font-bold leading-tight truncate ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'text-emerald-900 dark:text-emerald-100' :
-            data.status === 'FAILED' ? 'text-rose-900 dark:text-rose-100' :
+        <h3 className={`text-xs font-bold leading-tight truncate ${isRunningLike || isSucceeded ? 'text-emerald-900 dark:text-emerald-100' :
+            isFailed ? 'text-rose-900 dark:text-rose-100' :
               'text-slate-800 dark:text-slate-100'
           }`}>{data.label}</h3>
 
@@ -392,17 +397,17 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           </div>
         )}
 
-        <div className={`mt-1.5 flex items-center justify-between border-t ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'border-emerald-200 dark:border-emerald-900/50' :
-            data.status === 'FAILED' ? 'border-rose-200 dark:border-rose-900/50' :
+        <div className={`mt-1.5 flex items-center justify-between border-t ${isRunningLike || isSucceeded ? 'border-emerald-200 dark:border-emerald-900/50' :
+            isFailed ? 'border-rose-200 dark:border-rose-900/50' :
               'border-slate-50 dark:border-slate-800/50'
-          } pt-1.5 text-[8px] font-bold uppercase tracking-tighter ${data.status === 'RUNNING' || data.status === 'SUCCEEDED' ? 'text-emerald-600 dark:text-emerald-400' :
-            data.status === 'FAILED' ? 'text-rose-600 dark:text-rose-400' :
+          } pt-1.5 text-[8px] font-bold uppercase tracking-tighter ${isRunningLike || isSucceeded ? 'text-emerald-600 dark:text-emerald-400' :
+            isFailed ? 'text-rose-600 dark:text-rose-400' :
               'text-slate-400 dark:text-slate-500'
           }`}>
           <span className="truncate max-w-[100px]">{data.type.replace('_', ' ')}</span>
-          <div className={`w-1 h-1 rounded-full ${data.status === 'RUNNING' ? 'bg-emerald-500 animate-pulse' :
-              data.status === 'SUCCEEDED' ? 'bg-emerald-500' :
-                data.status === 'FAILED' ? 'bg-rose-500' :
+          <div className={`w-1 h-1 rounded-full ${isRunningLike ? 'bg-emerald-500 animate-pulse' :
+              isSucceeded ? 'bg-emerald-500' :
+                isFailed ? 'bg-rose-500' :
                   isScheduleLive ? 'bg-cyan-500 animate-pulse' :
                   data.is_dummy ? 'bg-slate-200 dark:bg-slate-700' : 'bg-green-400'
             }`} />
@@ -414,12 +419,12 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
         <>
           <div className="absolute -right-1 top-[25%] flex items-center justify-end w-20 pointer-events-none">
             <span className="text-[7px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm mr-2 pointer-events-auto">True</span>
-            <Handle type="source" position={Position.Right} id="true" className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-emerald-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-emerald-400'}`} />
+            <Handle type="source" position={Position.Right} id="true" className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-emerald-500 transition-all pointer-events-auto ${isRunningLike ? '!bg-emerald-500' : '!bg-emerald-400'}`} />
             <PlusButton handleId="true" className="-right-10" />
           </div>
           <div className="absolute -right-1 top-[75%] flex items-center justify-end w-20 pointer-events-none">
             <span className="text-[7px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm mr-2 pointer-events-auto">False</span>
-            <Handle type="source" position={Position.Right} id="false" className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-rose-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-rose-400'}`} />
+            <Handle type="source" position={Position.Right} id="false" className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-rose-500 transition-all pointer-events-auto ${isRunningLike ? '!bg-emerald-500' : '!bg-rose-400'}`} />
             <PlusButton handleId="false" className="-right-10" />
           </div>
         </>
@@ -433,13 +438,13 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
               <span className="text-[6px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm mr-2 max-w-[50px] truncate pointer-events-auto" title={caseLabel}>
                 {caseLabel}
               </span>
-              <Handle type="source" position={Position.Right} id={caseId} className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-blue-400'}`} />
+              <Handle type="source" position={Position.Right} id={caseId} className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all pointer-events-auto ${isRunningLike ? '!bg-emerald-500' : '!bg-blue-400'}`} />
               <PlusButton handleId={caseId} className="-right-10" />
             </div>
           )})}
           <div className="flex items-center justify-end w-32 translate-x-1">
             <span className="text-[6px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm mr-2 pointer-events-auto">Default</span>
-            <Handle type="source" position={Position.Right} id={defaultCaseHandle} className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-slate-500 transition-all pointer-events-auto ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-400'}`} />
+            <Handle type="source" position={Position.Right} id={defaultCaseHandle} className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-slate-500 transition-all pointer-events-auto ${isRunningLike ? '!bg-emerald-500' : '!bg-slate-400'}`} />
             <PlusButton handleId={defaultCaseHandle} className="-right-10" />
           </div>
         </div>
@@ -448,7 +453,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           <Handle
             type="source"
             position={Position.Right}
-            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
+            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${isRunningLike ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
             style={{ right: -4 }}
           />
           {/* Bottom handles for AI Agent sub-nodes */}
@@ -501,13 +506,13 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           <Handle
             type="target"
             position={Position.Left}
-            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
+            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${isRunningLike ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
             style={{ left: -4 }}
           />
           <Handle
             type="source"
             position={Position.Right}
-            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
+            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${isRunningLike ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
             style={{ right: -4 }}
           />
           <PlusButton handleId={null} className="-right-3 top-1/2 -translate-y-1/2" />
@@ -517,7 +522,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           <Handle
             type="source"
             position={Position.Right}
-            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${data.status === 'RUNNING' ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
+            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${isRunningLike ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
             style={{ right: -4 }}
           />
           <PlusButton handleId={null} className="-right-8 top-1/2 -translate-y-1/2" />

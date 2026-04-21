@@ -11,6 +11,7 @@ export interface WorkflowSaveData {
   description?: string;
   definition: WorkflowDefinition;
   is_published?: boolean;
+  is_active?: boolean;
 }
 
 export interface WorkflowPublicRunUrl {
@@ -107,6 +108,16 @@ export const workflowService = {
   updatePublishStatus: async (id: string, isPublished: boolean): Promise<any> => {
     const action = isPublished ? 'publish' : 'unpublish';
     const response = await api.post(`/workflows/${id}/${action}`);
+    return response.data;
+  },
+
+  /**
+   * Update active status (used for execution polling toggle in canvas).
+   */
+  updateActiveStatus: async (id: string, isActive: boolean): Promise<any> => {
+    const response = await api.put(`/workflows/${id}`, {
+      is_active: isActive,
+    });
     return response.data;
   },
 

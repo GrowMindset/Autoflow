@@ -207,6 +207,8 @@ interface AiPreviewGraph {
 
 interface WorkflowCanvasProps {
   workflowId: string;
+  isPollingEnabled?: boolean;
+  onTogglePollingEnabled?: () => void;
   isPublished?: boolean;
   footerOffset?: number;
   onExecutionStart?: (executionId: string) => void;
@@ -218,6 +220,8 @@ interface WorkflowCanvasProps {
 
 const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   workflowId,
+  isPollingEnabled = true,
+  onTogglePollingEnabled,
   isPublished = false,
   footerOffset = 0,
   onExecutionStart,
@@ -429,13 +433,14 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   };
 
   const getStatusBadgeClasses = (status: string) => {
-    if (status === 'SUCCEEDED') {
+    const normalized = String(status || '').toUpperCase();
+    if (normalized === 'SUCCEEDED') {
       return 'bg-emerald-100/80 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-200/50 dark:border-emerald-500/20';
     }
-    if (status === 'FAILED') {
+    if (normalized === 'FAILED') {
       return 'bg-rose-100/80 text-rose-700 dark:bg-rose-500/20 dark:text-rose-400 border border-rose-200/50 dark:border-rose-500/20';
     }
-    if (status === 'RUNNING') {
+    if (normalized === 'RUNNING' || normalized === 'QUEUED' || normalized === 'WAITING') {
       return 'bg-purple-100/80 text-purple-700 dark:bg-purple-500/20 dark:text-purple-400 border border-purple-200/50 dark:border-purple-500/20';
     }
     return 'bg-slate-100/80 text-slate-700 dark:bg-slate-500/20 dark:text-slate-400 border border-slate-200/50 dark:border-slate-500/20';
@@ -510,6 +515,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       setExecutionHistory([]);
       return;
     }
+    if (!isPollingEnabled) {
+      return;
+    }
 
     let cancelled = false;
     const fetchExecutions = async () => {
@@ -534,7 +542,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [toExecutionHistoryEntry, workflowId]);
+  }, [isPollingEnabled, toExecutionHistoryEntry, workflowId]);
 
   useEffect(() => {
     setNodes((nds) =>
@@ -758,11 +766,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       if (!sourceNode) return false;
 
       const sourceStatus = sourceNode.data.status;
-      if (sourceStatus !== 'RUNNING' && sourceStatus !== 'SUCCEEDED') {
+      if (!['RUNNING', 'WAITING', 'QUEUED', 'SUCCEEDED'].includes(String(sourceStatus || '').toUpperCase())) {
         return false;
       }
 
-      if (sourceStatus === 'RUNNING') {
+      if (['RUNNING', 'WAITING', 'QUEUED'].includes(String(sourceStatus || '').toUpperCase())) {
         return true;
       }
 
@@ -797,7 +805,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           executionState = 'failed';
           shouldAnimate = true;
           isActivePath = true;
-        } else if (sourceNode?.data.status === 'RUNNING' && isOnSelectedPath) {
+        } else if (['RUNNING', 'WAITING', 'QUEUED'].includes(String(sourceNode?.data.status || '').toUpperCase()) && isOnSelectedPath) {
           executionState = 'running';
           shouldAnimate = true;
           isActivePath = true;
@@ -982,6 +990,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
   }, []);
 
+  useEffect(() => {
+    if (isPollingEnabled) return;
+    stopPolling();
+  }, [isPollingEnabled, stopPolling]);
+
   const computeUpstreamPrimePath = useCallback((targetNodeId: string) => {
     const incomingByTarget = new Map<string, WorkflowEdge[]>();
     edges.forEach((edge) => {
@@ -1015,6 +1028,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [edges]);
 
   const pollExecution = useCallback(async (executionId: string) => {
+    if (!isPollingEnabled) {
+      return;
+    }
     if (activeExecutionIdRef.current !== executionId) {
       return;
     }
@@ -1025,7 +1041,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         return;
       }
 
-      const inProgress = detail.status === 'RUNNING' || detail.status === 'PENDING';
+      const normalizedExecutionStatus = String(detail.status || '').toUpperCase();
+      const inProgress = ['RUNNING', 'PENDING', 'QUEUED', 'WAITING'].includes(normalizedExecutionStatus);
 
       // Update nodes with their execution status and results
       setNodes((nds) =>
@@ -1092,7 +1109,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       console.error('Polling failed:', error);
       stopPolling();
     }
-  }, [onExecutionUpdate, selectedExecutionId, setNodes, stopPolling, toExecutionHistoryEntry, upsertExecutionHistoryEntry]);
+  }, [isPollingEnabled, onExecutionUpdate, selectedExecutionId, setNodes, stopPolling, toExecutionHistoryEntry, upsertExecutionHistoryEntry]);
 
   const beginExecutionTracking = useCallback((
     executionId: string,
@@ -1172,11 +1189,14 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       },
       ...history,
     ]);
+    if (!isPollingEnabled) {
+      return;
+    }
     void pollExecution(executionId);
     pollingIntervalRef.current = window.setInterval(() => {
       void pollExecution(executionId);
     }, EXECUTION_POLL_INTERVAL_MS);
-  }, [computeUpstreamPrimePath, onExecutionStart, pollExecution, setNodes, stopPolling]);
+  }, [computeUpstreamPrimePath, isPollingEnabled, onExecutionStart, pollExecution, setNodes, stopPolling]);
 
   useEffect(() => {
     const onFormExecutionStarted = (event: MessageEvent) => {
@@ -1220,6 +1240,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [setNodes]);
 
   useEffect(() => {
+    if (!isPollingEnabled) return;
     if (!workflowId || workflowId === 'new') return;
     const latestEntry = executionHistoryRef.current[0];
     if (!latestEntry?.executionId) return;
@@ -1234,7 +1255,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }
 
       const latestStatus = String(latestEntry.status || '').toUpperCase();
-      const isRunningExecution = latestStatus === 'RUNNING' || latestStatus === 'PENDING';
+      const isRunningExecution = ['RUNNING', 'PENDING', 'QUEUED', 'WAITING'].includes(latestStatus);
 
       if (isRunningExecution) {
         latestSyncedExecutionIdRef.current = executionId;
@@ -1279,6 +1300,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     applyExecutionDetailToCanvas,
     beginExecutionTracking,
     executionHistory,
+    isPollingEnabled,
     onExecutionStart,
     onExecutionUpdate,
     resetNodeExecutionVisualState,
@@ -2344,6 +2366,28 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           <div className="text-xs text-slate-500 dark:text-slate-400 ml-3">
             {executionHistory.length > 0 ? `${executionHistory.length} execution${executionHistory.length > 1 ? 's' : ''} recorded` : 'No executions yet'}
           </div>
+          <div className="w-px h-6 bg-slate-200 dark:bg-slate-700 mx-1" />
+          <button
+            type="button"
+            onClick={onTogglePollingEnabled}
+            className="group flex items-center gap-2 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            title={isPollingEnabled ? 'Set workflow inactive' : 'Set workflow active'}
+          >
+            <span className={`text-[11px] font-semibold ${isPollingEnabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-500 dark:text-slate-400'}`}>
+              {isPollingEnabled ? 'Active' : 'Inactive'}
+            </span>
+            <span
+              className={`relative inline-flex h-5 w-10 items-center rounded-full transition ${
+                isPollingEnabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
+                  isPollingEnabled ? 'translate-x-5' : 'translate-x-1'
+                }`}
+              />
+            </span>
+          </button>
         </div>
       </div>
       {activeTab === 'editor' ? (
