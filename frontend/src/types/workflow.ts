@@ -10,6 +10,7 @@ export interface WorkflowNodeData {
   status?: 'PENDING' | 'QUEUED' | 'WAITING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'SKIPPED' | string;
   last_execution_result?: any;
   schedule_is_active?: boolean;
+  workflow_execution_visual_active?: boolean;
 }
 
 export type WorkflowNode = Node<WorkflowNodeData>;

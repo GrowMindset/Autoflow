@@ -912,3 +912,61 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(status_code, 400)
         self.assertIn("Selected start node", str(payload.get("detail")))
+
+    async def test_run_workflow_rejects_when_workflow_is_inactive(self) -> None:
+        user = await self._create_user(email="inactive-run@example.com", username="inactive-run")
+        workflow = await self._create_workflow(user_id=user.id)
+
+        update_status, _update_payload = await self.client.put(
+            f"/workflows/{workflow.id}",
+            json_body={"is_active": False},
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(update_status, 200)
+
+        status_code, payload = await self.client.post(
+            f"/workflows/{workflow.id}/run",
+            json_body={},
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(status_code, 400)
+        self.assertEqual(payload.get("detail"), "Workflow is inactive. Please activate workflow first.")
+
+    async def test_run_form_rejects_when_workflow_is_inactive(self) -> None:
+        user = await self._create_user(email="inactive-form@example.com", username="inactive-form")
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            definition={
+                "nodes": [
+                    {
+                        "id": "form_start",
+                        "type": "form_trigger",
+                        "label": "Lead Form",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "fields": [
+                                {"name": "name", "label": "Name", "type": "text", "required": True}
+                            ]
+                        },
+                    }
+                ],
+                "edges": [],
+            },
+        )
+
+        update_status, _update_payload = await self.client.put(
+            f"/workflows/{workflow.id}",
+            json_body={"is_active": False},
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(update_status, 200)
+
+        status_code, payload = await self.client.post(
+            f"/workflows/{workflow.id}/run-form",
+            json_body={"form_data": {"name": "Asha"}},
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(status_code, 400)
+        self.assertEqual(payload.get("detail"), "Workflow is inactive. Please activate workflow first.")

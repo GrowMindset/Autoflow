@@ -103,7 +103,12 @@ async def _scan_scheduled_workflows() -> dict[str, int]:
         async with session_factory() as db:
             execution_service = ExecutionService(db)
             workflows = (
-                await db.scalars(select(Workflow).where(Workflow.is_published.is_(True)))
+                await db.scalars(
+                    select(Workflow).where(
+                        Workflow.is_published.is_(True),
+                        Workflow.is_active.is_(True),
+                    )
+                )
             ).all()
             scanned_workflows = len(workflows)
 

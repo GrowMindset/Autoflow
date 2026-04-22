@@ -58,6 +58,7 @@ const UNDO_REDO_COMMIT_DEBOUNCE_MS = 180;
 const AI_APPLY_PROCESS_MS = 950;
 const AI_APPLY_HIGHLIGHT_MS = 2200;
 const TRIGGER_NODE_TYPES = ['manual_trigger', 'form_trigger', 'schedule_trigger', 'webhook_trigger', 'workflow_trigger'] as const;
+const WORKFLOW_INACTIVE_ERROR_MESSAGE = 'Workflow is inactive. Please activate workflow first.';
 const DEFAULT_LOOP_CONTROL = {
   enabled: false,
   max_node_executions: 3,
@@ -760,6 +761,17 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   // Update edges to show status animations path-aware
   useEffect(() => {
+    if (!isPollingEnabled) {
+      setEdges((eds) =>
+        eds.map((edge) => ({
+          ...edge,
+          animated: false,
+          data: { ...edge.data, isActivePath: false, executionState: 'idle' },
+        } as any)),
+      );
+      return;
+    }
+
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
 
     const isEdgeOnSelectedBranch = (edge: any, sourceNode: WorkflowNode | undefined): boolean => {
@@ -822,7 +834,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         } as any;
       })
     );
-  }, [nodes, setEdges]);
+  }, [isPollingEnabled, nodes, setEdges]);
 
   const autoLayout = useCallback((nodesToLayout: any[], edgesToLayout: any[]) => {
     const dagreGraph = new dagre.graphlib.Graph();
@@ -994,6 +1006,23 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     if (isPollingEnabled) return;
     stopPolling();
   }, [isPollingEnabled, stopPolling]);
+
+  useEffect(() => {
+    setNodes((nds) =>
+      nds.map((node) => {
+        if (node.data.workflow_execution_visual_active === isPollingEnabled) {
+          return node;
+        }
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            workflow_execution_visual_active: isPollingEnabled,
+          },
+        };
+      }),
+    );
+  }, [isPollingEnabled, setNodes]);
 
   const computeUpstreamPrimePath = useCallback((targetNodeId: string) => {
     const incomingByTarget = new Map<string, WorkflowEdge[]>();
@@ -1399,6 +1428,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [buildWorkflowDefinition, hasRuntimeCycle]);
 
   const startExecutionFromTrigger = useCallback(async (trigger: WorkflowNode) => {
+    if (!isPollingEnabled) {
+      toast.error(WORKFLOW_INACTIVE_ERROR_MESSAGE);
+      return;
+    }
     resetNodeExecutionVisualState();
     const shouldResolveLoopOverride =
       trigger.data.type === 'manual_trigger' || trigger.data.type === 'schedule_trigger';
@@ -1446,9 +1479,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }
     } catch (error) {
       console.error('Execution failed:', error);
-      toast.error('Workflow execution failed. Check console for details.');
+      const detail = String((error as any)?.response?.data?.detail || '').trim();
+      toast.error(detail || 'Workflow execution failed. Check console for details.');
     }
-  }, [beginExecutionTracking, resetNodeExecutionVisualState, resolveRuntimeLoopOverride, workflowId]);
+  }, [beginExecutionTracking, isPollingEnabled, resetNodeExecutionVisualState, resolveRuntimeLoopOverride, workflowId]);
 
   const runSelectedFlowOption = useCallback(async (trigger: WorkflowNode) => {
     setIsStartingSelectedFlow(true);
@@ -1469,6 +1503,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
     if (workflowId === 'new') {
       toast.error('Please save your workflow before running');
+      return;
+    }
+    if (!isPollingEnabled) {
+      toast.error(WORKFLOW_INACTIVE_ERROR_MESSAGE);
       return;
     }
 
@@ -1511,7 +1549,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
     const trigger = rootTriggers[0];
     await startExecutionFromTrigger(trigger);
-  }, [isAiPreviewMode, workflowId, nodes, edges, selectedNodeId, startExecutionFromTrigger]);
+  }, [isAiPreviewMode, workflowId, isPollingEnabled, nodes, edges, selectedNodeId, startExecutionFromTrigger]);
 
   useEffect(() => {
     stopPolling();
@@ -2507,7 +2545,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
               <button
                 onClick={handleRunWorkflow}
-                className="group flex items-center gap-3 bg-blue-600 hover:bg-blue-700 text-white px-7 py-3 rounded-2xl border border-blue-500 shadow-[0_20px_40px_rgba(37,99,235,0.3)] transition-all duration-300 active:scale-95"
+                disabled={!isPollingEnabled}
+                title={isPollingEnabled ? 'Execute Workflow' : 'Activate workflow to execute'}
+                className="group flex items-center gap-3 bg-blue-600 hover:bg-blue-700 text-white px-7 py-3 rounded-2xl border border-blue-500 shadow-[0_20px_40px_rgba(37,99,235,0.3)] transition-all duration-300 active:scale-95 disabled:opacity-45 disabled:cursor-not-allowed"
               >
                 <div className="relative">
                   <Play size={18} fill="currentColor" stroke="none" className="group-hover:scale-110 transition-transform" />
@@ -2729,6 +2769,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                     <form
                       onSubmit={async (e) => {
                         e.preventDefault();
+                        if (!isPollingEnabled) {
+                          toast.error(WORKFLOW_INACTIVE_ERROR_MESSAGE);
+                          return;
+                        }
                         const runtimeLoopOverride = resolveRuntimeLoopOverride();
                         if (runtimeLoopOverride === 'cancelled') {
                           return;
@@ -2746,7 +2790,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                           beginExecutionTracking(enqueue.execution_id);
                         } catch (error) {
                           console.error('Form submission failed:', error);
-                          toast.error('Failed to start workflow execution');
+                          const detail = String((error as any)?.response?.data?.detail || '').trim();
+                          toast.error(detail || 'Failed to start workflow execution');
                         }
                       }}
                       className="space-y-6"
@@ -2820,6 +2865,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               <ConfigPanel
                 node={selectedNode as WorkflowNode}
                 workflowId={workflowId}
+                isWorkflowActive={isPollingEnabled}
                 upstreamData={upstreamData}
                 previousNodes={previousNodes}
                 nextNodes={nextNodes}

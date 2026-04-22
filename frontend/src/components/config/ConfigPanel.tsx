@@ -15,6 +15,7 @@ const DEFAULT_RIGHT_PANEL_WIDTH = 400;
 interface ConfigPanelProps {
   node: WorkflowNode;
   workflowId: string;
+  isWorkflowActive?: boolean;
   upstreamData: any;
   previousNodes: WorkflowNode[];
   nextNodes: WorkflowNode[];
@@ -142,6 +143,7 @@ const getSchedulePreviewLines = (config: Record<string, any> | undefined) => {
 const ConfigPanel: React.FC<ConfigPanelProps> = ({
   node,
   workflowId,
+  isWorkflowActive = true,
   upstreamData,
   previousNodes,
   nextNodes,
@@ -368,6 +370,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
       toast.error('Save the workflow first to test node execution.');
       return;
     }
+    if (!isWorkflowActive) {
+      toast.error('Workflow is inactive. Please activate workflow first.');
+      return;
+    }
 
     setIsExecuting(true);
     try {
@@ -392,6 +398,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
     event.preventDefault();
     if (!workflowId || workflowId === 'new') {
       toast.error('Save the workflow first to generate a testable form endpoint.');
+      return;
+    }
+    if (!isWorkflowActive) {
+      toast.error('Workflow is inactive. Please activate workflow first.');
       return;
     }
 

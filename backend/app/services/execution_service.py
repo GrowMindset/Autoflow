@@ -24,11 +24,18 @@ from app.tasks.execute_workflow import run_execution, run_node_test
 from celery_config import WORKFLOW_EXECUTION_QUEUE, WORKFLOW_NODE_TEST_QUEUE
 
 APP_TIMEZONE = ZoneInfo("Asia/Kolkata")
+WORKFLOW_INACTIVE_ERROR_MESSAGE = "Workflow is inactive. Please activate workflow first."
 
 
 class ExecutionService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+
+    @staticmethod
+    def _ensure_workflow_is_active(workflow: Workflow) -> None:
+        if bool(getattr(workflow, "is_active", True)):
+            return
+        raise ValueError(WORKFLOW_INACTIVE_ERROR_MESSAGE)
 
     async def create_manual_execution(
         self,
@@ -43,6 +50,7 @@ class ExecutionService:
         workflow = await self._get_owned_workflow(workflow_id=workflow_id, user_id=user.id)
         if workflow is None:
             raise ValueError("Workflow not found")
+        self._ensure_workflow_is_active(workflow)
 
         start_node_id = self._resolve_start_node_id(
             definition=workflow.definition,
@@ -72,6 +80,7 @@ class ExecutionService:
         workflow = await self._get_owned_workflow(workflow_id=workflow_id, user_id=user.id)
         if workflow is None:
             raise ValueError("Workflow not found")
+        self._ensure_workflow_is_active(workflow)
 
         start_node_id = self._resolve_start_node_id(
             definition=workflow.definition,
@@ -103,6 +112,7 @@ class ExecutionService:
         workflow = await self._get_owned_workflow(workflow_id=workflow_id, user_id=user.id)
         if workflow is None:
             raise ValueError("Workflow not found")
+        self._ensure_workflow_is_active(workflow)
         if require_published and not workflow.is_published:
             raise ValueError("Workflow is not published")
 
@@ -180,6 +190,7 @@ class ExecutionService:
         )
         if workflow is None or not workflow.is_published:
             raise ValueError("Webhook not found or workflow not published")
+        self._ensure_workflow_is_active(workflow)
 
         if webhook.node_id == PUBLISHED_RUN_NODE_ID:
             incoming_method = (request_method or "POST").upper()
@@ -265,6 +276,7 @@ class ExecutionService:
         )
         if workflow is None or not workflow.is_published:
             raise ValueError("Public form not found")
+        self._ensure_workflow_is_active(workflow)
 
         form_node = self._resolve_form_trigger_node(definition=workflow.definition)
         if form_node is None:
@@ -346,6 +358,7 @@ class ExecutionService:
 
         if workflow is None or not workflow.is_published:
             raise ValueError("Webhook not found or workflow not published")
+        self._ensure_workflow_is_active(workflow)
 
         incoming_method = (request_method or "POST").upper()
         normalized_path = path.lstrip("/")
@@ -398,6 +411,7 @@ class ExecutionService:
         workflow = await self._get_owned_workflow(workflow_id=workflow_id, user_id=user.id)
         if workflow is None:
             raise ValueError("Workflow not found")
+        self._ensure_workflow_is_active(workflow)
 
         # Find the node to get its type for 'triggered_by'
         node = next((n for n in workflow.definition.get("nodes", []) if n["id"] == node_id), None)

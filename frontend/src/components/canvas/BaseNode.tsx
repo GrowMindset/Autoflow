@@ -197,12 +197,13 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
   );
   const normalizedStatus = String(data.status || '').toUpperCase();
   const isWaitingLike = normalizedStatus === 'WAITING' || normalizedStatus === 'QUEUED';
-  const isRunningLike = normalizedStatus === 'RUNNING' || isWaitingLike;
+  const isExecutionVisualActive = data.workflow_execution_visual_active !== false;
+  const isRunningLike = (normalizedStatus === 'RUNNING' || isWaitingLike) && isExecutionVisualActive;
   const isSucceeded = normalizedStatus === 'SUCCEEDED';
   const isFailed = normalizedStatus === 'FAILED';
 
   useEffect(() => {
-    if (!shouldShowLiveCountdown) return;
+    if (!shouldShowLiveCountdown || !isExecutionVisualActive) return;
     setNowMs(Date.now());
     const timer = window.setInterval(() => {
       setNowMs(Date.now());
@@ -211,7 +212,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
     return () => {
       window.clearInterval(timer);
     };
-  }, [shouldShowLiveCountdown]);
+  }, [isExecutionVisualActive, shouldShowLiveCountdown]);
 
   const handleDeleteNode = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -315,7 +316,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
         </>
       )}
 
-      {countdownLabel && (
+      {isExecutionVisualActive && countdownLabel && (
         <div className="absolute -top-8 left-1/2 -translate-x-1/2 z-20 px-2 py-1 rounded-md bg-slate-900 text-white text-[9px] font-black tracking-wide border border-slate-700 shadow-lg whitespace-nowrap">
           {countdownLabel}
         </div>

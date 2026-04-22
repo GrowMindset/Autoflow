@@ -30,6 +30,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
     Redis = Any  # type: ignore[assignment]
 
 load_dotenv()
+WORKFLOW_INACTIVE_ERROR_MESSAGE = "Workflow is inactive. Please activate workflow first."
 
 
 def _env_int(name: str, default: int) -> int:
@@ -371,6 +372,12 @@ async def _run_execution(
                 raise ValueError(
                     f"Workflow '{execution.workflow_id}' for execution '{execution_id}' was not found"
                 )
+            if not bool(getattr(workflow, "is_active", True)):
+                execution.status = "FAILED"
+                execution.finished_at = _utcnow()
+                execution.error_message = WORKFLOW_INACTIVE_ERROR_MESSAGE
+                await db.commit()
+                return
 
             if execution.status == "FAILED" and _is_manual_stop_error(execution.error_message):
                 return
