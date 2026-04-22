@@ -482,7 +482,7 @@ class RunnerTests(unittest.TestCase):
     def test_merge_runner_merges_branch_outputs(self):
         runner = MergeRunner()
         result = runner.run(
-            config={},
+            config={"mode": "append"},
             input_data=[
                 {"country": "IN", "tax": 18},
                 None,
@@ -498,6 +498,100 @@ class RunnerTests(unittest.TestCase):
         runner = MergeRunner()
         with self.assertRaises(ValueError):
             runner.run(config={}, input_data=[])
+
+    def test_merge_runner_default_append_for_single_branch(self):
+        runner = MergeRunner()
+        result = runner.run(
+            config={},
+            input_data=[{"country": "IN", "tax": 18}],
+        )
+        self.assertEqual(result, {"merged": [{"country": "IN", "tax": 18}]})
+
+    def test_merge_runner_choose_input_1(self):
+        runner = MergeRunner()
+        result = runner.run(
+            config={"mode": "choose_input_1", "output_key": "merged"},
+            input_data=[
+                {"handle": "input1", "data": {"a": 1}},
+                {"handle": "input2", "data": {"b": 2}},
+            ],
+        )
+        self.assertEqual(result, {"a": 1})
+
+    def test_merge_runner_choose_branch_by_handle(self):
+        runner = MergeRunner()
+        result = runner.run(
+            config={"mode": "choose_branch", "choose_branch": "input3", "output_key": "merged"},
+            input_data=[
+                {"handle": "input1", "data": {"a": 1}},
+                {"handle": "input2", "data": {"b": 2}},
+                {"handle": "input3", "data": {"c": 3}},
+            ],
+        )
+        self.assertEqual(result, {"c": 3})
+
+    def test_merge_runner_combine_mode_merges_objects_for_downstream(self):
+        runner = MergeRunner()
+        result = runner.run(
+            config={"mode": "combine"},
+            input_data=[
+                {"document_id": "doc_123", "status": "ok"},
+                None,
+                {"sentiment": "negative"},
+            ],
+        )
+        self.assertEqual(
+            result,
+            {
+                "document_id": "doc_123",
+                "status": "ok",
+                "sentiment": "negative",
+            },
+        )
+
+    def test_merge_runner_combine_mode_rejects_non_object_items(self):
+        runner = MergeRunner()
+        with self.assertRaises(ValueError):
+            runner.run(
+                config={"mode": "combine"},
+                input_data=[{"ok": True}, "raw-string"],
+            )
+
+    def test_merge_runner_combine_by_position_inner_join(self):
+        runner = MergeRunner()
+        result = runner.run(
+            config={"mode": "combine_by_position", "join_type": "inner", "output_key": "merged"},
+            input_data=[
+                {"handle": "input1", "data": [{"id": 1, "a": "x"}, {"id": 2, "a": "y"}]},
+                {"handle": "input2", "data": [{"id": 1, "b": 10}]},
+            ],
+        )
+        self.assertEqual(result, {"merged": [{"id": 1, "a": "x", "b": 10}]})
+
+    def test_merge_runner_combine_by_fields_outer_join(self):
+        runner = MergeRunner()
+        result = runner.run(
+            config={
+                "mode": "combine_by_fields",
+                "join_type": "outer",
+                "input_1_field": "email",
+                "input_2_field": "email",
+                "output_key": "merged",
+            },
+            input_data=[
+                {"handle": "input1", "data": [{"email": "a@test.com", "name": "A"}]},
+                {"handle": "input2", "data": [{"email": "a@test.com", "score": 90}, {"email": "b@test.com", "score": 75}]},
+            ],
+        )
+        self.assertEqual(
+            result,
+            {
+                "merged": [
+                    {"email": "a@test.com", "name": "A", "score": 90},
+                    {"email": "b@test.com", "score": 75},
+                ]
+            },
+        )
 
     def test_filter_runner_filters_array(self):
         runner = FilterRunner()

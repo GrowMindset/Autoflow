@@ -236,7 +236,17 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "merge": {
         "category": "logic",
-        "description": "Merges multiple incoming branches into one output. Config must be {}.",
+        "description": "n8n-style merge node for appending, combining, or choosing a specific input.",
+        "rules": [
+            "Use config keys: mode, input_count, choose_branch, output_key, join_type, input_1_field, input_2_field.",
+            "mode must be one of: append, combine, combine_by_position, combine_by_fields, choose_branch.",
+            "input_count should match how many merge input handles are connected (minimum 2).",
+            "append mode returns an array under output_key (default output_key='merged').",
+            "combine mode merges object inputs into one object.",
+            "combine_by_position supports join_type inner/left/right/outer.",
+            "combine_by_fields requires input_1_field and input_2_field, and supports join_type inner/left/right/outer.",
+            "choose_branch forwards the configured input handle (e.g. choose_branch='input3').",
+        ],
     },
     "filter": {
         "category": "logic",

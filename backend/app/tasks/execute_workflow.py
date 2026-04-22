@@ -347,6 +347,7 @@ async def _run_execution(
     merge_source_node_id: str | None = None,
     guard_retry_count: int = 0,
     loop_control_override: dict[str, Any] | None = None,
+    loop_runtime_state: dict[str, Any] | None = None,
 ) -> None:
     session_factory = _create_task_session_factory()
     engine = session_factory.kw["bind"]
@@ -448,6 +449,7 @@ async def _run_execution(
                             "merge_source_node_id": merge_source_node_id,
                             "guard_retry_count": int(guard_retry_count) + 1,
                             "loop_control_override": loop_control_override,
+                            "loop_runtime_state": loop_runtime_state,
                         },
                         queue=(WORKFLOW_NODE_RESUME_QUEUE if resume else WORKFLOW_EXECUTION_QUEUE),
                         countdown=_compute_concurrency_requeue_seconds(guard_retry_count),
@@ -529,22 +531,33 @@ async def _run_execution(
                         runtime_state = dict(
                             start_row.output_data.get("__runtime_merge_state") or {}
                         )
-                    raw_payload_by_source = runtime_state.get("payload_by_source")
-                    payload_by_source = (
-                        dict(raw_payload_by_source)
-                        if isinstance(raw_payload_by_source, dict)
+                    raw_input_by_source = runtime_state.get("input_by_source")
+                    input_by_source = (
+                        dict(raw_input_by_source)
+                        if isinstance(raw_input_by_source, dict)
                         else {}
                     )
+                    if not input_by_source:
+                        raw_payload_by_source = runtime_state.get("payload_by_source")
+                        if isinstance(raw_payload_by_source, dict):
+                            for key, payload in raw_payload_by_source.items():
+                                input_by_source[str(key)] = {
+                                    "handle": None,
+                                    "data": payload,
+                                }
 
                     source_key = str(
                         merge_source_node_id
-                        or f"__arrival_{len(payload_by_source) + 1}"
+                        or f"__arrival_{len(input_by_source) + 1}"
                     )
-                    payload_by_source[source_key] = (
-                        initial_payload
-                        if isinstance(initial_payload, dict)
-                        else {"_default": initial_payload}
-                    )
+                    input_by_source[source_key] = {
+                        "handle": start_target_handle,
+                        "data": (
+                            initial_payload
+                            if isinstance(initial_payload, dict)
+                            else {"_default": initial_payload}
+                        ),
+                    }
 
                     parent_rows = []
                     if incoming_parent_ids:
@@ -564,12 +577,12 @@ async def _run_execution(
                     received_parents = [
                         parent_id
                         for parent_id in incoming_parent_ids
-                        if parent_id in payload_by_source
+                        if parent_id in input_by_source
                     ]
                     blocked_parents = [
                         parent_id
                         for parent_id in incoming_parent_ids
-                        if parent_id not in payload_by_source
+                        if parent_id not in input_by_source
                         and status_by_parent.get(parent_id) in {"SKIPPED", "BLOCKED"}
                     ]
 
@@ -579,7 +592,7 @@ async def _run_execution(
 
                     runtime_state.update(
                         {
-                            "payload_by_source": payload_by_source,
+                            "input_by_source": input_by_source,
                             "received_inputs": received_inputs,
                             "blocked_inputs": blocked_inputs,
                             "expected_inputs": expected_inputs,
@@ -616,9 +629,9 @@ async def _run_execution(
                     if expected_inputs > 0:
                         initial_payload = {
                             "__merge_inputs__": [
-                                payload_by_source[parent_id]
+                                input_by_source[parent_id]
                                 for parent_id in incoming_parent_ids
-                                if parent_id in payload_by_source
+                                if parent_id in input_by_source
                             ],
                             "__merge_blocked_inputs__": blocked_inputs,
                         }
@@ -751,6 +764,7 @@ async def _run_execution(
                     payload: Any,
                     delay_seconds: float,
                     delay_run_at: Any = None,
+                    loop_runtime_state: dict[str, Any] | None = None,
                 ) -> None:
                     nonlocal deferred_branch_count
                     async with progress_lock:
@@ -818,6 +832,7 @@ async def _run_execution(
                                 "merge_source_node_id": source_node_id,
                                 "guard_retry_count": 0,
                                 "loop_control_override": loop_control_override,
+                                "loop_runtime_state": loop_runtime_state,
                             },
                             "queue": WORKFLOW_NODE_RESUME_QUEUE,
                             "retry": True,
@@ -845,6 +860,7 @@ async def _run_execution(
                     payload: Any,
                     delay_seconds: float,
                     delay_run_at: Any = None,
+                    loop_runtime_state: dict[str, Any] | None = None,
                 ) -> None:
                     future = asyncio.run_coroutine_threadsafe(
                         _schedule_deferred_branch(
@@ -855,6 +871,7 @@ async def _run_execution(
                             payload=payload,
                             delay_seconds=delay_seconds,
                             delay_run_at=delay_run_at,
+                            loop_runtime_state=loop_runtime_state,
                         ),
                         loop,
                     )
@@ -871,6 +888,7 @@ async def _run_execution(
                         "resolved_credentials": resolved_credentials,
                         "resolved_credential_data": resolved_credential_data,
                         "parallel_fanout_enabled": True,
+                        "loop_runtime_state": loop_runtime_state if isinstance(loop_runtime_state, dict) else None,
                     },
                     progress_callback=_on_node_progress,
                     defer_callback=_on_deferred_branch,
@@ -970,7 +988,7 @@ async def _run_execution(
 
                 execution.status = "FAILED"
                 execution.finished_at = now
-                execution.error_message = None
+                execution.error_message = str(exc)
                 await db.commit()
                 return
             except WorkflowStopRequested:
@@ -1120,11 +1138,14 @@ def run_execution(
     merge_source_node_id: str | None = None,
     guard_retry_count: int = 0,
     loop_control_override: dict[str, Any] | None = None,
+    loop_runtime_state: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> None:
     # Forward-compatible shim: ignore unexpected kwargs from mixed-version senders.
     if loop_control_override is None and isinstance(kwargs.get("loop_control_override"), dict):
         loop_control_override = kwargs.get("loop_control_override")
+    if loop_runtime_state is None and isinstance(kwargs.get("loop_runtime_state"), dict):
+        loop_runtime_state = kwargs.get("loop_runtime_state")
     if start_target_handle is None and kwargs.get("start_target_handle") is not None:
         start_target_handle = str(kwargs.get("start_target_handle"))
     if not resume and kwargs.get("resume") is not None:
@@ -1152,6 +1173,7 @@ def run_execution(
             merge_source_node_id=merge_source_node_id,
             guard_retry_count=guard_retry_count,
             loop_control_override=loop_control_override,
+            loop_runtime_state=loop_runtime_state,
         )
     )
 

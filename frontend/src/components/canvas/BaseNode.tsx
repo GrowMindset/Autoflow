@@ -181,7 +181,6 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
   );
 
   const missingReqs = getMissingRequirements(data.type, data.config, isChatModelConnected);
-  const hasIncomplete = missingReqs.length > 0;
   const aiNodeErrorMessage = data.type === 'ai_agent' && data.status === 'FAILED'
     ? (data.last_execution_result?.error_message || '')
     : '';
@@ -224,9 +223,28 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
     .map((c: any) => String(c?.id || c?.label || ''))
     .join(',');
   const defaultCaseHandle = String(data.config.default_case || 'default');
+  const mergeInputCount = useMemo(() => {
+    const raw = Number.parseInt(String(data.config?.input_count ?? ''), 10);
+    if (!Number.isFinite(raw)) return 2;
+    return Math.min(6, Math.max(2, raw));
+  }, [data.config?.input_count]);
+  const mergeInputHandles = useMemo(
+    () => Array.from({ length: mergeInputCount }, (_, idx) => `input${idx + 1}`),
+    [mergeInputCount],
+  );
+  const mergeIncomingEdgeCount = useMemo(
+    () => edges.filter((edge) => edge.target === id).length,
+    [edges, id],
+  );
+  const mergeInputGapMessage = data.type === 'merge' && mergeIncomingEdgeCount < mergeInputCount
+    ? `Connect at least ${mergeInputCount} incoming branches.`
+    : null;
+  const allMissingReqs = mergeInputGapMessage ? [...missingReqs, mergeInputGapMessage] : missingReqs;
+  const hasIncomplete = allMissingReqs.length > 0;
+  const mergeHandleSignature = mergeInputHandles.join(',');
   useEffect(() => {
     updateNodeInternals(id);
-  }, [id, caseIds, defaultCaseHandle, updateNodeInternals]);
+  }, [id, caseIds, defaultCaseHandle, mergeHandleSignature, updateNodeInternals]);
   
   const normalizeHandle = (handleId: string | null | undefined) => handleId ?? null;
 
@@ -343,7 +361,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       {hasIncomplete && !data.status && (
         <div
           className="absolute -top-3 -left-3 p-1 rounded-full bg-amber-100 dark:bg-amber-900 border border-amber-300 dark:border-amber-700 shadow-md z-20 cursor-help"
-          title={`INCOMPLETE CONFIGURATION:\n• ${missingReqs.join('\n• ')}`}
+          title={`INCOMPLETE CONFIGURATION:\n• ${allMissingReqs.join('\n• ')}`}
         >
           <AlertTriangle size={12} className="text-amber-600 dark:text-amber-400" />
         </div>
@@ -362,15 +380,17 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
         </svg>
       </button>
 
-      <Handle
-        type="target"
-        position={Position.Left}
-        className={`!w-1.5 !h-1.5 border border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${isRunningLike || isSucceeded ? '!bg-emerald-500' :
-            isFailed ? '!bg-rose-500' :
-              '!bg-slate-200 dark:!bg-slate-700'
-          }`}
-        style={{ left: -4 }}
-      />
+      {data.type !== 'merge' && (
+        <Handle
+          type="target"
+          position={Position.Left}
+          className={`!w-1.5 !h-1.5 border border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${isRunningLike || isSucceeded ? '!bg-emerald-500' :
+              isFailed ? '!bg-rose-500' :
+                '!bg-slate-200 dark:!bg-slate-700'
+            }`}
+          style={{ left: -4 }}
+        />
+      )}
 
       <div className="flex flex-col gap-1 mt-0.5">
         <div className="flex items-center justify-between gap-3">
@@ -449,6 +469,50 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
             <PlusButton handleId={defaultCaseHandle} className="-right-10" />
           </div>
         </div>
+      ) : data.type === 'merge' ? (
+        <>
+          <Handle
+            type="source"
+            position={Position.Right}
+            className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 hover:!bg-blue-500 transition-all ${isRunningLike ? '!bg-emerald-500' : '!bg-slate-300 dark:!bg-slate-600'}`}
+            style={{ right: -4 }}
+          />
+          {mergeInputHandles.map((handleId, index) => {
+            const total = mergeInputHandles.length;
+            const topPercent = total === 1
+              ? 50
+              : 18 + (index * (64 / (total - 1)));
+            const colorClasses = [
+              '!bg-indigo-400 hover:!bg-indigo-500',
+              '!bg-teal-400 hover:!bg-teal-500',
+              '!bg-amber-400 hover:!bg-amber-500',
+              '!bg-fuchsia-400 hover:!bg-fuchsia-500',
+              '!bg-sky-400 hover:!bg-sky-500',
+              '!bg-lime-400 hover:!bg-lime-500',
+            ];
+            const colorClass = colorClasses[index % colorClasses.length];
+
+            return (
+              <div
+                key={handleId}
+                className="absolute -left-1 flex items-center justify-start w-28 pointer-events-none"
+                style={{ top: `${topPercent}%` }}
+              >
+                <Handle
+                  type="target"
+                  id={handleId}
+                  position={Position.Left}
+                  className={`!w-2 !h-2 border-2 border-white dark:border-slate-900 transition-all pointer-events-auto ${isRunningLike ? '!bg-emerald-500' : colorClass}`}
+                />
+                <span className="text-[6px] font-black uppercase text-slate-400 dark:text-slate-400 bg-white dark:bg-slate-800 px-1 py-0.5 rounded border border-slate-100 dark:border-slate-700 shadow-sm ml-2 pointer-events-auto">
+                  Input {index + 1}
+                </span>
+                <PlusButton handleId={handleId} connectionType="target" className="-left-10" />
+              </div>
+            );
+          })}
+          <PlusButton handleId={null} className="-right-8 top-1/2 -translate-y-1/2" />
+        </>
       ) : data.type === 'ai_agent' ? (
         <>
           <Handle

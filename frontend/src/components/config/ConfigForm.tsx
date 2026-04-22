@@ -212,6 +212,56 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     { key: 'cases', label: 'Routing Cases', type: 'array' },
     { key: 'default_case', label: 'Default Branch', type: 'text', placeholder: 'default' }
   ],
+  merge: [
+    {
+      key: 'input_count',
+      label: 'Number of Inputs',
+      type: 'select',
+      options: ['2', '3', '4', '5', '6'],
+      helperText: 'How many merge input handles to expose on the node.',
+    },
+    {
+      key: 'mode',
+      label: 'Merge Mode',
+      type: 'select',
+      options: ['append', 'combine', 'combine_by_position', 'combine_by_fields', 'choose_branch'],
+      helperText: 'n8n-style merge: append, combine, or choose_branch.',
+    },
+    {
+      key: 'choose_branch',
+      label: 'Choose Branch',
+      type: 'merge_branch_selector',
+      helperText: 'Used when mode = choose_branch.',
+    },
+    {
+      key: 'join_type',
+      label: 'Join Type',
+      type: 'select',
+      options: ['inner', 'left', 'right', 'outer'],
+      helperText: 'Used by combine_by_position and combine_by_fields.',
+    },
+    {
+      key: 'input_1_field',
+      label: 'Input 1 Match Field',
+      type: 'text',
+      placeholder: 'e.g. email or user.id',
+      helperText: 'Used by combine_by_fields.',
+    },
+    {
+      key: 'input_2_field',
+      label: 'Input 2 Match Field',
+      type: 'text',
+      placeholder: 'e.g. email or profile.id',
+      helperText: 'Used by combine_by_fields.',
+    },
+    {
+      key: 'output_key',
+      label: 'Output Key',
+      type: 'text',
+      placeholder: 'merged',
+      helperText: 'Used by append/combine modes that return arrays.',
+    },
+  ],
   split_in: [
     { key: 'input_key', label: 'Array to split', type: 'text', placeholder: 'e.g. items' }
   ],
@@ -946,6 +996,37 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
     onChange,
   ]);
 
+  useEffect(() => {
+    if (nodeType !== 'merge') return;
+
+    const mode = String(config.mode || '').trim().toLowerCase();
+    const normalizedMode = mode === 'choose_input_1' || mode === 'choose_input1'
+      ? 'choose_branch'
+      : mode === 'choose_input_2' || mode === 'choose_input2'
+        ? 'choose_branch'
+        : mode;
+    const rawInputCount = Number.parseInt(String(config.input_count ?? ''), 10);
+    const normalizedInputCount = Number.isFinite(rawInputCount)
+      ? Math.min(6, Math.max(2, rawInputCount))
+      : 2;
+    const chooseBranchValue = String(config.choose_branch || '').trim().toLowerCase();
+    const normalizedChooseBranch = !chooseBranchValue
+      ? (mode === 'choose_input_2' || mode === 'choose_input2' ? 'input2' : 'input1')
+      : chooseBranchValue;
+
+    if (!mode) {
+      onChange('mode', 'append');
+    } else if (normalizedMode !== mode) {
+      onChange('mode', normalizedMode);
+    }
+    if (String(config.input_count || '') !== String(normalizedInputCount)) {
+      onChange('input_count', normalizedInputCount);
+    }
+    if (normalizedChooseBranch !== chooseBranchValue) {
+      onChange('choose_branch', normalizedChooseBranch);
+    }
+  }, [nodeType, config, onChange]);
+
   const fields = CONFIG_SCHEMA[nodeType] || [];
 
 
@@ -967,6 +1048,27 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
           >
             <option value="">Select option...</option>
             {selectOptions.map((opt: string) => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </select>
+        );
+      }
+
+      case 'merge_branch_selector': {
+        const rawInputCount = Number.parseInt(String(config.input_count ?? ''), 10);
+        const inputCount = Number.isFinite(rawInputCount)
+          ? Math.min(6, Math.max(2, rawInputCount))
+          : 2;
+        const options = Array.from({ length: inputCount }, (_, idx) => `input${idx + 1}`);
+        const selectedBranch = String(value || options[0] || 'input1');
+
+        return (
+          <select
+            value={selectedBranch}
+            onChange={(e) => onChange(field.key, e.target.value)}
+            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
+          >
+            {options.map((opt) => (
               <option key={opt} value={opt}>{opt}</option>
             ))}
           </select>
@@ -1984,6 +2086,24 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   };
 
   const shouldRenderField = (field: any): boolean => {
+    if (nodeType === 'merge') {
+      const mode = String(config.mode || 'append').trim().toLowerCase();
+
+      if (field.key === 'choose_branch') {
+        return mode === 'choose_branch';
+      }
+      if (field.key === 'join_type') {
+        return mode === 'combine_by_position' || mode === 'combine_by_fields';
+      }
+      if (field.key === 'input_1_field' || field.key === 'input_2_field') {
+        return mode === 'combine_by_fields';
+      }
+      if (field.key === 'output_key') {
+        return mode !== 'choose_branch' && mode !== 'combine';
+      }
+      return true;
+    }
+
     if (nodeType !== 'search_update_google_sheets') {
       return true;
     }

@@ -76,6 +76,7 @@ class DagExecutor:
         self._parallel_fanout_enabled = bool(
             (context.runner_context or {}).get("parallel_fanout_enabled", True)
         )
+        self._seed_loop_runtime_state(context=context)
         chosen_start_node_id = start_node_id or self._resolve_start_node(context)
 
         if chosen_start_node_id not in context.nodes_by_id:
@@ -121,6 +122,50 @@ class DagExecutor:
             "loop_enabled": context.loop_enabled,
             "node_execution_counts": context.node_execution_counts,
             "total_node_executions": context.total_node_executions,
+        }
+
+    @staticmethod
+    def _seed_loop_runtime_state(*, context: ExecutionContext) -> None:
+        if not context.loop_enabled:
+            return
+        runtime_state = (context.runner_context or {}).get("loop_runtime_state")
+        if not isinstance(runtime_state, dict):
+            return
+
+        raw_total = runtime_state.get("total_node_executions")
+        try:
+            seeded_total = max(0, int(raw_total))
+        except Exception:
+            seeded_total = 0
+        context.total_node_executions = max(context.total_node_executions, seeded_total)
+
+        raw_counts = runtime_state.get("node_execution_counts")
+        if not isinstance(raw_counts, dict):
+            return
+
+        for node_id, raw_count in raw_counts.items():
+            if node_id not in context.node_execution_counts:
+                continue
+            try:
+                seeded_count = max(0, int(raw_count))
+            except Exception:
+                continue
+            context.node_execution_counts[node_id] = max(
+                context.node_execution_counts[node_id],
+                seeded_count,
+            )
+
+    @staticmethod
+    def _loop_runtime_state_snapshot(*, context: ExecutionContext) -> dict[str, Any] | None:
+        if not context.loop_enabled:
+            return None
+        return {
+            "total_node_executions": int(context.total_node_executions),
+            "node_execution_counts": {
+                node_id: int(count)
+                for node_id, count in context.node_execution_counts.items()
+                if int(count) > 0
+            },
         }
 
     def execute_node(
@@ -808,12 +853,24 @@ class DagExecutor:
 
         if merge_seed_payloads:
             for payload in merge_seed_payloads:
-                context.pending_inputs[node_id].append(
-                    {
-                        "handle": None,
-                        "data": payload,
-                    }
-                )
+                if (
+                    isinstance(payload, dict)
+                    and "data" in payload
+                    and ("handle" in payload or "source_node_id" in payload)
+                ):
+                    context.pending_inputs[node_id].append(
+                        {
+                            "handle": payload.get("handle"),
+                            "data": payload.get("data"),
+                        }
+                    )
+                else:
+                    context.pending_inputs[node_id].append(
+                        {
+                            "handle": None,
+                            "data": payload,
+                        }
+                    )
             context.blocked_input_counts[node_id] = max(
                 context.blocked_input_counts[node_id],
                 merge_seed_blocked_inputs,
@@ -848,20 +905,24 @@ class DagExecutor:
             and context.node_execution_counts[node_id] >= context.max_cycle_node_executions
         ):
             context.pending_inputs[node_id] = []
-            context.node_states[node_id] = "skipped"
+            context.node_states[node_id] = "failed"
+            cap_message = (
+                "Loop safety cap reached for node "
+                f"'{node_id}': max_node_executions={context.max_cycle_node_executions}"
+            )
             self._emit_node_progress(
                 node_id=node_id,
                 node_type=node_type,
-                status="SKIPPED",
+                status="FAILED",
                 input_data=input_data,
-                error_message=(
-                    "Loop safety cap reached for node "
-                    f"'{node_id}': max_node_executions={context.max_cycle_node_executions}"
-                ),
+                error_message=cap_message,
             )
-            for edge in context.outgoing_edges.get(node_id, []):
-                self._block_path(context=context, node_id=edge["target"])
-            return
+            raise NodeExecutionError(
+                node_id=node_id,
+                node_type=node_type,
+                input_data=input_data,
+                original_exception=ValueError(cap_message),
+            )
 
         # Special handling for nodes that might be triggered with NO inputs (triggers)
         # or nodes that are now ready.
@@ -909,9 +970,9 @@ class DagExecutor:
                         resolved_input["_default"] = data
 
         if node_type == "merge":
-            # merge runner expects a list of inputs in context.pending_inputs
-            # Our new logic already collected them, but merge runner expects just the data list
-            merge_data_list = [inp["data"] for inp in all_inputs]
+            # Merge runner receives input envelopes so it can support handle-aware
+            # two-input operations (n8n-like input_1/input_2 behavior).
+            merge_data_list = list(all_inputs)
             context.pending_inputs[node_id] = []
             self._handle_merge_execution(context=context, node_id=node_id, merge_inputs=merge_data_list)
             return
@@ -984,6 +1045,14 @@ class DagExecutor:
             outgoing_edges=context.outgoing_edges.get(node_id, []),
         )
 
+        # For branching nodes, mark untaken paths immediately before traversing
+        # selected paths so downstream joins (especially deferred merge resumes)
+        # can observe skipped branches without a race.
+        if node_type in BRANCHING_NODE_TYPES and blocked_edges:
+            for edge in blocked_edges:
+                self._block_path(context=context, node_id=edge["target"])
+            blocked_edges = []
+
         next_input = self._strip_internal_fields(output_data)
         # Join-aware deferral:
         # If downstream target is a merge node, defer that edge into its own task
@@ -1007,6 +1076,7 @@ class DagExecutor:
                     payload=next_input,
                     delay_seconds=0.0,
                     delay_run_at=None,
+                    loop_runtime_state=self._loop_runtime_state_snapshot(context=context),
                 )
 
             selected_edges = remaining_selected_edges
@@ -1026,6 +1096,7 @@ class DagExecutor:
                     payload=next_input,
                     delay_seconds=0.0,
                     delay_run_at=None,
+                    loop_runtime_state=self._loop_runtime_state_snapshot(context=context),
                 )
             for edge in blocked_edges:
                 self._block_path(context=context, node_id=edge["target"])
@@ -1045,6 +1116,7 @@ class DagExecutor:
                             payload=next_input,
                             delay_seconds=delay_seconds,
                             delay_run_at=delay_run_at,
+                            loop_runtime_state=self._loop_runtime_state_snapshot(context=context),
                         )
                 for edge in blocked_edges:
                     self._block_path(context=context, node_id=edge["target"])
@@ -1328,12 +1400,18 @@ class DagExecutor:
     ) -> None:
         runner = self.registry.get_runner("merge")
         config = context.nodes_by_id[node_id].get("config", {})
-        context.node_inputs[node_id] = merge_inputs
+        merge_payloads = [
+            inp.get("data")
+            if isinstance(inp, dict) and "data" in inp and ("handle" in inp or "source_node_id" in inp)
+            else inp
+            for inp in merge_inputs
+        ]
+        context.node_inputs[node_id] = merge_payloads
         self._emit_node_progress(
             node_id=node_id,
             node_type="merge",
             status="RUNNING",
-            input_data=merge_inputs,
+            input_data=merge_payloads,
         )
         try:
             output_data = runner.run(config=config, input_data=merge_inputs)
@@ -1342,13 +1420,13 @@ class DagExecutor:
                 node_id=node_id,
                 node_type="merge",
                 status="FAILED",
-                input_data=merge_inputs,
+                input_data=merge_payloads,
                 error_message=str(exc),
             )
             raise NodeExecutionError(
                 node_id=node_id,
                 node_type="merge",
-                input_data=merge_inputs,
+                input_data=merge_payloads,
                 original_exception=exc,
             ) from exc
         context.node_outputs[node_id] = output_data
@@ -1359,7 +1437,7 @@ class DagExecutor:
             node_id=node_id,
             node_type="merge",
             status="SUCCEEDED",
-            input_data=merge_inputs,
+            input_data=merge_payloads,
             output_data=output_data,
         )
 
@@ -1387,18 +1465,22 @@ class DagExecutor:
 
         node_type = context.nodes_by_id[node_id]["type"]
         if node_type == "merge":
-            self._emit_node_progress(
-                node_id=node_id,
-                node_type=node_type,
-                status="BLOCKED",
-                error_message="An upstream branch was not taken.",
-            )
             accounted_inputs = (
                 len(context.pending_inputs[node_id]) + context.blocked_input_counts[node_id]
             )
+            if accounted_inputs < context.indegree[node_id]:
+                # For merge nodes, an untaken branch is expected in conditional flows.
+                # Keep merge in a waiting state instead of marking it as an error-like block.
+                self._emit_node_progress(
+                    node_id=node_id,
+                    node_type=node_type,
+                    status="WAITING",
+                    error_message=None,
+                )
+                return
             if accounted_inputs == context.indegree[node_id]:
                 if len(context.pending_inputs[node_id]) > 0:
-                    merge_data_list = [inp["data"] for inp in context.pending_inputs[node_id]]
+                    merge_data_list = list(context.pending_inputs[node_id])
                     self._handle_merge_execution(context=context, node_id=node_id, merge_inputs=merge_data_list)
                 else:
                     context.node_states[node_id] = "skipped"
@@ -1412,12 +1494,26 @@ class DagExecutor:
                         self._block_path(context=context, node_id=edge["target"])
             return
 
-        if context.blocked_input_counts[node_id] < context.indegree[node_id]:
+        accounted_inputs = (
+            len(context.pending_inputs[node_id]) + context.blocked_input_counts[node_id]
+        )
+        if accounted_inputs < context.indegree[node_id]:
             self._emit_node_progress(
                 node_id=node_id,
                 node_type=node_type,
                 status="BLOCKED",
                 error_message="Waiting for remaining unblocked inputs.",
+            )
+            return
+
+        if len(context.pending_inputs[node_id]) > 0:
+            # A real input already arrived earlier. Once remaining paths are
+            # accounted as blocked, run the node instead of leaving it blocked.
+            self._execute_from_node(
+                context=context,
+                node_id=node_id,
+                input_data=None,
+                target_handle=None,
             )
             return
 

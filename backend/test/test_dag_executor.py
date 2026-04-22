@@ -4,6 +4,7 @@ from app.execution.dag_executor import DagExecutor, NodeExecutionError
 from app.execution.registry import RunnerRegistry
 from app.execution.runners.nodes.ai_agent import AIAgentRunner
 from app.execution.runners.nodes.delay import DelayRunner
+from app.execution.runners.nodes.merge import MergeRunner
 
 
 class _RecordingRunner:
@@ -156,12 +157,10 @@ class DagExecutorTests(unittest.TestCase):
             )
         )
 
-        result = executor.execute(definition=definition, initial_payload={"seed": "x"})
+        with self.assertRaises(NodeExecutionError) as exc_ctx:
+            executor.execute(definition=definition, initial_payload={"seed": "x"})
 
-        self.assertEqual(result["node_execution_counts"]["n1"], 1)
-        self.assertEqual(result["node_execution_counts"]["n2"], 2)
-        self.assertEqual(result["total_node_executions"], 3)
-        self.assertEqual(result["visited_nodes"], ["n1", "n2", "n2"])
+        self.assertIn("max_node_executions=2", str(exc_ctx.exception))
 
     def test_execute_cycle_honors_total_execution_safety_cap(self):
         definition = {
@@ -201,6 +200,54 @@ class DagExecutorTests(unittest.TestCase):
             executor.execute(definition=definition, initial_payload={"seed": "x"})
 
         self.assertIn("max_total_node_executions=3", str(exc_ctx.exception))
+
+    def test_execute_cycle_uses_seeded_loop_runtime_state(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n2"},
+            ],
+            "loop_control": {
+                "enabled": True,
+                "max_node_executions": 2,
+                "max_total_node_executions": 20,
+            },
+        }
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: {
+                            "triggered": True,
+                            "trigger_type": "manual",
+                            **(input_data or {}),
+                        }
+                    ),
+                    "echo": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: dict(input_data or {}),
+                    ),
+                }
+            )
+        )
+
+        with self.assertRaises(NodeExecutionError) as exc_ctx:
+            executor.execute(
+                definition=definition,
+                initial_payload={"seed": "x"},
+                runner_context={
+                    "loop_runtime_state": {
+                        "total_node_executions": 2,
+                        "node_execution_counts": {"n2": 1},
+                    }
+                },
+            )
+
+        self.assertIn("max_node_executions=2", str(exc_ctx.exception))
 
     def test_execute_linear_workflow_from_manual_trigger(self):
         definition = {
@@ -373,7 +420,7 @@ class DagExecutorTests(unittest.TestCase):
                     "operation": "count",
                     "output_key": "item_count",
                 }},
-                {"id": "n4", "type": "merge", "config": {}},
+                {"id": "n4", "type": "merge", "config": {"mode": "append"}},
             ],
             "edges": [
                 {"id": "e1", "source": "n1", "target": "n2"},
@@ -414,6 +461,57 @@ class DagExecutorTests(unittest.TestCase):
                     {"item_count": 2},
                 ]
             },
+        )
+
+    def test_execute_merge_choose_branch_supports_multiple_input_handles(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "tag_output", "config": {"tag": "one"}},
+                {"id": "n3", "type": "tag_output", "config": {"tag": "two"}},
+                {"id": "n4", "type": "tag_output", "config": {"tag": "three"}},
+                {"id": "n5", "type": "merge", "config": {"mode": "choose_branch", "choose_branch": "input3", "input_count": 3}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n1", "target": "n3"},
+                {"id": "e3", "source": "n1", "target": "n4"},
+                {"id": "e4", "source": "n2", "target": "n5", "targetHandle": "input1"},
+                {"id": "e5", "source": "n3", "target": "n5", "targetHandle": "input2"},
+                {"id": "e6", "source": "n4", "target": "n5", "targetHandle": "input3"},
+            ],
+        }
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: {
+                            "triggered": True,
+                            "trigger_type": "manual",
+                            **(input_data or {}),
+                        }
+                    ),
+                    "tag_output": _RecordingRunner(
+                        result=lambda config, input_data, _ctx: {
+                            "tag": str(config.get("tag") or ""),
+                            **(input_data or {}),
+                        }
+                    ),
+                    "merge": MergeRunner(),
+                }
+            )
+        )
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"seed": "x"},
+        )
+
+        self.assertEqual(result["visited_nodes"], ["n1", "n2", "n3", "n4", "n5"])
+        self.assertEqual(
+            result["node_outputs"]["n5"],
+            {"tag": "three", "triggered": True, "trigger_type": "manual", "seed": "x"},
         )
 
     def test_execute_merge_runs_after_untaken_branch_is_blocked(self):
@@ -470,6 +568,137 @@ class DagExecutorTests(unittest.TestCase):
             },
         )
         self.assertEqual(result["terminal_outputs"], {"n5": context_state})
+
+    def test_branching_blocks_untaken_paths_before_deferred_merge_schedule(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "if_else", "config": {
+                    "field": "status",
+                    "operator": "equals",
+                    "value": "paid",
+                }},
+                {"id": "n3", "type": "filter", "config": {
+                    "input_key": "items",
+                    "field": "amount",
+                    "operator": "greater_than",
+                    "value": "500",
+                }},
+                {"id": "n4", "type": "aggregate", "config": {
+                    "input_key": "items",
+                    "operation": "count",
+                    "output_key": "failed_count",
+                }},
+                {"id": "n5", "type": "merge", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3", "branch": "true"},
+                {"id": "e3", "source": "n2", "target": "n4", "branch": "false"},
+                {"id": "e4", "source": "n3", "target": "n5"},
+                {"id": "e5", "source": "n4", "target": "n5"},
+            ],
+        }
+
+        events: list[tuple[str, str, str]] = []
+
+        def _progress_callback(
+            *,
+            node_id: str,
+            node_type: str,
+            status: str,
+            input_data=None,
+            output_data=None,
+            error_message=None,
+        ) -> None:
+            if node_id in {"n3", "n4"} and status in {"SUCCEEDED", "SKIPPED"}:
+                events.append(("progress", node_id, status))
+
+        def _defer_callback(
+            *,
+            source_node_id: str,
+            source_node_type: str,
+            target_node_id: str,
+            target_handle: str | None,
+            payload,
+            delay_seconds: float,
+            delay_run_at=None,
+            loop_runtime_state=None,
+        ) -> None:
+            if source_node_id == "n3" and target_node_id == "n5":
+                events.append(("defer", source_node_id, target_node_id))
+
+        self.executor.execute(
+            definition=definition,
+            initial_payload={
+                "status": "paid",
+                "items": [{"amount": 100}, {"amount": 650}],
+            },
+            progress_callback=_progress_callback,
+            defer_callback=_defer_callback,
+        )
+
+        skipped_index = events.index(("progress", "n4", "SKIPPED"))
+        defer_index = events.index(("defer", "n3", "n5"))
+        self.assertLess(skipped_index, defer_index)
+
+    def test_blocked_path_executes_node_when_pending_input_already_present(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "if_else", "config": {}},
+                {"id": "n3", "type": "echo", "config": {}},
+                {"id": "n4", "type": "echo", "config": {}},
+                {"id": "n5", "type": "echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3", "branch": "true"},
+                {"id": "e3", "source": "n2", "target": "n4", "branch": "false"},
+                {"id": "e4", "source": "n3", "target": "n5"},
+                {"id": "e5", "source": "n4", "target": "n5"},
+            ],
+        }
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: dict(input_data or {}),
+                    ),
+                    "if_else": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: dict(input_data or {}),
+                    ),
+                    "echo": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: dict(input_data or {}),
+                    ),
+                }
+            )
+        )
+
+        context = executor.build_context(definition)
+        context.runner_context = {}
+
+        # Simulate one successful upstream result arriving first.
+        executor._execute_from_node(
+            context=context,
+            node_id="n5",
+            input_data={"student_email": "a@test.com"},
+            target_handle=None,
+        )
+        self.assertEqual(context.node_states["n5"], "pending")
+
+        # Simulate the other upstream branch being blocked later.
+        executor._block_path(context=context, node_id="n5")
+
+        # Node should execute now because one real input + one blocked input account
+        # for all indegree inputs.
+        self.assertEqual(context.node_states["n5"], "completed")
+        self.assertIn("n5", context.visited_nodes)
+        self.assertEqual(
+            context.node_outputs["n5"],
+            {"student_email": "a@test.com"},
+        )
 
     def test_execute_rejects_unsupported_split_runtime(self):
         definition = {
@@ -885,6 +1114,7 @@ class DagExecutorTests(unittest.TestCase):
         self.assertEqual(len(deferred_calls), 1)
         self.assertEqual(deferred_calls[0]["source_node_id"], "n2")
         self.assertEqual(deferred_calls[0]["target_node_id"], "n3")
+        self.assertIn("loop_runtime_state", deferred_calls[0])
 
     def test_execute_defers_immediate_parallel_fanout_for_independent_branches(self):
         deferred_calls: list[dict[str, object]] = []

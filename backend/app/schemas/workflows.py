@@ -177,7 +177,17 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "cases": [],
         "default_case": "default",
     },
-    "merge": {},
+    "merge": {
+        "mode": "append",
+        "input_count": 2,
+        "choose_branch": "input1",
+        "output_key": "merged",
+        "input_1_handle": "input1",
+        "input_2_handle": "input2",
+        "join_type": "inner",
+        "input_1_field": "",
+        "input_2_field": "",
+    },
     "filter": {
         "input_key": "",
         "field": "",
