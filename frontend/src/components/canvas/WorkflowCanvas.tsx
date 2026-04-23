@@ -27,6 +27,7 @@ import toast from 'react-hot-toast';
 import { useTheme } from '../../context/ThemeContext';
 import { Play, Square, LayoutGrid, Sparkles, Search, Undo2, Redo2, Loader2, Plus } from 'lucide-react';
 import { formatDateTimeInAppTimezone } from '../../utils/dateTime';
+import { toUserFriendlyErrorMessage } from '../../utils/errorMessages';
 
 const nodeTypes = {
   trigger: BaseNode,
@@ -459,7 +460,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       triggeredBy: String(exe?.triggeredBy ?? exe?.triggered_by ?? 'manual'),
       startedAt: exe?.startedAt ?? exe?.started_at ?? null,
       finishedAt: exe?.finishedAt ?? exe?.finished_at ?? null,
-      errorMessage: exe?.errorMessage ?? exe?.error_message ?? null,
+      errorMessage: (exe?.errorMessage ?? exe?.error_message)
+        ? toUserFriendlyErrorMessage(exe?.errorMessage ?? exe?.error_message, '')
+        : null,
       durationMs:
         (exe?.startedAt ?? exe?.started_at) && (exe?.finishedAt ?? exe?.finished_at)
           ? Date.parse(exe?.finishedAt ?? exe?.finished_at) - Date.parse(exe?.startedAt ?? exe?.started_at)
@@ -622,7 +625,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       applyExecutionDetailToCanvas(detail);
     } catch (error: any) {
       if (executionDetailRequestIdRef.current !== requestId) return;
-      const message = error?.response?.data?.detail || 'Failed to load execution detail';
+      const message = toUserFriendlyErrorMessage(
+        error?.response?.data?.detail,
+        'Failed to load execution detail',
+      );
       setExecutionDetailError(message);
       toast.error(message);
     } finally {
@@ -1127,10 +1133,14 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               : 'Node execution finished successfully',
           );
         } else {
+          const friendlyError = toUserFriendlyErrorMessage(
+            detail.error_message,
+            'Unknown error',
+          );
           toast.error(
             isWorkflowRun
-              ? `Workflow failed: ${detail.error_message || 'Unknown error'}`
-              : `Node execution failed: ${detail.error_message || 'Unknown error'}`,
+              ? `Workflow failed: ${friendlyError}`
+              : `Node execution failed: ${friendlyError}`,
           );
         }
       }
@@ -1479,8 +1489,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }
     } catch (error) {
       console.error('Execution failed:', error);
-      const detail = String((error as any)?.response?.data?.detail || '').trim();
-      toast.error(detail || 'Workflow execution failed. Check console for details.');
+      const message = toUserFriendlyErrorMessage(
+        (error as any)?.response?.data?.detail,
+        'Workflow execution failed. Check console for details.',
+      );
+      toast.error(message);
     }
   }, [beginExecutionTracking, isPollingEnabled, resetNodeExecutionVisualState, resolveRuntimeLoopOverride, workflowId]);
 
@@ -1601,7 +1614,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             ? {
                 ...entry,
                 status: detail.status,
-                errorMessage: detail.error_message,
+                errorMessage: detail.error_message
+                  ? toUserFriendlyErrorMessage(detail.error_message, '')
+                  : null,
                 startedAt: detail.started_at,
                 finishedAt: detail.finished_at,
                 durationMs:
@@ -1620,8 +1635,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       onExecutionUpdate?.(detail);
       toast.success('Workflow stopped manually.');
     } catch (error: any) {
-      const message =
-        String(error?.response?.data?.detail || '').trim() || 'Failed to stop workflow.';
+      const message = toUserFriendlyErrorMessage(
+        error?.response?.data?.detail,
+        'Failed to stop workflow.',
+      );
       toast.error(message);
     } finally {
       setIsStoppingExecution(false);
@@ -2790,8 +2807,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                           beginExecutionTracking(enqueue.execution_id);
                         } catch (error) {
                           console.error('Form submission failed:', error);
-                          const detail = String((error as any)?.response?.data?.detail || '').trim();
-                          toast.error(detail || 'Failed to start workflow execution');
+                          const message = toUserFriendlyErrorMessage(
+                            (error as any)?.response?.data?.detail,
+                            'Failed to start workflow execution',
+                          );
+                          toast.error(message);
                         }
                       }}
                       className="space-y-6"
@@ -2974,7 +2994,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                                       </div>
                                       {nodeResult.error_message && (
                                         <div className="mt-1 text-xs text-rose-600 dark:text-rose-300 font-mono whitespace-pre-wrap break-words">
-                                          {nodeResult.error_message}
+                                          {toUserFriendlyErrorMessage(nodeResult.error_message, '')}
                                         </div>
                                       )}
                                     </div>

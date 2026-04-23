@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from math import ceil
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.core.error_messages import to_user_friendly_error_message
 from app.execution.constants import MANUAL_STOP_ERROR_MESSAGE
 from app.execution.dag_executor import DagExecutor, NodeExecutionError, WorkflowStopRequested
 from app.models.executions import Execution
@@ -31,6 +33,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
 
 load_dotenv()
 WORKFLOW_INACTIVE_ERROR_MESSAGE = "Workflow is inactive. Please activate workflow first."
+logger = logging.getLogger(__name__)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -64,6 +67,19 @@ def _utcnow() -> datetime:
 
 def _is_manual_stop_error(message: str | None) -> bool:
     return str(message or "").strip().startswith(MANUAL_STOP_ERROR_MESSAGE)
+
+
+def _friendly_error_message(
+    error: Any,
+    *,
+    node_type: str | None = None,
+    fallback: str = "Something went wrong while running this step.",
+) -> str:
+    return to_user_friendly_error_message(
+        error,
+        node_type=node_type,
+        fallback=fallback,
+    )
 
 
 def _redis_url() -> str:
@@ -687,6 +703,15 @@ async def _run_execution(
                             node_type=node_type,
                         )
                         now = _utcnow()
+                        normalized_error_message: str | None = None
+                        if error_message:
+                            if status in {"FAILED", "BLOCKED", "SKIPPED"}:
+                                normalized_error_message = _friendly_error_message(
+                                    error_message,
+                                    node_type=node_type,
+                                )
+                            else:
+                                normalized_error_message = str(error_message)
 
                         if status == "RUNNING":
                             row.status = "RUNNING"
@@ -707,7 +732,7 @@ async def _run_execution(
                             if input_data is not None:
                                 row.input_data = input_data
                             row.output_data = None
-                            row.error_message = error_message
+                            row.error_message = normalized_error_message
                             row.started_at = row.started_at or now
                             row.finished_at = now
                         elif status in {"QUEUED", "WAITING", "SKIPPED", "BLOCKED"}:
@@ -716,7 +741,7 @@ async def _run_execution(
                                 row.input_data = input_data
                             if output_data is not None:
                                 row.output_data = output_data
-                            row.error_message = error_message
+                            row.error_message = normalized_error_message
                             if status == "WAITING":
                                 row.started_at = row.started_at or now
                                 row.finished_at = None
@@ -940,6 +965,16 @@ async def _run_execution(
 
                 now = _utcnow()
                 visited_node_ids = set(exc.visited_nodes or [])
+                user_error_message = exc.user_message or _friendly_error_message(
+                    exc,
+                    node_type=exc.node_type,
+                )
+                logger.exception(
+                    "Workflow execution failed at node '%s' (%s): %s",
+                    exc.node_id,
+                    exc.node_type,
+                    exc.debug_message,
+                )
 
                 # Persist the successfully completed path first.
                 for node_id in exc.visited_nodes or []:
@@ -975,7 +1010,7 @@ async def _run_execution(
                         row.status = "FAILED"
                         row.input_data = exc.input_data
                         row.output_data = None
-                        row.error_message = str(exc)
+                        row.error_message = user_error_message
                         row.started_at = row.started_at or execution.started_at
                         row.finished_at = row.finished_at or now
                     elif node_id not in visited_node_ids:
@@ -988,7 +1023,7 @@ async def _run_execution(
 
                 execution.status = "FAILED"
                 execution.finished_at = now
-                execution.error_message = str(exc)
+                execution.error_message = user_error_message
                 await db.commit()
                 return
             except WorkflowStopRequested:
@@ -1006,9 +1041,18 @@ async def _run_execution(
                 if execution.status == "FAILED" and _is_manual_stop_error(execution.error_message):
                     return
 
+                user_error_message = _friendly_error_message(
+                    exc,
+                    fallback="Workflow execution failed unexpectedly.",
+                )
+                logger.exception(
+                    "Workflow execution crashed for execution '%s': %s",
+                    execution_id,
+                    str(exc),
+                )
                 execution.status = "FAILED"
                 execution.finished_at = _utcnow()
-                execution.error_message = str(exc)
+                execution.error_message = user_error_message
                 await db.commit()
                 raise
     finally:
@@ -1114,16 +1158,68 @@ async def _run_node_test(
 
 
             # Update results
+            node_error_message = (
+                _friendly_error_message(
+                    res["error_message"],
+                    node_type=node_def["type"],
+                )
+                if res.get("error_message")
+                else None
+            )
             node_row.status = res["status"]
             node_row.output_data = res["output_data"]
-            node_row.error_message = res["error_message"]
+            node_row.error_message = node_error_message
             node_row.finished_at = _utcnow()
 
             execution.status = res["status"]
             execution.finished_at = node_row.finished_at
-            execution.error_message = res["error_message"]
+            execution.error_message = node_error_message
 
             await db.commit()
+    except Exception as exc:
+        logger.exception(
+            "Node test execution crashed for execution '%s', node '%s': %s",
+            execution_id,
+            node_id,
+            str(exc),
+        )
+        user_error_message = _friendly_error_message(
+            exc,
+            fallback="Node test failed unexpectedly.",
+        )
+        try:
+            async with session_factory() as db:
+                execution = await db.scalar(
+                    select(Execution).where(Execution.id == UUID(execution_id))
+                )
+                if execution is not None:
+                    execution.status = "FAILED"
+                    execution.finished_at = _utcnow()
+                    execution.error_message = user_error_message
+
+                    node_row = await db.scalar(
+                        select(NodeExecution).where(
+                            NodeExecution.execution_id == execution.id,
+                            NodeExecution.node_id == node_id,
+                        )
+                    )
+                    if node_row is None:
+                        node_row = NodeExecution(
+                            execution_id=execution.id,
+                            node_id=node_id,
+                            node_type="unknown",
+                        )
+                        db.add(node_row)
+                    node_row.status = "FAILED"
+                    node_row.error_message = user_error_message
+                    node_row.finished_at = _utcnow()
+                    await db.commit()
+        except Exception:
+            logger.exception(
+                "Failed to persist node test failure for execution '%s'",
+                execution_id,
+            )
+        raise
     finally:
         await engine.dispose()
 

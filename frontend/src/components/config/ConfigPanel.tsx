@@ -8,6 +8,7 @@ import DataView from './DataView';
 import { executionService } from '../../services/executionService';
 import api from '../../services/api';
 import { formatTimeInAppTimezone, getAppTimezone } from '../../utils/dateTime';
+import { toUserFriendlyErrorMessage } from '../../utils/errorMessages';
 
 const DEFAULT_LEFT_PANEL_WIDTH = 350;
 const DEFAULT_RIGHT_PANEL_WIDTH = 400;
@@ -247,8 +248,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const aiErrorText = useMemo(() => {
     if (node.data.type !== 'ai_agent') return null;
     const executionError = node.data.last_execution_result?.error_message;
-    if (executionError) return executionError;
-    if (typeof output?.error === 'string' && output.error.trim()) return output.error;
+    if (executionError) return toUserFriendlyErrorMessage(executionError, '');
+    if (typeof output?.error === 'string' && output.error.trim()) {
+      return toUserFriendlyErrorMessage(output.error, '');
+    }
     return null;
   }, [node.data.type, node.data.last_execution_result, output]);
 
@@ -388,7 +391,11 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
       toast.success('Node execution started.');
     } catch (error: any) {
       console.error('Node execution failed:', error);
-      toast.error(error.response?.data?.detail || 'Failed to trigger node execution');
+      const message = toUserFriendlyErrorMessage(
+        error?.response?.data?.detail,
+        'Failed to trigger node execution',
+      );
+      toast.error(message);
     } finally {
       setIsExecuting(false);
     }
@@ -442,6 +449,12 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
       toast.success('Form test submitted.');
     } catch (error) {
       console.error('Form submission failed:', error);
+      toast.error(
+        toUserFriendlyErrorMessage(
+          (error as any)?.response?.data?.detail,
+          'Failed to submit form test.',
+        ),
+      );
     } finally {
       setIsSubmittingForm(false);
     }

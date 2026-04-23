@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { ExecutionDetail } from '../../services/executionService';
 import { useTheme } from '../../context/ThemeContext';
 import { formatTimeInAppTimezone } from '../../utils/dateTime';
+import { toUserFriendlyErrorMessage } from '../../utils/errorMessages';
 
 interface ExecutionLogsPanelContentProps {
   executionDetail: ExecutionDetail | null;
@@ -141,7 +142,7 @@ const ExecutionLogsPanelContent: React.FC<ExecutionLogsPanelContentProps> = ({
                 : 'border-rose-200 bg-rose-50 text-rose-700'
             }`}
           >
-            {executionDetail.error_message}
+            {toUserFriendlyErrorMessage(executionDetail.error_message, '')}
           </div>
         )}
       </div>
@@ -267,7 +268,7 @@ const ExecutionLogsPanelContent: React.FC<ExecutionLogsPanelContentProps> = ({
                           : 'border-rose-200 bg-rose-50 text-rose-700'
                       }`}
                     >
-                      {nodeResult.error_message}
+                      {toUserFriendlyErrorMessage(nodeResult.error_message, '')}
                     </div>
                   )}
                 </div>

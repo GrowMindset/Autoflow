@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.error_messages import to_user_friendly_error_message
 from app.execution.constants import MANUAL_STOP_ERROR_MESSAGE
 from app.models.executions import Execution
 from app.models.nodes_executions import NodeExecution
@@ -872,7 +873,12 @@ class ExecutionService:
     async def _mark_enqueue_failure(self, *, execution: Execution, exc: Exception) -> None:
         execution.status = "FAILED"
         execution.finished_at = datetime.now(timezone.utc)
-        execution.error_message = f"Failed to enqueue background task: {exc}"
+        execution.error_message = to_user_friendly_error_message(
+            exc,
+            fallback=(
+                "Could not start background execution. Please ensure workers are running and retry."
+            ),
+        )
         await self.db.commit()
 
     async def _mark_stale_running_executions(self, *, user_id: UUID) -> None:

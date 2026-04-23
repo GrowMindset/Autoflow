@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.error_messages import to_user_friendly_error_message
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models.user import User
@@ -31,6 +32,14 @@ from app.services.execution_service import ExecutionService
 
 router = APIRouter(tags=["executions"])
 APP_TIMEZONE = ZoneInfo("Asia/Kolkata")
+
+
+def _friendly_http_detail(
+    error: Exception,
+    *,
+    fallback: str = "Request failed. Please try again.",
+) -> str:
+    return to_user_friendly_error_message(error, fallback=fallback)
 
 
 def get_execution_service(db: AsyncSession = Depends(get_db)) -> ExecutionService:
@@ -94,7 +103,7 @@ async def run_workflow(
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail=_friendly_http_detail(exc, fallback="Failed to start workflow run."),
         ) from exc
 
     return ExecutionEnqueueResponse(
@@ -139,7 +148,10 @@ async def run_workflow_form(
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail=_friendly_http_detail(
+                exc,
+                fallback="Failed to start form workflow run.",
+            ),
         ) from exc
 
     return ExecutionEnqueueResponse(
@@ -194,7 +206,10 @@ async def run_workflow_schedule(
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail=_friendly_http_detail(
+                exc,
+                fallback="Failed to start scheduled workflow run.",
+            ),
         ) from exc
 
     return ExecutionEnqueueResponse(
@@ -225,11 +240,17 @@ async def run_node_execute(
             input_data=payload.input_data,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_friendly_http_detail(exc, fallback="Node not found."),
+        ) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail=_friendly_http_detail(
+                exc,
+                fallback="Failed to start node test run.",
+            ),
         ) from exc
 
     return ExecutionEnqueueResponse(
@@ -252,7 +273,10 @@ async def get_execution(
             user_id=current_user.id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_friendly_http_detail(exc, fallback="Execution not found."),
+        ) from exc
 
     return ExecutionDetailResponse(
         id=execution.id,
@@ -291,7 +315,10 @@ async def stop_execution(
             user_id=current_user.id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_friendly_http_detail(exc, fallback="Execution not found."),
+        ) from exc
 
     return ExecutionDetailResponse(
         id=execution.id,
@@ -422,7 +449,10 @@ async def trigger_webhook_by_token(
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail=_friendly_http_detail(
+                exc,
+                fallback="Failed to trigger webhook workflow.",
+            ),
         ) from exc
 
     return WebhookEnqueueResponse(
@@ -462,7 +492,10 @@ async def trigger_webhook_legacy(
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail=_friendly_http_detail(
+                exc,
+                fallback="Failed to trigger webhook workflow.",
+            ),
         ) from exc
 
     return WebhookEnqueueResponse(
@@ -486,7 +519,10 @@ async def get_public_form_definition(
             base_url=str(request.base_url),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_friendly_http_detail(exc, fallback="Public form not found."),
+        ) from exc
 
     return PublicFormDefinitionResponse(**payload)
 
@@ -507,11 +543,17 @@ async def submit_public_form(
             form_data=payload.form_data,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_friendly_http_detail(exc, fallback="Public form not found."),
+        ) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail=_friendly_http_detail(
+                exc,
+                fallback="Failed to submit public form.",
+            ),
         ) from exc
 
     return WebhookEnqueueResponse(

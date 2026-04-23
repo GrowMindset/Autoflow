@@ -3,6 +3,7 @@ import re
 from collections import deque
 from typing import Any, Callable
 
+from app.core.error_messages import to_user_friendly_error_message
 from app.execution.context import ExecutionContext
 from app.execution.registry import RunnerRegistry
 
@@ -32,6 +33,7 @@ class NodeExecutionError(Exception):
         node_type: str,
         input_data: Any,
         original_exception: Exception,
+        user_message: str | None = None,
         visited_nodes: list[str] | None = None,
         node_inputs: dict[str, Any] | None = None,
         node_outputs: dict[str, Any] | None = None,
@@ -40,10 +42,18 @@ class NodeExecutionError(Exception):
         self.node_type = node_type
         self.input_data = input_data
         self.original_exception = original_exception
+        self.debug_message = str(original_exception)
+        self.user_message = (
+            user_message
+            or to_user_friendly_error_message(
+                original_exception,
+                node_type=node_type,
+            )
+        )
         self.visited_nodes = visited_nodes or []
         self.node_inputs = node_inputs or {}
         self.node_outputs = node_outputs or {}
-        super().__init__(str(original_exception))
+        super().__init__(self.user_message)
 
 
 class WorkflowStopRequested(Exception):
@@ -210,7 +220,10 @@ class DagExecutor:
                 "input_data": resolved_input,
                 "output_data": None,
                 "status": "FAILED",
-                "error_message": str(exc),
+                "error_message": to_user_friendly_error_message(
+                    exc,
+                    node_type=node_type,
+                ),
             }
 
     @staticmethod
@@ -890,14 +903,16 @@ class DagExecutor:
             return
 
         if context.total_node_executions >= context.max_total_node_executions:
+            cap_message = (
+                "Workflow stopped due to loop safety cap: "
+                f"max_total_node_executions={context.max_total_node_executions}"
+            )
             raise NodeExecutionError(
                 node_id=node_id,
                 node_type=node_type,
                 input_data=input_data,
-                original_exception=ValueError(
-                    "Workflow stopped due to loop safety cap: "
-                    f"max_total_node_executions={context.max_total_node_executions}"
-                ),
+                original_exception=ValueError(cap_message),
+                user_message=cap_message,
             )
 
         if (
@@ -922,6 +937,7 @@ class DagExecutor:
                 node_type=node_type,
                 input_data=input_data,
                 original_exception=ValueError(cap_message),
+                user_message=cap_message,
             )
 
         # Special handling for nodes that might be triggered with NO inputs (triggers)
@@ -1013,7 +1029,10 @@ class DagExecutor:
                 node_type=node_type,
                 status="FAILED",
                 input_data=resolved_input,
-                error_message=str(exc),
+                error_message=to_user_friendly_error_message(
+                    exc,
+                    node_type=node_type,
+                ),
             )
             raise NodeExecutionError(
                 node_id=node_id,
@@ -1197,7 +1216,10 @@ class DagExecutor:
                 node_type="split_in",
                 status="FAILED",
                 input_data=input_data,
-                error_message=str(exc),
+                error_message=to_user_friendly_error_message(
+                    exc,
+                    node_type="split_in",
+                ),
             )
             raise NodeExecutionError(
                 node_id=node_id,
@@ -1277,7 +1299,10 @@ class DagExecutor:
                 node_type=node_type,
                 status="FAILED",
                 input_data=input_data,
-                error_message=str(exc),
+                error_message=to_user_friendly_error_message(
+                    exc,
+                    node_type=node_type,
+                ),
             )
             raise NodeExecutionError(
                 node_id=node_id,
@@ -1342,7 +1367,10 @@ class DagExecutor:
                 node_type="split_out",
                 status="FAILED",
                 input_data=collected_inputs,
-                error_message=str(exc),
+                error_message=to_user_friendly_error_message(
+                    exc,
+                    node_type="split_out",
+                ),
             )
             raise NodeExecutionError(
                 node_id=node_id,
@@ -1421,7 +1449,10 @@ class DagExecutor:
                 node_type="merge",
                 status="FAILED",
                 input_data=merge_payloads,
-                error_message=str(exc),
+                error_message=to_user_friendly_error_message(
+                    exc,
+                    node_type="merge",
+                ),
             )
             raise NodeExecutionError(
                 node_id=node_id,

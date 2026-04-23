@@ -5,6 +5,7 @@ import { WorkflowNodeData } from '../../types/workflow';
 import { CATEGORY_ACCENTS } from '../../constants/nodeLibrary';
 import NodeBadge from '../sidebar/NodeBadge';
 import { getNodeCountdownLabel, shouldShowLiveNodeCountdown } from '../../utils/nodeTimers';
+import { toUserFriendlyErrorMessage } from '../../utils/errorMessages';
 
 const SHEETS_OPERATION_ALIASES: Record<string, string> = {
   append: 'append_row',
@@ -182,7 +183,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
 
   const missingReqs = getMissingRequirements(data.type, data.config, isChatModelConnected);
   const aiNodeErrorMessage = data.type === 'ai_agent' && data.status === 'FAILED'
-    ? (data.last_execution_result?.error_message || '')
+    ? toUserFriendlyErrorMessage(data.last_execution_result?.error_message || '', '')
     : '';
   const aiNodeErrorPreview = aiNodeErrorMessage.length > 90
     ? `${aiNodeErrorMessage.slice(0, 90)}...`
