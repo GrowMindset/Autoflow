@@ -31,6 +31,28 @@ SHARED_OPERATORS = (
 AI_CHAT_MODEL_NODE_TYPES = {"chat_model_openai", "chat_model_groq"}
 TEMPLATE_SINGLE_BRACE_PATTERN = re.compile(r"(?<!\{)\{([a-zA-Z_][a-zA-Z0-9_.]*)\}(?!\})")
 SEQUENCE_DAYS_PATTERN = re.compile(r"\b(\d{1,2})\s*-\s*day\b|\b(\d{1,2})\s*day\b")
+IMAGE_GENERATION_HINTS = (
+    "generate image",
+    "generate an image",
+    "create image",
+    "create an image",
+    "make image",
+    "make an image",
+    "generate photo",
+    "generate a photo",
+    "create photo",
+    "create a photo",
+    "generate picture",
+    "generate a picture",
+    "create picture",
+    "create a picture",
+    "generate illustration",
+    "create illustration",
+    "image generation",
+    "ai image",
+    "generated visual",
+    "ai visual",
+)
 
 TRIGGER_KEYWORD_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("workflow_trigger", ("workflow trigger", "from another workflow", "parent workflow")),
@@ -100,8 +122,9 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "category": "action",
         "description": "Sends email through Gmail API using OAuth credential. Requires credential_id, to, subject, and body.",
         "rules": [
-            "Use config keys: credential_id, to, cc, bcc, reply_to, subject, body, is_html.",
+            "Use config keys: credential_id, to, cc, bcc, reply_to, subject, body, image, is_html.",
             "Use comma-separated emails in to/cc/bcc when multiple recipients are needed.",
+            "If attaching an Image Gen result, set image to {{image_gen_node_id.image_base64}} or {{image_gen_node_id.image_url}}.",
             "Use Autoflow template syntax {{...}} for dynamic values, not {....}.",
         ],
     },
@@ -142,15 +165,18 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "category": "action",
         "description": "Updates a Google Doc by appending text or replacing text.",
         "rules": [
-            "Use config keys: credential_id, document_id, operation, text, match_text, match_case.",
+            "Use config keys: credential_id, document_id, operation, text, image, match_text, match_case.",
             "operation must be append_text or replace_all_text.",
             "match_text is required when operation is replace_all_text.",
+            "If inserting an Image Gen result, set image to {{image_gen_node_id.image_url}}.",
         ],
     },
     "telegram": {
         "category": "action",
         "description": "Sends a Telegram message. Use credential_id and message. The credential stores bot token + chat_id.",
         "rules": [
+            "Use config keys: credential_id, message, image, parse_mode.",
+            "If sending an Image Gen result, set image to {{image_gen_node_id.image_base64}} or {{image_gen_node_id.image_url}}.",
             "Optional parse_mode can be one of: HTML, Markdown, MarkdownV2.",
             "Use Autoflow template syntax {{...}} for dynamic values, not {....}.",
         ],
@@ -172,7 +198,8 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "category": "action",
         "description": "Posts content to LinkedIn using a connected LinkedIn credential.",
         "rules": [
-            "Use config keys: credential_id, post_text, visibility.",
+            "Use config keys: credential_id, post_text, image, visibility.",
+            "If attaching an Image Gen result, set image to {{image_gen_node_id.image_base64}} or {{image_gen_node_id.image_url}}.",
             "visibility should be PUBLIC or CONNECTIONS.",
         ],
     },
@@ -294,6 +321,21 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
             "response_enhancement can be auto, always, or off.",
             "When referencing upstream workflow data, use {{path.to.value}} templates.",
             "For form triggers, both {{field_name}} and {{form.field_name}} are supported.",
+        ],
+    },
+    "image_gen": {
+        "category": "ai",
+        "description": "Generates one image with OpenAI and returns base64 plus a browser-ready data URL for downstream nodes.",
+        "rules": [
+            "Use this node whenever the user asks to generate, create, make, or include an AI-generated image/visual.",
+            "Use config keys: credential_id, model, prompt, size, quality, style.",
+            "credential_id should be an empty string unless the user explicitly provided a known credential id.",
+            "prompt is required and should be a detailed visual prompt. It may include Autoflow templates from upstream data.",
+            "Supported models: gpt-image-1, dall-e-3, dall-e-2.",
+            "Valid sizes: dall-e-3 supports 1024x1024, 1792x1024, 1024x1792; dall-e-2 supports 256x256, 512x512, 1024x1024; gpt-image-1 supports 1024x1024, 1536x1024, 1024x1536.",
+            "quality should be standard or hd. style should be vivid or natural.",
+            "Outputs available to later nodes: image_base64, image_url, mime_type, prompt_used, revised_prompt, width, height, model.",
+            "For image-capable downstream nodes, reference {{image_gen_node_id.image_base64}} or {{image_gen_node_id.image_url}} in their image config field.",
         ],
     },
     "chat_model_openai": {
@@ -483,6 +525,8 @@ class LLMService:
             - Never invent extra config keys that are not part of the schema below.
             - If you use ai_agent, also include exactly one connected chat_model_openai or chat_model_groq node for it.
             - Chat model nodes are configuration sub-nodes, not normal workflow steps.
+            - If the user asks to generate or include an AI-created image/visual, use an image_gen node. Do not replace image generation with ai_agent text.
+            - When an Image Gen result must be posted, emailed, or sent onward, connect image_gen before the destination node and set the destination image field to {{{{image_gen_node_id.image_base64}}}} or {{{{image_gen_node_id.image_url}}}}.
             - Think step-by-step internally: infer trigger, identify major actions, then connect nodes in execution order.
             - Prefer explicit integration nodes when the user names a channel (Telegram, Gmail, Slack, WhatsApp, Sheets, Docs, LinkedIn).
             - Use real templating placeholders for dynamic values (for example {{email}}, {{form.email}}, {{items}}, {{response.body.id}}).
@@ -530,7 +574,8 @@ class LLMService:
             6. Always use Autoflow template syntax {{...}} for dynamic values; do not use single braces.
             7. If the request specifies a multi-day sequence (for example 14-day), ensure cadence/timing truly matches that duration.
             8. For multi-channel nurture flows, branch channels in parallel rather than chaining all channels serially.
-            9. Return only one JSON object; no explanation text.
+            9. If the request asks for generated images or AI-created visuals, include an image_gen node with model, prompt, size, quality, and style config.
+            10. Return only one JSON object; no explanation text.
             {validation_suffix}
             """
         ).strip()
@@ -576,6 +621,7 @@ class LLMService:
         cls._validate_placeholder_syntax(definition)
         cls._validate_sequence_duration_expectation(definition, user_prompt=user_prompt)
         cls._validate_multi_channel_branching_expectation(definition, user_prompt=user_prompt)
+        cls._validate_image_generation_expectation(definition, user_prompt=user_prompt)
         return definition, cls._extract_workflow_name(payload)
 
     @classmethod
@@ -752,6 +798,11 @@ class LLMService:
         if mentions_openai:
             return "chat_model_openai"
         return None
+
+    @staticmethod
+    def _prompt_requests_image_generation(prompt: str) -> bool:
+        lowered = prompt.lower()
+        return any(keyword in lowered for keyword in IMAGE_GENERATION_HINTS)
 
     @staticmethod
     def _find_start_trigger_node_index(nodes: list[Any], edges: list[Any]) -> int | None:
@@ -1279,6 +1330,33 @@ class LLMService:
             if any(token in prompt for token in tokens):
                 requested.add(node_type)
         return requested
+
+    @classmethod
+    def _validate_image_generation_expectation(
+        cls,
+        definition: WorkflowDefinition,
+        *,
+        user_prompt: str | None,
+    ) -> None:
+        if not user_prompt or not cls._prompt_requests_image_generation(user_prompt):
+            return
+
+        image_gen_nodes = [node for node in definition.nodes if node.type == "image_gen"]
+        if not image_gen_nodes:
+            raise WorkflowGenerationError(
+                "Prompt asks for generated images/visuals, but the workflow does not include an image_gen node."
+            )
+
+        empty_prompt_node_ids = [
+            node.id
+            for node in image_gen_nodes
+            if not str(node.config.get("prompt") or "").strip()
+        ]
+        if empty_prompt_node_ids:
+            raise WorkflowGenerationError(
+                "Image Gen nodes must include a non-empty prompt config. "
+                f"Affected node ids: {', '.join(empty_prompt_node_ids)}"
+            )
 
     @staticmethod
     def _resolve_start_trigger_node_id(definition: WorkflowDefinition) -> str | None:

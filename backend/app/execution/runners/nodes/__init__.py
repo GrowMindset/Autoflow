@@ -8,6 +8,7 @@ from .split_out import SplitOutRunner
 from .aggregate import AggregateRunner
 from .dummy import DummyNodeRunner
 from .ai_agent import AIAgentRunner
+from .image_gen import ImageGenRunner
 from .chat_model_openai import ChatModelOpenAIRunner
 from .chat_model_groq import ChatModelGroqRunner
 from .get_gmail_message import GetGmailMessageRunner
@@ -39,6 +40,7 @@ __all__ = [
     "AggregateRunner",
     "DummyNodeRunner",
     "AIAgentRunner",
+    "ImageGenRunner",
     "ChatModelOpenAIRunner",
     "ChatModelGroqRunner",
     "GetGmailMessageRunner",

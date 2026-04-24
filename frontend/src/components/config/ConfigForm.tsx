@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { Plus } from 'lucide-react';
 import { CredentialItem, credentialService } from '../../services/credentialService';
 import { getAppTimezone } from '../../utils/dateTime';
+import { WorkflowNode } from '../../types/workflow';
 
 const OAUTH_APPS = ['gmail', 'sheets', 'docs', 'linkedin'] as const;
 const OAUTH_NODE_USAGE: Record<string, string[]> = {
@@ -332,6 +333,14 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     { key: 'reply_to', label: 'Reply-To', type: 'text', placeholder: 'e.g. support@example.com' },
     { key: 'subject', label: 'Subject', type: 'text', placeholder: 'e.g. Hello from Autoflow' },
     { key: 'body', label: 'Message Body', type: 'textarea', placeholder: 'Type your message here...' },
+    {
+      key: 'image',
+      label: 'Image',
+      type: 'textarea',
+      placeholder: 'e.g. {{image_gen_1.image_base64}} or {{image_gen_1.image_url}}',
+      helperText: 'Optional. Supports Image Gen base64 or data URI output.',
+      imageTemplateHints: true,
+    },
     { key: 'is_html', label: 'Send As HTML', type: 'boolean' },
   ],
   create_google_sheets: [
@@ -435,6 +444,14 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       options: ['append_text', 'replace_all_text'],
     },
     { key: 'text', label: 'Text', type: 'textarea', placeholder: 'Text to append or replace with...' },
+    {
+      key: 'image',
+      label: 'Image',
+      type: 'textarea',
+      placeholder: 'e.g. {{image_gen_1.image_url}}',
+      helperText: 'Optional. Google Docs insertInlineImage expects a retrievable URI; Image Gen data URI support may depend on Google API acceptance.',
+      imageTemplateHints: true,
+    },
     { key: 'match_text', label: 'Match Text (for replace)', type: 'text', placeholder: 'Required when operation=replace_all_text' },
     { key: 'match_case', label: 'Match Case', type: 'boolean' },
   ],
@@ -455,6 +472,14 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       type: 'textarea',
       placeholder: 'e.g. Order #{{ $json.id }} received!',
       helperText: 'Supports variable mapping and Telegram formatting.',
+    },
+    {
+      key: 'image',
+      label: 'Image',
+      type: 'textarea',
+      placeholder: 'e.g. {{image_gen_1.image_base64}} or {{image_gen_1.image_url}}',
+      helperText: 'Optional. If set, Telegram sends a photo and uses Message Text as the caption.',
+      imageTemplateHints: true,
     },
     { key: 'parse_mode', label: 'Parse Mode', type: 'select', options: ['', 'HTML', 'Markdown', 'MarkdownV2'] },
   ],
@@ -521,6 +546,14 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       credentialKey: 'api_key',
     },
     { key: 'post_text', label: 'Post Content', type: 'textarea', placeholder: 'What do you want to share?' },
+    {
+      key: 'image',
+      label: 'Image',
+      type: 'textarea',
+      placeholder: 'e.g. {{image_gen_1.image_base64}} or {{image_gen_1.image_url}}',
+      helperText: 'Optional. Uploads the image to LinkedIn before publishing the post.',
+      imageTemplateHints: true,
+    },
     {
       key: 'visibility',
       label: 'Visibility',
@@ -673,6 +706,46 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       helperText: 'auto = refine only weak responses, always = always polish, off = raw model output',
     },
   ],
+  image_gen: [
+    { key: 'credential_id', label: 'Credential', type: 'credential_selector', appName: 'openai' },
+    {
+      key: 'model',
+      label: 'Model',
+      type: 'select',
+      options: ['gpt-image-1', 'dall-e-3', 'dall-e-2'],
+    },
+    {
+      key: 'prompt',
+      label: 'Image Prompt',
+      type: 'textarea',
+      placeholder: 'Describe the image you want to generate...',
+      helperText: 'Template syntax: {{previous_node_id.field}}',
+    },
+    {
+      key: 'size',
+      label: 'Size',
+      type: 'select',
+      dynamicOptionsBy: 'model',
+      optionsByProvider: {
+        'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
+        'dall-e-2': ['256x256', '512x512', '1024x1024'],
+        'gpt-image-1': ['1024x1024', '1536x1024', '1024x1536'],
+      },
+      options: ['1024x1024'],
+    },
+    {
+      key: 'quality',
+      label: 'Quality',
+      type: 'select',
+      options: ['standard', 'hd'],
+    },
+    {
+      key: 'style',
+      label: 'Style',
+      type: 'select',
+      options: ['vivid', 'natural'],
+    },
+  ],
   chat_model_openai: [
     { key: 'credential_id', label: 'Credential', type: 'credential_selector', appName: 'openai' },
     {
@@ -707,10 +780,11 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
 interface ConfigFormProps {
   nodeType: string;
   config: Record<string, any>;
+  previousNodes?: WorkflowNode[];
   onChange: (key: string, value: any) => void;
 }
 
-const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) => {
+const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes = [], onChange }) => {
   const [credentials, setCredentials] = useState<CredentialItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeCredentialForm, setActiveCredentialForm] = useState<string | null>(null);
@@ -997,6 +1071,21 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   ]);
 
   useEffect(() => {
+    if (nodeType !== 'image_gen') return;
+
+    const sizesByModel: Record<string, string[]> = {
+      'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
+      'dall-e-2': ['256x256', '512x512', '1024x1024'],
+      'gpt-image-1': ['1024x1024', '1536x1024', '1024x1536'],
+    };
+    const model = String(config.model || 'dall-e-3');
+    const allowedSizes = sizesByModel[model] || sizesByModel['dall-e-3'];
+    if (!allowedSizes.includes(String(config.size || ''))) {
+      onChange('size', allowedSizes[0]);
+    }
+  }, [nodeType, config.model, config.size, onChange]);
+
+  useEffect(() => {
     if (nodeType !== 'merge') return;
 
     const mode = String(config.mode || '').trim().toLowerCase();
@@ -1028,6 +1117,18 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
   }, [nodeType, config, onChange]);
 
   const fields = CONFIG_SCHEMA[nodeType] || [];
+  const imageTemplateHints = previousNodes
+    .filter((previousNode) => previousNode.data?.type === 'image_gen')
+    .flatMap((previousNode) => [
+      `{{${previousNode.id}.image_base64}}`,
+      `{{${previousNode.id}.image_url}}`,
+    ]);
+
+  const insertImageHint = (fieldKey: string, hint: string) => {
+    const current = String(config[fieldKey] || '');
+    const separator = current && !current.endsWith('\n') ? '\n' : '';
+    onChange(fieldKey, `${current}${separator}${hint}`);
+  };
 
 
 
@@ -2104,6 +2205,13 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
       return true;
     }
 
+    if (nodeType === 'image_gen') {
+      if (field.key === 'style') {
+        return String(config.model || 'dall-e-3') === 'dall-e-3';
+      }
+      return true;
+    }
+
     if (nodeType !== 'search_update_google_sheets') {
       return true;
     }
@@ -2155,6 +2263,20 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, onChange }) =
             {renderField(field)}
             {field.helperText && (
               <p className="text-[11px] text-slate-500 dark:text-slate-400">{field.helperText}</p>
+            )}
+            {field.imageTemplateHints && imageTemplateHints.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {imageTemplateHints.map((hint) => (
+                  <button
+                    key={hint}
+                    type="button"
+                    onClick={() => insertImageHint(field.key, hint)}
+                    className="rounded-full border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-1 text-[10px] font-mono text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
+                  >
+                    {hint}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
         ))

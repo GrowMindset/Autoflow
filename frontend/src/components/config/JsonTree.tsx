@@ -6,6 +6,14 @@ interface JsonTreeProps {
   isRoot?: boolean;
 }
 
+const MAX_INLINE_STRING_LENGTH = 240;
+
+const truncateMiddle = (value: string, maxLength = MAX_INLINE_STRING_LENGTH): string => {
+  if (value.length <= maxLength) return value;
+  const edgeLength = Math.floor((maxLength - 15) / 2);
+  return `${value.slice(0, edgeLength)} ... ${value.slice(-edgeLength)} (${value.length.toLocaleString()} chars)`;
+};
+
 // Grip icon (six dots)
 const GripIcon = ({ className }: { className?: string }) => (
   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className={className}>
@@ -44,16 +52,19 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
 
   // ── Leaf primitive value ──────────────────────────────────────────────────
   if (typeof data !== 'object') {
-    const displayStr = typeof data === 'string' ? `"${data}"` : String(data);
+    const rawDisplayStr = typeof data === 'string' ? `"${data}"` : String(data);
+    const displayStr = truncateMiddle(rawDisplayStr);
 
     return (
       <div
         draggable
         onDragStart={(e) => onValueDragStart(e, data)}
-        title={`Drag to copy literal value`}
-        className="relative inline-flex items-center group cursor-grab active:cursor-grabbing hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded px-1 transition-colors"
+        title="Drag to copy literal value"
+        className="relative inline-flex min-w-0 max-w-full items-center group cursor-grab active:cursor-grabbing hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded px-1 transition-colors"
       >
-        <span className="text-emerald-600 dark:text-emerald-400 font-mono text-xs">{displayStr}</span>
+        <span className="max-w-full break-all text-emerald-600 dark:text-emerald-400 font-mono text-xs">
+          {displayStr}
+        </span>
         <span className="pointer-events-none absolute -left-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
           <GripIcon className="text-emerald-400" />
         </span>
@@ -89,13 +100,13 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
 
             return (
               <div key={key} className="flex flex-col gap-0.5">
-                <div className="flex items-start gap-1 group/row">
+                <div className="flex min-w-0 items-start gap-1 group/row">
                   {/* KEY label — drags {{path}} placeholder */}
                   <span
                     draggable
                     onDragStart={(e) => onKeyDragStart(e, currentPath)}
                     title={`Drag key → insert ${ph}`}
-                    className="relative inline-flex items-center group/key cursor-grab active:cursor-grabbing hover:bg-amber-50 dark:hover:bg-amber-900/20 px-1 rounded transition-colors"
+                    className="relative inline-flex shrink-0 items-center group/key cursor-grab active:cursor-grabbing hover:bg-amber-50 dark:hover:bg-amber-900/20 px-1 rounded transition-colors"
                   >
                     <span className="pointer-events-none absolute -left-3 top-1/2 -translate-y-1/2 opacity-0 group-hover/key:opacity-100 transition-opacity">
                       <GripIcon className="text-amber-400" />

@@ -202,6 +202,62 @@ def _definition_for_prompt_kind(kind: str) -> dict:
                 }
             ],
         }
+    if kind == "manual_image_linkedin":
+        return {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "manual_trigger",
+                    "label": "Manual Trigger",
+                    "position": {"x": 100, "y": 150},
+                    "config": {},
+                },
+                {
+                    "id": "n2",
+                    "type": "image_gen",
+                    "label": "Generate Image",
+                    "position": {"x": 360, "y": 150},
+                    "config": {
+                        "credential_id": "",
+                        "model": "dall-e-3",
+                        "prompt": "Create a polished product launch image for {{topic}}.",
+                        "size": "1024x1024",
+                        "quality": "standard",
+                        "style": "vivid",
+                    },
+                },
+                {
+                    "id": "n3",
+                    "type": "linkedin",
+                    "label": "Post To LinkedIn",
+                    "position": {"x": 620, "y": 150},
+                    "config": {
+                        "credential_id": "",
+                        "post_text": "Launching {{topic}}",
+                        "image": "{{n2.image_base64}}",
+                        "visibility": "PUBLIC",
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "target": "n2",
+                    "sourceHandle": None,
+                    "targetHandle": None,
+                    "branch": None,
+                },
+                {
+                    "id": "e2",
+                    "source": "n2",
+                    "target": "n3",
+                    "sourceHandle": None,
+                    "targetHandle": None,
+                    "branch": None,
+                },
+            ],
+        }
     raise ValueError(f"Unknown prompt kind: {kind}")
 
 
@@ -239,6 +295,8 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Edges leaving if_else must set branch to "true" or "false".', prompt)
         self.assertIn("Edges leaving switch must set branch to a case id", prompt)
         self.assertIn('targetHandle to "chat_model"', prompt)
+        self.assertIn("If the user asks to generate or include an AI-created image/visual", prompt)
+        self.assertIn("Outputs available to later nodes: image_base64, image_url", prompt)
 
     def test_validate_generated_workflow_accepts_definition_wrapper(self) -> None:
         raw_content = json.dumps({"definition": _valid_definition()})
@@ -395,6 +453,11 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
                 "manual_ai_agent_openai",
                 {"manual_trigger", "ai_agent", "chat_model_openai"},
             ),
+            (
+                "When I manually run the workflow, generate an image and post it to LinkedIn",
+                "manual_image_linkedin",
+                {"manual_trigger", "image_gen", "linkedin"},
+            ),
         ]
 
         for prompt, definition_kind, expected_node_types in cases:
@@ -410,6 +473,30 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
                 expected_node_types.issubset(actual_node_types),
                 msg=f"Prompt {prompt!r} produced node types {actual_node_types}, expected at least {expected_node_types}",
             )
+
+    def test_validate_generated_workflow_accepts_image_gen_with_empty_credential(self) -> None:
+        payload = _definition_for_prompt_kind("manual_image_linkedin")
+
+        definition, _ = LLMService.validate_generated_workflow(
+            json.dumps(payload),
+            user_prompt="Generate an image and post it to LinkedIn",
+        )
+
+        image_node = next(node for node in definition.nodes if node.type == "image_gen")
+        self.assertEqual(image_node.config["credential_id"], "")
+        self.assertEqual(image_node.config["model"], "dall-e-3")
+        self.assertIn("product launch image", image_node.config["prompt"])
+
+    def test_validate_generated_workflow_requires_image_gen_when_prompt_requests_image(self) -> None:
+        payload = _valid_definition()
+
+        with self.assertRaises(WorkflowGenerationError) as context:
+            LLMService.validate_generated_workflow(
+                json.dumps(payload),
+                user_prompt="Generate an image and send it to Telegram",
+            )
+
+        self.assertIn("does not include an image_gen node", str(context.exception))
 
     def test_validate_generated_workflow_applies_schedule_hint_from_user_prompt(self) -> None:
         payload = _valid_definition()

@@ -17,11 +17,13 @@ Config keys
 - ``credential_id`` : str — UUID of an ``app_credentials`` row (app_name="telegram").
 - ``bot_token``     : str — Optional legacy override; skips credential lookup if set.
 - ``parse_mode``    : str — Optional parse mode: "HTML", "Markdown", or "MarkdownV2".
+- ``image``         : str — Optional base64 image or data URI. Sends via sendPhoto.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 from typing import Any
 
 import httpx
@@ -68,26 +70,36 @@ class TelegramRunner:
 
         # ── Read message parameters ─────────────────────────────────────────
         chat_id = config.get("chat_id") or credential_data.get("chat_id") or ""
-        message = config.get("message", "")
+        message = str(config.get("message") or "")
+        image = str(config.get("image") or "").strip()
 
         if not chat_id:
             raise ValueError(
                 "Telegram: Chat ID is missing. "
                 "Set token_data.chat_id in the selected credential or provide legacy chat_id in node config."
             )
-        if not message:
-            raise ValueError("Telegram: 'message' is required but was not set.")
+        if not message and not image:
+            raise ValueError("Telegram: provide either 'message' or 'image'.")
 
         parse_mode = config.get("parse_mode")
 
         # ── Call the Telegram Bot API ────────────────────────────────────────
         try:
-            response_data = self._send_message(
-                bot_token=bot_token,
-                chat_id=chat_id,
-                message=message,
-                parse_mode=parse_mode,
-            )
+            if image:
+                response_data = self._send_photo(
+                    bot_token=bot_token,
+                    chat_id=chat_id,
+                    image=image,
+                    caption=message,
+                    parse_mode=parse_mode,
+                )
+            else:
+                response_data = self._send_message(
+                    bot_token=bot_token,
+                    chat_id=chat_id,
+                    message=message,
+                    parse_mode=parse_mode,
+                )
         except Exception as exc:
             raise ValueError(f"Telegram: Failed to send message — {exc}") from exc
 
@@ -110,6 +122,7 @@ class TelegramRunner:
         result["telegram_response"] = response_data
         result["telegram_chat_id"] = chat_id
         result["telegram_message"] = message
+        result["telegram_sent_photo"] = bool(image)
         return result
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -156,3 +169,59 @@ class TelegramRunner:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_do_request)
             return future.result()
+
+    @staticmethod
+    def _send_photo(
+        *,
+        bot_token: str,
+        chat_id: str,
+        image: str,
+        caption: str = "",
+        parse_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """POST to Telegram's sendPhoto endpoint with an uploaded image file."""
+        image_bytes, mime_type = TelegramRunner._decode_image(image)
+        url = f"{TELEGRAM_API_BASE}/bot{bot_token}/sendPhoto"
+        payload: dict[str, Any] = {"chat_id": chat_id}
+        if caption:
+            payload["caption"] = caption
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        files = {"photo": ("autoflow-image.png", image_bytes, mime_type)}
+
+        def _do_request() -> dict[str, Any]:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(url, data=payload, files=files)
+                resp.raise_for_status()
+                body = resp.json()
+
+            if not body.get("ok"):
+                description = body.get("description", "Unknown Telegram error")
+                raise ValueError(f"Telegram API error: {description}")
+
+            return body.get("result", body)
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return _do_request()
+
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_do_request)
+            return future.result()
+
+    @staticmethod
+    def _decode_image(value: str) -> tuple[bytes, str]:
+        raw = str(value or "").strip()
+        mime_type = "image/png"
+        if raw.startswith("data:"):
+            header, _, body = raw.partition(",")
+            if ";base64" in header and header.startswith("data:"):
+                mime_type = header[5:].split(";", 1)[0] or mime_type
+            raw = body
+        try:
+            return base64.b64decode(raw, validate=True), mime_type
+        except Exception as exc:
+            raise ValueError("Image field must resolve to valid base64 image data.") from exc

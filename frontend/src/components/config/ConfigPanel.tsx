@@ -5,6 +5,8 @@ import { WorkflowNode } from '../../types/workflow';
 import ConfigForm from './ConfigForm';
 import LogSection from './LogSection';
 import DataView from './DataView';
+import ImageGenConfigPanel from './ImageGenConfigPanel';
+import ImageGenResultDisplay from './ImageGenResultDisplay';
 import { executionService } from '../../services/executionService';
 import api from '../../services/api';
 import { formatTimeInAppTimezone, getAppTimezone } from '../../utils/dateTime';
@@ -726,11 +728,20 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
             </div>
             <div className="flex-1 overflow-auto p-10 custom-scrollbar">
               <div className="max-w-2xl mx-auto pb-20">
-                <ConfigForm
-                  nodeType={node.data.type}
-                  config={node.data.config}
-                  onChange={handleConfigChange}
-                />
+                {node.data.type === 'image_gen' ? (
+                  <ImageGenConfigPanel
+                    config={node.data.config}
+                    previousNodes={previousNodes}
+                    onChange={handleConfigChange}
+                  />
+                ) : (
+                  <ConfigForm
+                    nodeType={node.data.type}
+                    config={node.data.config}
+                    previousNodes={previousNodes}
+                    onChange={handleConfigChange}
+                  />
+                )}
                 
                 {node.data.type === 'webhook_trigger' && (
                   <div className="mt-10 space-y-8 animate-in fade-in slide-in-from-bottom-4">
@@ -967,6 +978,12 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         </div>
                       </div>
                     )}
+                    {node.data.type === 'image_gen' && (
+                      <ImageGenResultDisplay
+                        outputData={node.data.last_execution_result.output_data}
+                        errorMessage={node.data.last_execution_result.error_message}
+                      />
+                    )}
                     <LogSection title="Result Payload" data={node.data.last_execution_result.output_data} />
                   </div>
                 ) : output ? (
@@ -989,6 +1006,12 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                           {aiErrorText}
                         </div>
                       </div>
+                    )}
+                    {node.data.type === 'image_gen' && (
+                      <ImageGenResultDisplay
+                        outputData={output}
+                        errorMessage={typeof output?.error === 'string' ? output.error : null}
+                      />
                     )}
                     <DataView data={output} emptyMessage="No output data recorded" />
                   </div>

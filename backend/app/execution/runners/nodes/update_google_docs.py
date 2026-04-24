@@ -37,6 +37,7 @@ class UpdateGoogleDocsRunner:
         document_id = str(config.get("document_id") or "").strip()
         operation = str(config.get("operation") or "append_text").strip().lower()
         text = str(config.get("text") or "")
+        image = str(config.get("image") or "").strip()
         match_text = str(config.get("match_text") or "")
         match_case = bool(config.get("match_case", False))
 
@@ -44,8 +45,8 @@ class UpdateGoogleDocsRunner:
             raise ValueError("Google Docs Update: 'document_id' is required.")
         if operation not in {"append_text", "replace_all_text"}:
             raise ValueError("Google Docs Update: 'operation' must be append_text or replace_all_text.")
-        if not text:
-            raise ValueError("Google Docs Update: 'text' is required.")
+        if not text and not image:
+            raise ValueError("Google Docs Update: provide either 'text' or 'image'.")
         if operation == "replace_all_text" and not match_text:
             raise ValueError("Google Docs Update: 'match_text' is required for replace_all_text operation.")
 
@@ -61,15 +62,23 @@ class UpdateGoogleDocsRunner:
             response_meta: dict[str, Any] = {}
             if operation == "append_text":
                 end_index = self._resolve_end_index(document)
-                requests = [
-                    {
+                requests = []
+                if text:
+                    requests.append({
                         "insertText": {
                             "location": {"index": end_index},
                             "text": text,
                         }
-                    }
-                ]
+                    })
+                if image:
+                    requests.append({
+                        "insertInlineImage": {
+                            "location": {"index": end_index + len(text)},
+                            "uri": image,
+                        }
+                    })
                 response_meta["google_docs_inserted_chars"] = len(text)
+                response_meta["google_docs_inserted_image"] = bool(image)
             else:
                 requests = [
                     {
@@ -95,6 +104,22 @@ class UpdateGoogleDocsRunner:
                         occurrences = int(item["replaceAllText"].get("occurrencesChanged") or 0)
                         break
                 response_meta["google_docs_replaced_occurrences"] = occurrences
+                if image:
+                    end_index = self._resolve_end_index(document)
+                    docs_service.documents().batchUpdate(
+                        documentId=document_id,
+                        body={
+                            "requests": [
+                                {
+                                    "insertInlineImage": {
+                                        "location": {"index": end_index},
+                                        "uri": image,
+                                    }
+                                }
+                            ]
+                        },
+                    ).execute()
+                    response_meta["google_docs_inserted_image"] = True
         except HttpError as exc:
             google_error = self._extract_google_error(exc)
             if exc.resp is not None and int(getattr(exc.resp, "status", 0) or 0) == 403:
@@ -127,6 +152,7 @@ class UpdateGoogleDocsRunner:
                 "google_docs_title": title,
                 "google_docs_operation": operation,
                 "google_docs_text": text,
+                "google_docs_inserted_image": bool(image),
                 **response_meta,
             }
         )

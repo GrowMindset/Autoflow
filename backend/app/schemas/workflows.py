@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -56,6 +56,7 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "reply_to": "",
         "subject": "",
         "body": "",
+        "image": "",
         "is_html": False,
     },
     "create_google_sheets": {
@@ -96,12 +97,14 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "document_id": "",
         "operation": "append_text",
         "text": "",
+        "image": "",
         "match_text": "",
         "match_case": False,
     },
     "telegram": {
         "credential_id": "",
         "message": "",
+        "image": "",
         "parse_mode": "",
     },
     "whatsapp": {
@@ -114,6 +117,7 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
     "linkedin": {
         "credential_id": "",
         "post_text": "",
+        "image": "",
         "visibility": "PUBLIC",
     },
     "http_request": {
@@ -219,6 +223,14 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "system_prompt": "",
         "command": "",
         "response_enhancement": "auto",
+    },
+    "image_gen": {
+        "credential_id": "",
+        "model": "dall-e-3",
+        "prompt": "",
+        "size": "1024x1024",
+        "quality": "standard",
+        "style": "vivid",
     },
     "chat_model_openai": {
         "credential_id": "",
@@ -344,6 +356,36 @@ def _normalize_and_prune_merge_config(config: dict[str, Any]) -> dict[str, Any]:
     return pruned
 
 
+IMAGE_GEN_SIZES_BY_MODEL: dict[str, set[str]] = {
+    "dall-e-3": {"1024x1024", "1792x1024", "1024x1792"},
+    "dall-e-2": {"256x256", "512x512", "1024x1024"},
+    "gpt-image-1": {"1024x1024", "1536x1024", "1024x1536"},
+}
+
+
+class ImageGenNodeConfig(BaseModel):
+    credential_id: str = ""
+    model: Literal["gpt-image-1", "dall-e-3", "dall-e-2"] = "dall-e-3"
+    prompt: str = Field(min_length=1)
+    size: str = "1024x1024"
+    quality: Literal["standard", "hd"] = "standard"
+    style: Literal["vivid", "natural"] = "vivid"
+
+    @model_validator(mode="after")
+    def validate_model_size(self) -> "ImageGenNodeConfig":
+        if self.size not in IMAGE_GEN_SIZES_BY_MODEL[self.model]:
+            allowed = ", ".join(sorted(IMAGE_GEN_SIZES_BY_MODEL[self.model]))
+            raise ValueError(
+                f"Image Gen size '{self.size}' is invalid for {self.model}. Use one of: {allowed}."
+            )
+        return self
+
+
+NODE_CONFIG_SCHEMAS = {
+    "image_gen": ImageGenNodeConfig,
+}
+
+
 class WorkflowNodePosition(BaseModel):
     x: float | int
     y: float | int
@@ -366,6 +408,10 @@ class WorkflowNodeDefinition(BaseModel):
             **defaults,
             **self.config,
         }
+
+        schema = NODE_CONFIG_SCHEMAS.get(self.type)
+        if schema is not None:
+            self.config = schema(**self.config).model_dump()
 
         if self.type == "switch":
             raw_cases = self.config.get("cases", [])

@@ -49,10 +49,11 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     'file_read': ['file_path'],
     'file_write': ['file_path'],
     'create_google_docs': ['credential_id', 'title'],
-    'update_google_docs': ['credential_id', 'document_id', 'operation', 'text'],
-    'telegram': ['credential_id', 'message'],
+    'update_google_docs': ['credential_id', 'document_id', 'operation'],
+    'telegram': ['credential_id'],
     'whatsapp': ['credential_id', 'to_number', 'template_name'],
     'ai_agent': ['command'],
+    'image_gen': ['credential_id', 'model', 'prompt', 'size'],
     'chat_model_openai': ['credential_id', 'model'],
     'chat_model_groq': ['credential_id', 'model'],
   };
@@ -83,6 +84,9 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
 
   if (type === 'update_google_docs' && config.operation === 'replace_all_text' && !config.match_text) {
     missing.push("Required field 'match_text' is missing for replace_all_text operation");
+  }
+  if (type === 'update_google_docs' && !String(config.text || '').trim() && !String(config.image || '').trim()) {
+    missing.push("Provide either 'text' or 'image'");
   }
 
   if (type === 'search_update_google_sheets') {
@@ -164,6 +168,10 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     }
   }
 
+  if (type === 'telegram' && !String(config.message || '').trim() && !String(config.image || '').trim()) {
+    missing.push("Provide either 'message' or 'image'");
+  }
+
   if (type === 'ai_agent' && !isChatModelConnected) {
     missing.push('Requires a Chat Model node connected to its bottom handle');
   }
@@ -172,7 +180,9 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
 };
 
 const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected }) => {
-  const accentColor = CATEGORY_ACCENTS[data.category] || '#cbd5e1';
+  const accentColor = data.type === 'image_gen'
+    ? '#f59e0b'
+    : CATEGORY_ACCENTS[data.category] || '#cbd5e1';
   const updateNodeInternals = useUpdateNodeInternals();
   const { deleteElements } = useReactFlow();
   const edges = useEdges();

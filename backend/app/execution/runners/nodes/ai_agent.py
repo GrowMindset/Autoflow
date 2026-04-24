@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import asyncio
 import re
 from typing import Any
@@ -102,7 +103,12 @@ class AIAgentRunner:
             # Preserve upstream context but strip subnode configs to keep payload clean
             result.update({k: v for k, v in input_data.items() if k not in ("chat_model", "memory", "tool")})
 
-        result["output"] = response_text
+        try:
+            parsed = json.loads(response_text)
+            result["output"] = parsed  # now a dict, dot notation works
+        except (json.JSONDecodeError, ValueError):
+            result["output"] = response_text  # fallback to string
+            
         result["ai_metadata"] = {
             "provider": provider,
             "model": model,

@@ -49,6 +49,7 @@ class SendGmailMessageRunner:
         reply_to = self._normalize_single_email(config.get("reply_to"), field_name="reply_to")
         subject = str(config.get("subject") or "").strip()
         body = str(config.get("body") or "")
+        image = str(config.get("image") or "").strip()
         is_html = bool(config.get("is_html", False))
 
         if not to_list:
@@ -76,6 +77,14 @@ class SendGmailMessageRunner:
             message.add_alternative(body, subtype="html")
         else:
             message.set_content(body)
+        if image:
+            image_bytes, image_subtype = self._decode_image(image)
+            message.add_attachment(
+                image_bytes,
+                maintype="image",
+                subtype=image_subtype,
+                filename="image.png",
+            )
 
         if not is_google_oauth_credential(credential_data):
             raise ValueError(
@@ -99,6 +108,7 @@ class SendGmailMessageRunner:
                 "gmail_bcc": bcc_list,
                 "gmail_subject": subject,
                 "gmail_is_html": is_html,
+                "gmail_attached_image": bool(image),
             }
         )
         return result
@@ -246,6 +256,24 @@ class SendGmailMessageRunner:
             return raw or str(exc)
         except Exception:
             return str(exc)
+
+    @staticmethod
+    def _decode_image(value: str) -> tuple[bytes, str]:
+        raw = str(value or "").strip()
+        mime_type = "image/png"
+        if raw.startswith("data:"):
+            header, _, body = raw.partition(",")
+            if ";base64" in header and header.startswith("data:"):
+                mime_type = header[5:].split(";", 1)[0] or mime_type
+            raw = body
+        try:
+            image_bytes = base64.b64decode(raw, validate=True)
+        except Exception as exc:
+            raise ValueError(
+                "Gmail Send: image field must resolve to valid base64 image data."
+            ) from exc
+        subtype = mime_type.split("/", 1)[1] if "/" in mime_type else "png"
+        return image_bytes, subtype
 
     @staticmethod
     def _resolve_credential_data(config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

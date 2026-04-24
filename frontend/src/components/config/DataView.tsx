@@ -15,6 +15,14 @@ interface DataViewProps {
   initialMode?: DataViewMode;
 }
 
+const MAX_CELL_STRING_LENGTH = 240;
+
+const truncateMiddle = (value: string, maxLength = MAX_CELL_STRING_LENGTH): string => {
+  if (value.length <= maxLength) return value;
+  const edgeLength = Math.floor((maxLength - 15) / 2);
+  return `${value.slice(0, edgeLength)} ... ${value.slice(-edgeLength)} (${value.length.toLocaleString()} chars)`;
+};
+
 const stringifyValue = (value: unknown): string => {
   if (value === undefined) return 'undefined';
   if (typeof value === 'string') return value;
@@ -188,10 +196,10 @@ const DataView: React.FC<DataViewProps> = ({
                       <span
                         draggable
                         onDragStart={(event) => handleValueDragStart(event, row.rawValue)}
-                        title={row.value}
+                        title="Drag to copy literal value"
                         className="inline-flex max-w-full cursor-grab items-center rounded px-1.5 py-0.5 hover:bg-emerald-50 active:cursor-grabbing dark:hover:bg-emerald-900/20"
                       >
-                        <span className="truncate whitespace-nowrap">{row.value}</span>
+                        <span className="truncate whitespace-nowrap">{truncateMiddle(row.value)}</span>
                       </span>
                     </td>
                   </tr>
