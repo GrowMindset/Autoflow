@@ -26,6 +26,21 @@ class LoopControlOverride(BaseModel):
     max_total_node_executions: int | None = None
 
 
+class LoopControlSnapshot(BaseModel):
+    enabled: bool
+    max_node_executions: int
+    max_total_node_executions: int
+
+
+class ExecutionLoopSettings(BaseModel):
+    enabled: bool
+    max_node_executions: int
+    max_total_node_executions: int
+    source: Literal["workflow_definition", "runtime_override"]
+    workflow_default: LoopControlSnapshot
+    runtime_override: LoopControlOverride | None = None
+
+
 class RunFormRequest(BaseModel):
     form_data: dict[str, Any]
     start_node_id: str | None = None
@@ -56,6 +71,7 @@ class ExecutionEnqueueResponse(BaseModel):
     workflow_id: UUID
     status: ExecutionStatus
     triggered_by: TriggeredBy
+    loop_settings: ExecutionLoopSettings | None = None
 
 
 class WebhookEnqueueResponse(BaseModel):
@@ -101,6 +117,7 @@ class ExecutionDetailResponse(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     error_message: str | None
+    loop_settings: ExecutionLoopSettings | None = None
     node_results: list[NodeExecutionResult]
 
 

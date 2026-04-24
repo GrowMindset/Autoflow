@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import socket
+from collections.abc import Callable, Iterable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -19,6 +20,7 @@ class HttpRequestRunner:
     _SUPPORTED_BODY_TYPES = {"none", "json", "form", "raw"}
     _SUPPORTED_API_KEY_IN = {"header", "query"}
     _LOCAL_HOST_NAMES = {"localhost", "localhost.localdomain"}
+    _HOST_RESOLVER_CONTEXT_KEY = "outbound_host_resolver"
 
     def run(
         self,
@@ -40,7 +42,8 @@ class HttpRequestRunner:
             raise ValueError("HTTP Request: 'url' is required.")
         if not (url.startswith("http://") or url.startswith("https://")):
             raise ValueError("HTTP Request: 'url' must start with http:// or https://.")
-        self._validate_outbound_target(url)
+        outbound_resolver = self._extract_outbound_resolver(context)
+        self._validate_outbound_target(url, resolver=outbound_resolver)
 
         headers = self._parse_mapping(config.get("headers_json"), field_name="headers_json")
         query = self._parse_mapping(config.get("query_json"), field_name="query_json")
@@ -88,6 +91,7 @@ class HttpRequestRunner:
             timeout_seconds=timeout_seconds,
             follow_redirects=follow_redirects,
             request_kwargs=request_kwargs,
+            outbound_resolver=outbound_resolver,
         )
 
         parsed_body, body_kind = self._parse_response_body(
@@ -150,7 +154,26 @@ class HttpRequestRunner:
         return hosts
 
     @classmethod
-    def _validate_outbound_target(cls, url: str) -> None:
+    def _extract_outbound_resolver(
+        cls,
+        context: dict[str, Any],
+    ) -> Callable[[str, int], Iterable[str]] | None:
+        candidate = context.get(cls._HOST_RESOLVER_CONTEXT_KEY)
+        if candidate is None:
+            return None
+        if not callable(candidate):
+            raise ValueError(
+                "HTTP Request: outbound_host_resolver must be callable when provided in context."
+            )
+        return candidate
+
+    @classmethod
+    def _validate_outbound_target(
+        cls,
+        url: str,
+        *,
+        resolver: Callable[[str, int], Iterable[str]] | None = None,
+    ) -> None:
         parsed = urlparse(url)
         host = parsed.hostname
         if not host:
@@ -173,19 +196,52 @@ class HttpRequestRunner:
             return
 
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        resolved_ips = cls._resolve_host_addresses(
+            host=host_lower,
+            port=port,
+            resolver=resolver,
+        )
+        for resolved_ip in resolved_ips:
+            cls._ensure_public_ip(resolved_ip)
+
+    @classmethod
+    def _resolve_host_addresses(
+        cls,
+        *,
+        host: str,
+        port: int,
+        resolver: Callable[[str, int], Iterable[str]] | None,
+    ) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+        if resolver is not None:
+            try:
+                resolved_items = list(resolver(host, port))
+            except Exception as exc:
+                raise ValueError(f"HTTP Request: could not resolve host '{host}'.") from exc
+            if not resolved_items:
+                raise ValueError(f"HTTP Request: could not resolve host '{host}'.")
+            resolved_ips = [
+                cls._parse_ip_literal(str(item))
+                for item in resolved_items
+            ]
+            filtered = [item for item in resolved_ips if item is not None]
+            if not filtered:
+                raise ValueError(f"HTTP Request: could not resolve host '{host}'.")
+            return filtered
+
         try:
             resolved = socket.getaddrinfo(
-                host_lower,
+                host,
                 port,
                 family=socket.AF_UNSPEC,
                 type=socket.SOCK_STREAM,
             )
         except socket.gaierror as exc:
-            raise ValueError(f"HTTP Request: could not resolve host '{host_lower}'.") from exc
+            raise ValueError(f"HTTP Request: could not resolve host '{host}'.") from exc
 
         if not resolved:
-            raise ValueError(f"HTTP Request: could not resolve host '{host_lower}'.")
+            raise ValueError(f"HTTP Request: could not resolve host '{host}'.")
 
+        resolved_ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
         for item in resolved:
             sockaddr = item[4]
             if not sockaddr:
@@ -193,7 +249,11 @@ class HttpRequestRunner:
             resolved_ip = cls._parse_ip_literal(str(sockaddr[0]))
             if resolved_ip is None:
                 continue
-            cls._ensure_public_ip(resolved_ip)
+            resolved_ips.append(resolved_ip)
+
+        if not resolved_ips:
+            raise ValueError(f"HTTP Request: could not resolve host '{host}'.")
+        return resolved_ips
 
     @staticmethod
     def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -393,6 +453,7 @@ class HttpRequestRunner:
         timeout_seconds: float,
         follow_redirects: bool,
         request_kwargs: dict[str, Any],
+        outbound_resolver: Callable[[str, int], Iterable[str]] | None,
     ) -> httpx.Response:
         try:
             with httpx.Client(
@@ -421,7 +482,10 @@ class HttpRequestRunner:
                     next_request = response.next_request
                     if next_request is None:
                         break
-                    self._validate_outbound_target(str(next_request.url))
+                    self._validate_outbound_target(
+                        str(next_request.url),
+                        resolver=outbound_resolver,
+                    )
                     response = client.send(next_request)
                 return response
         except httpx.TimeoutException as exc:

@@ -113,6 +113,117 @@ const normalizeSwitchNodeConfig = (config: Record<string, any> | undefined): Rec
   return nextConfig;
 };
 
+const MERGE_MODE_ALIASES: Record<string, string> = {
+  choose_input1: 'choose_input_1',
+  choose_input_1: 'choose_input_1',
+  choose_input2: 'choose_input_2',
+  choose_input_2: 'choose_input_2',
+  choose_input: 'choose_branch',
+  choose: 'choose_branch',
+  passthrough: 'choose_input_1',
+  pass_through: 'choose_input_1',
+  'pass-through': 'choose_input_1',
+  pass: 'choose_input_1',
+};
+const MERGE_JOIN_TYPES = new Set(['inner', 'left', 'right', 'outer']);
+const MERGE_OUTPUT_MODES = new Set(['append', 'combine_by_position', 'combine_by_fields']);
+const MERGE_KNOWN_CONFIG_KEYS = new Set([
+  'mode',
+  'input_count',
+  'choose_branch',
+  'output_key',
+  'input_1_handle',
+  'input_2_handle',
+  'join_type',
+  'input_1_field',
+  'input_2_field',
+  'allow_missing_branch_fallback',
+]);
+const MERGE_EDITOR_DEFAULT_CONFIG: Record<string, any> = (() => {
+  const mergeNodeDefinition = NODE_LIBRARY.transform.find((node) => node.type === 'merge');
+  return { ...(mergeNodeDefinition?.default_config || {}) };
+})();
+
+const normalizeMergeMode = (rawMode: unknown): string => {
+  const normalized = String(rawMode || 'append').trim().toLowerCase();
+  if (!normalized) return 'append';
+  return MERGE_MODE_ALIASES[normalized] || normalized;
+};
+
+const normalizeMergeInputCount = (rawCount: unknown): number => {
+  const parsed = Number.parseInt(String(rawCount ?? ''), 10);
+  if (!Number.isFinite(parsed)) return 2;
+  return Math.min(6, Math.max(2, parsed));
+};
+
+const normalizeMergeConfigForEditor = (config: Record<string, any> | undefined): Record<string, any> => {
+  const safeConfig = config && typeof config === 'object' ? config : {};
+  const nextConfig = {
+    ...MERGE_EDITOR_DEFAULT_CONFIG,
+    ...safeConfig,
+  };
+  const mode = normalizeMergeMode(nextConfig.mode);
+  const inputCount = normalizeMergeInputCount(nextConfig.input_count);
+  const chooseBranchRaw = String(nextConfig.choose_branch || '').trim().toLowerCase();
+  const chooseBranch = chooseBranchRaw || (mode === 'choose_input_2' ? 'input2' : 'input1');
+  nextConfig.mode = mode;
+  nextConfig.input_count = inputCount;
+  nextConfig.choose_branch = chooseBranch;
+  return nextConfig;
+};
+
+const pruneMergeConfigForPersistence = (config: Record<string, any> | undefined): Record<string, any> => {
+  const editorConfig = normalizeMergeConfigForEditor(config);
+  const mode = normalizeMergeMode(editorConfig.mode);
+  const inputCount = normalizeMergeInputCount(editorConfig.input_count);
+  const chooseBranch = String(editorConfig.choose_branch || 'input1').trim().toLowerCase() || 'input1';
+  const outputKey = String(editorConfig.output_key || '').trim() || 'merged';
+  const input1Handle = String(editorConfig.input_1_handle || 'input1').trim() || 'input1';
+  const input2Handle = String(editorConfig.input_2_handle || 'input2').trim() || 'input2';
+  const joinTypeRaw = String(editorConfig.join_type || 'inner').trim().toLowerCase();
+  const joinType = MERGE_JOIN_TYPES.has(joinTypeRaw) ? joinTypeRaw : 'inner';
+  const nextConfig: Record<string, any> = Object.fromEntries(
+    Object.entries(editorConfig).filter(([key]) => !MERGE_KNOWN_CONFIG_KEYS.has(key)),
+  );
+
+  nextConfig.mode = mode;
+  nextConfig.input_count = inputCount;
+  if (parseBooleanLike(editorConfig.allow_missing_branch_fallback, false)) {
+    nextConfig.allow_missing_branch_fallback = true;
+  }
+
+  if (mode === 'choose_branch') {
+    nextConfig.choose_branch = chooseBranch;
+    return nextConfig;
+  }
+
+  if (mode === 'choose_input_1') {
+    nextConfig.input_1_handle = input1Handle;
+    return nextConfig;
+  }
+
+  if (mode === 'choose_input_2') {
+    nextConfig.input_2_handle = input2Handle;
+    return nextConfig;
+  }
+
+  if (MERGE_OUTPUT_MODES.has(mode)) {
+    nextConfig.output_key = outputKey;
+  }
+
+  if (mode === 'combine_by_position' || mode === 'combine_by_fields') {
+    nextConfig.join_type = joinType;
+    nextConfig.input_1_handle = input1Handle;
+    nextConfig.input_2_handle = input2Handle;
+  }
+  if (mode === 'combine_by_fields') {
+    nextConfig.input_1_field = String(editorConfig.input_1_field || '').trim();
+    nextConfig.input_2_field = String(editorConfig.input_2_field || '').trim();
+  }
+
+  return nextConfig;
+};
+
 const buildSwitchBranchLookup = (nodes: any[]): Map<string, SwitchBranchLookup> => {
   const lookup = new Map<string, SwitchBranchLookup>();
 
@@ -306,6 +417,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           }
           if (node.data.type === 'switch') {
             return normalizeSwitchNodeConfig(nextConfig);
+          }
+          if (node.data.type === 'merge') {
+            return pruneMergeConfigForPersistence(nextConfig);
           }
           return nextConfig;
         })(),
@@ -1898,6 +2012,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             NODE_LIBRARY.input_output.some(ref => ref.type === n.type) ? 'input_output' : 'ai';
       const normalizedConfig = n.type === 'switch'
         ? normalizeSwitchNodeConfig(n.config)
+        : n.type === 'merge'
+          ? normalizeMergeConfigForEditor(n.config)
         : n.config;
 
       return {
@@ -2978,6 +3094,19 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
                           {!isExecutionDetailLoading && selectedExecutionDetail && selectedExecutionDetail.id === run.executionId && (
                             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+                              {selectedExecutionDetail.loop_settings && (
+                                <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/60">
+                                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-1">
+                                    Effective Loop Settings
+                                  </div>
+                                  <div className="text-[12px] font-mono text-slate-700 dark:text-slate-300 flex flex-wrap gap-x-5 gap-y-1">
+                                    <span><span className="text-slate-400 dark:text-slate-500">enabled</span> {String(selectedExecutionDetail.loop_settings.enabled)}</span>
+                                    <span><span className="text-slate-400 dark:text-slate-500">max_node</span> {selectedExecutionDetail.loop_settings.max_node_executions}</span>
+                                    <span><span className="text-slate-400 dark:text-slate-500">max_total</span> {selectedExecutionDetail.loop_settings.max_total_node_executions}</span>
+                                    <span><span className="text-slate-400 dark:text-slate-500">source</span> {selectedExecutionDetail.loop_settings.source === 'runtime_override' ? 'Runtime Override' : 'Workflow Default'}</span>
+                                  </div>
+                                </div>
+                              )}
                               <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500">
                                 Node Execution Logs
                               </div>

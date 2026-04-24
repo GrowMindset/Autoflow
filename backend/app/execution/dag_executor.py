@@ -164,6 +164,17 @@ class DagExecutor:
                 context.node_execution_counts[node_id],
                 seeded_count,
             )
+            if (
+                context.loop_enabled
+                and seeded_count > 0
+                and node_id in context.cycle_node_ids
+            ):
+                non_cycle_required = int(context.non_cycle_indegree.get(node_id, 0))
+                if non_cycle_required > 0:
+                    context.cycle_seeded_non_cycle_inputs[node_id] = max(
+                        int(context.cycle_seeded_non_cycle_inputs.get(node_id, 0)),
+                        non_cycle_required,
+                    )
 
     @staticmethod
     def _loop_runtime_state_snapshot(*, context: ExecutionContext) -> dict[str, Any] | None:
@@ -490,6 +501,11 @@ class DagExecutor:
                     f"Sub-node '{sub_id or sub_type}' ({sub_type}) failed: {exc}"
                 ) from exc
 
+            sub_output = self._inject_api_key(
+                sub_output=sub_output,
+                runner_context=runner_context,
+            )
+
             if sub_id and exec_context is not None:
                 exec_context.node_states[sub_id] = "completed"
                 exec_context.visited_nodes.append(sub_id)
@@ -626,10 +642,14 @@ class DagExecutor:
         for node_id in nodes_by_id:
             indegree[node_id] = 0
         for node_id, incoming in incoming_edges.items():
-            indegree[node_id] = sum(
+            indegree[node_id] = len(incoming)
+
+        non_cycle_indegree: dict[str, int] = {}
+        for node_id, incoming in incoming_edges.items():
+            non_cycle_indegree[node_id] = sum(
                 1
                 for edge in incoming
-                if not (loop_enabled and self._edge_key(edge) in cycle_edge_ids)
+                if self._edge_key(edge) not in cycle_edge_ids
             )
 
         if loop_enabled:
@@ -644,7 +664,7 @@ class DagExecutor:
             topological_order = self._topological_sort(
                 nodes_by_id,
                 pruned_outgoing_edges,
-                indegree,
+                non_cycle_indegree,
             )
         else:
             topological_order = self._topological_sort(nodes_by_id, outgoing_edges, indegree)
@@ -665,6 +685,8 @@ class DagExecutor:
             max_total_node_executions=max_total_node_executions,
             cycle_node_ids=cycle_node_ids,
             cycle_edge_ids=cycle_edge_ids,
+            non_cycle_indegree=non_cycle_indegree,
+            cycle_seeded_non_cycle_inputs={node_id: 0 for node_id in nodes_by_id},
             node_execution_counts={node_id: 0 for node_id in nodes_by_id},
         )
 
@@ -899,7 +921,12 @@ class DagExecutor:
         accounted_inputs = (
             len(context.pending_inputs[node_id]) + context.blocked_input_counts[node_id]
         )
-        if accounted_inputs < context.indegree[node_id] and context.indegree[node_id] > 0:
+        required_inputs = self._required_input_count(
+            context=context,
+            node_id=node_id,
+            node_type=node_type,
+        )
+        if accounted_inputs < required_inputs and required_inputs > 0:
             return
 
         if context.total_node_executions >= context.max_total_node_executions:
@@ -1049,6 +1076,7 @@ class DagExecutor:
         context.node_outputs[node_id] = output_data
         context.visited_nodes.append(node_id)
         context.node_states[node_id] = "completed"
+        self._seed_cycle_non_cycle_inputs(context=context, node_id=node_id)
         context.pending_inputs[node_id] = []
         self._emit_node_progress(
             node_id=node_id,
@@ -1192,6 +1220,56 @@ class DagExecutor:
                     queue.append(next_node_id)
 
         return False
+
+    def _required_input_count(
+        self,
+        *,
+        context: ExecutionContext,
+        node_id: str,
+        node_type: str,
+    ) -> int:
+        base_indegree = int(context.indegree.get(node_id, 0))
+        if (
+            not context.loop_enabled
+            or node_id not in context.cycle_node_ids
+        ):
+            return base_indegree
+
+        non_cycle_indegree = int(context.non_cycle_indegree.get(node_id, 0))
+        node_executions = int(context.node_execution_counts.get(node_id, 0))
+        if node_executions <= 0:
+            if non_cycle_indegree > 0:
+                return non_cycle_indegree
+            if node_type in TRIGGER_NODE_TYPES:
+                return 0
+            return 1 if base_indegree > 0 else 0
+
+        seeded_non_cycle = int(context.cycle_seeded_non_cycle_inputs.get(node_id, 0))
+        return max(0, base_indegree - seeded_non_cycle)
+
+    def _seed_cycle_non_cycle_inputs(
+        self,
+        *,
+        context: ExecutionContext,
+        node_id: str,
+    ) -> None:
+        if (
+            not context.loop_enabled
+            or node_id not in context.cycle_node_ids
+        ):
+            return
+
+        non_cycle_indegree = int(context.non_cycle_indegree.get(node_id, 0))
+        if non_cycle_indegree <= 0:
+            return
+
+        current_seeded = int(context.cycle_seeded_non_cycle_inputs.get(node_id, 0))
+        if current_seeded >= non_cycle_indegree:
+            return
+
+        # Once a cycle node executes successfully, non-cycle dependencies are
+        # considered latched for subsequent loop turns.
+        context.cycle_seeded_non_cycle_inputs[node_id] = non_cycle_indegree
 
     def _handle_split_in(
         self,
@@ -1499,7 +1577,12 @@ class DagExecutor:
             accounted_inputs = (
                 len(context.pending_inputs[node_id]) + context.blocked_input_counts[node_id]
             )
-            if accounted_inputs < context.indegree[node_id]:
+            required_inputs = self._required_input_count(
+                context=context,
+                node_id=node_id,
+                node_type=node_type,
+            )
+            if accounted_inputs < required_inputs:
                 # For merge nodes, an untaken branch is expected in conditional flows.
                 # Keep merge in a waiting state instead of marking it as an error-like block.
                 self._emit_node_progress(
@@ -1509,7 +1592,7 @@ class DagExecutor:
                     error_message=None,
                 )
                 return
-            if accounted_inputs == context.indegree[node_id]:
+            if accounted_inputs == required_inputs:
                 if len(context.pending_inputs[node_id]) > 0:
                     merge_data_list = list(context.pending_inputs[node_id])
                     self._handle_merge_execution(context=context, node_id=node_id, merge_inputs=merge_data_list)
@@ -1528,7 +1611,12 @@ class DagExecutor:
         accounted_inputs = (
             len(context.pending_inputs[node_id]) + context.blocked_input_counts[node_id]
         )
-        if accounted_inputs < context.indegree[node_id]:
+        required_inputs = self._required_input_count(
+            context=context,
+            node_id=node_id,
+            node_type=node_type,
+        )
+        if accounted_inputs < required_inputs:
             self._emit_node_progress(
                 node_id=node_id,
                 node_type=node_type,

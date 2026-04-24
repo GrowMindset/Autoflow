@@ -6,6 +6,21 @@ interface LoopControlOverridePayload {
   max_total_node_executions?: number;
 }
 
+export interface LoopControlSnapshot {
+  enabled: boolean;
+  max_node_executions: number;
+  max_total_node_executions: number;
+}
+
+export interface ExecutionLoopSettings {
+  enabled: boolean;
+  max_node_executions: number;
+  max_total_node_executions: number;
+  source: 'workflow_definition' | 'runtime_override';
+  workflow_default: LoopControlSnapshot;
+  runtime_override?: LoopControlOverridePayload | null;
+}
+
 export interface RunFormPayload {
   form_data: Record<string, any>;
   start_node_id?: string;
@@ -43,6 +58,7 @@ export interface ExecutionDetail {
   started_at: string | null;
   finished_at: string | null;
   error_message: string | null;
+  loop_settings?: ExecutionLoopSettings | null;
   node_results: NodeExecutionResult[];
 }
 

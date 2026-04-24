@@ -29,5 +29,7 @@ class ExecutionContext:
     max_total_node_executions: int = 500
     cycle_node_ids: set[str] = field(default_factory=set)
     cycle_edge_ids: set[str] = field(default_factory=set)
+    non_cycle_indegree: dict[str, int] = field(default_factory=dict)
+    cycle_seeded_non_cycle_inputs: dict[str, int] = field(default_factory=dict)
     node_execution_counts: dict[str, int] = field(default_factory=dict)
     total_node_executions: int = 0

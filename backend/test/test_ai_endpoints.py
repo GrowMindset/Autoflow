@@ -53,7 +53,7 @@ class _FailingLLMService:
         )
 
 
-def _override_current_user() -> User:
+async def _override_current_user() -> User:
     return User(
         id=uuid4(),
         email="ai@example.com",
@@ -68,6 +68,7 @@ class AIEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.client = ASGITestClient(app)
 
     async def asyncTearDown(self) -> None:
+        await self.client.aclose()
         app.dependency_overrides.clear()
 
     async def test_generate_workflow_requires_authentication(self) -> None:
@@ -82,8 +83,11 @@ class AIEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_generate_workflow_returns_definition(self) -> None:
         from app.core.auth import get_current_user
 
+        async def override_llm_service() -> _SuccessfulLLMService:
+            return _SuccessfulLLMService()
+
         app.dependency_overrides[get_current_user] = _override_current_user
-        app.dependency_overrides[get_llm_service] = _SuccessfulLLMService
+        app.dependency_overrides[get_llm_service] = override_llm_service
 
         status_code, payload = await self.client.post(
             "/ai/generate-workflow",
@@ -99,8 +103,11 @@ class AIEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_generate_workflow_returns_structured_422_error(self) -> None:
         from app.core.auth import get_current_user
 
+        async def override_llm_service() -> _FailingLLMService:
+            return _FailingLLMService()
+
         app.dependency_overrides[get_current_user] = _override_current_user
-        app.dependency_overrides[get_llm_service] = _FailingLLMService
+        app.dependency_overrides[get_llm_service] = override_llm_service
 
         status_code, payload = await self.client.post(
             "/ai/generate-workflow",

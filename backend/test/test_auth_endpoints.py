@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from collections.abc import AsyncGenerator
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -36,7 +37,7 @@ class AuthEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
 
-        async def override_get_db() -> AsyncSession:
+        async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
             async with self.session_factory() as session:
                 yield session
 
@@ -44,6 +45,7 @@ class AuthEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.client = ASGITestClient(app)
 
     async def asyncTearDown(self) -> None:
+        await self.client.aclose()
         app.dependency_overrides.clear()
         await self.engine.dispose()
         async with self.admin_engine.begin() as connection:

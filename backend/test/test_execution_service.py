@@ -82,5 +82,72 @@ class ExecutionServiceStartNodeTests(unittest.TestCase):
         self.assertEqual(start_node_id, "schedule_start")
 
 
+class ExecutionServiceLoopMetadataTests(unittest.TestCase):
+    def test_build_effective_loop_settings_uses_workflow_defaults_when_no_override(self) -> None:
+        metadata = ExecutionService._build_effective_loop_settings_metadata(
+            workflow_definition={
+                "loop_control": {
+                    "enabled": True,
+                    "max_node_executions": 5,
+                    "max_total_node_executions": 20,
+                }
+            },
+            loop_control_override=None,
+        )
+
+        self.assertEqual(
+            metadata,
+            {
+                "enabled": True,
+                "max_node_executions": 5,
+                "max_total_node_executions": 20,
+                "source": "workflow_definition",
+                "workflow_default": {
+                    "enabled": True,
+                    "max_node_executions": 5,
+                    "max_total_node_executions": 20,
+                },
+                "runtime_override": None,
+            },
+        )
+
+    def test_build_effective_loop_settings_applies_runtime_override(self) -> None:
+        metadata = ExecutionService._build_effective_loop_settings_metadata(
+            workflow_definition={
+                "loop_control": {
+                    "enabled": True,
+                    "max_node_executions": 3,
+                    "max_total_node_executions": 30,
+                }
+            },
+            loop_control_override={
+                "enabled": True,
+                "max_node_executions": 7,
+                "max_total_node_executions": 70,
+            },
+        )
+
+        self.assertEqual(metadata["enabled"], True)
+        self.assertEqual(metadata["max_node_executions"], 7)
+        self.assertEqual(metadata["max_total_node_executions"], 70)
+        self.assertEqual(metadata["source"], "runtime_override")
+        self.assertEqual(
+            metadata["workflow_default"],
+            {
+                "enabled": True,
+                "max_node_executions": 3,
+                "max_total_node_executions": 30,
+            },
+        )
+        self.assertEqual(
+            metadata["runtime_override"],
+            {
+                "enabled": True,
+                "max_node_executions": 7,
+                "max_total_node_executions": 70,
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

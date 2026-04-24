@@ -2,12 +2,67 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urlsplit
+
+import httpx
 
 
 class ASGITestClient:
-    def __init__(self, app: Any) -> None:
+    """Small async wrapper around httpx.AsyncClient for ASGI app tests.
+
+    Why this exists:
+    - Uses real ASGI transport behavior (no synthetic early disconnect events).
+    - Manages FastAPI lifespan so startup/shutdown hooks run deterministically.
+    - Preserves legacy helper API used by existing unittest-based tests.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        *,
+        base_url: str = "http://testserver",
+        request_timeout_seconds: float = 20.0,
+    ) -> None:
         self.app = app
+        self.base_url = base_url
+        self.request_timeout_seconds = request_timeout_seconds
+        self._client: httpx.AsyncClient | None = None
+        self._lifespan_cm: Any | None = None
+
+    async def __aenter__(self) -> "ASGITestClient":
+        await self._ensure_client()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.aclose()
+
+    async def _ensure_client(self) -> None:
+        if self._client is not None:
+            return
+
+        # Explicit lifespan management keeps app startup/shutdown deterministic.
+        self._lifespan_cm = self.app.router.lifespan_context(self.app)
+        await self._lifespan_cm.__aenter__()
+
+        transport = httpx.ASGITransport(
+            app=self.app,
+            raise_app_exceptions=True,
+            client=("testclient", 50000),
+        )
+        self._client = httpx.AsyncClient(
+            transport=transport,
+            base_url=self.base_url,
+            follow_redirects=False,
+            timeout=self.request_timeout_seconds,
+        )
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+        if self._lifespan_cm is not None:
+            await self._lifespan_cm.__aexit__(None, None, None)
+            self._lifespan_cm = None
 
     async def request(
         self,
@@ -18,60 +73,22 @@ class ASGITestClient:
         data: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
-        parsed = urlsplit(path)
-        body = b""
-        request_headers = []
+        await self._ensure_client()
+        assert self._client is not None  # Narrow type for static analyzers.
 
-        if json_body is not None:
-            body = json.dumps(json_body).encode("utf-8")
-            request_headers.append((b"content-type", b"application/json"))
-        elif data is not None:
-            from urllib.parse import urlencode
-            body = urlencode(data).encode("utf-8")
-            request_headers.append((b"content-type", b"application/x-www-form-urlencoded"))
-
-        for key, value in (headers or {}).items():
-            request_headers.append((key.lower().encode("latin-1"), value.encode("latin-1")))
-
-        response_status: int | None = None
-        response_headers: list[tuple[bytes, bytes]] = []
-        response_body = bytearray()
-        body_sent = False
-
-        async def receive() -> dict[str, Any]:
-            nonlocal body_sent
-            if not body_sent:
-                body_sent = True
-                return {"type": "http.request", "body": body, "more_body": False}
-            return {"type": "http.disconnect"}
-
-        async def send(message: dict[str, Any]) -> None:
-            nonlocal response_status, response_headers
-            if message["type"] == "http.response.start":
-                response_status = message["status"]
-                response_headers = message.get("headers", [])
-            elif message["type"] == "http.response.body":
-                response_body.extend(message.get("body", b""))
-
-        scope = {
-            "type": "http",
-            "http_version": "1.1",
+        request_kwargs: dict[str, Any] = {
             "method": method.upper(),
-            "scheme": "http",
-            "path": parsed.path,
-            "raw_path": parsed.path.encode("ascii"),
-            "query_string": parsed.query.encode("ascii"),
-            "headers": request_headers,
-            "client": ("testclient", 50000),
-            "server": ("testserver", 80),
-            "root_path": "",
+            "url": path,
+            "headers": headers or {},
+            "timeout": self.request_timeout_seconds,
         }
-        await self.app(scope, receive, send)
+        if json_body is not None:
+            request_kwargs["json"] = json_body
+        elif data is not None:
+            request_kwargs["data"] = data
 
-        decoded_headers = {
-            key.decode("latin-1"): value.decode("latin-1") for key, value in response_headers
-        }
-        return int(response_status or 500), decoded_headers, bytes(response_body)
+        response = await self._client.request(**request_kwargs)
+        return response.status_code, dict(response.headers), response.content
 
     async def get(self, path: str, *, headers: dict[str, str] | None = None) -> tuple[int, Any]:
         return await self._json_request("GET", path, headers=headers)

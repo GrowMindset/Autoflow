@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import text
 
@@ -51,6 +52,7 @@ class Execution(UUIDPrimaryKeyMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     workflow: Mapped["Workflow"] = relationship("Workflow", back_populates="executions")
     user: Mapped["User"] = relationship("User", back_populates="executions")

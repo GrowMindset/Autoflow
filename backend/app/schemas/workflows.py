@@ -234,6 +234,115 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
     },
 }
 
+MERGE_MODE_ALIASES: dict[str, str] = {
+    "choose_input1": "choose_input_1",
+    "choose_input_1": "choose_input_1",
+    "choose_input2": "choose_input_2",
+    "choose_input_2": "choose_input_2",
+    "choose_input": "choose_branch",
+    "choose": "choose_branch",
+    "passthrough": "choose_input_1",
+    "pass_through": "choose_input_1",
+    "pass-through": "choose_input_1",
+    "pass": "choose_input_1",
+}
+MERGE_OUTPUT_MODES = {"append", "combine_by_position", "combine_by_fields"}
+MERGE_JOIN_TYPES = {"inner", "left", "right", "outer"}
+MERGE_KNOWN_KEYS = {
+    "mode",
+    "input_count",
+    "choose_branch",
+    "output_key",
+    "input_1_handle",
+    "input_2_handle",
+    "join_type",
+    "input_1_field",
+    "input_2_field",
+    "allow_missing_branch_fallback",
+}
+
+
+def _normalize_merge_mode(raw_mode: Any) -> str:
+    mode = str(raw_mode or "append").strip().lower()
+    if not mode:
+        return "append"
+    return MERGE_MODE_ALIASES.get(mode, mode)
+
+
+def _normalize_merge_input_count(raw_count: Any) -> int:
+    try:
+        parsed = int(raw_count)
+    except Exception:
+        return 2
+    return min(6, max(2, parsed))
+
+
+def _as_bool(raw_value: Any, *, default: bool = False) -> bool:
+    if raw_value is None:
+        return default
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, (int, float)):
+        return bool(raw_value)
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _normalize_and_prune_merge_config(config: dict[str, Any]) -> dict[str, Any]:
+    safe_config = dict(config or {})
+    mode = _normalize_merge_mode(safe_config.get("mode"))
+    input_count = _normalize_merge_input_count(safe_config.get("input_count"))
+    choose_branch_raw = str(safe_config.get("choose_branch") or "").strip().lower()
+    choose_branch = choose_branch_raw or (
+        "input2" if mode == "choose_input_2" else "input1"
+    )
+    output_key = str(safe_config.get("output_key") or "").strip() or "merged"
+    input_1_handle = str(safe_config.get("input_1_handle") or "input1").strip() or "input1"
+    input_2_handle = str(safe_config.get("input_2_handle") or "input2").strip() or "input2"
+    join_type_raw = str(safe_config.get("join_type") or "inner").strip().lower()
+    join_type = join_type_raw if join_type_raw in MERGE_JOIN_TYPES else "inner"
+
+    pruned: dict[str, Any] = {
+        key: value
+        for key, value in safe_config.items()
+        if key not in MERGE_KNOWN_KEYS
+    }
+    pruned["mode"] = mode
+    pruned["input_count"] = input_count
+    if _as_bool(safe_config.get("allow_missing_branch_fallback"), default=False):
+        pruned["allow_missing_branch_fallback"] = True
+
+    if mode == "choose_branch":
+        pruned["choose_branch"] = choose_branch
+        return pruned
+
+    if mode == "choose_input_1":
+        pruned["input_1_handle"] = input_1_handle
+        return pruned
+
+    if mode == "choose_input_2":
+        pruned["input_2_handle"] = input_2_handle
+        return pruned
+
+    if mode in MERGE_OUTPUT_MODES:
+        pruned["output_key"] = output_key
+
+    if mode in {"combine_by_position", "combine_by_fields"}:
+        pruned["join_type"] = join_type
+        pruned["input_1_handle"] = input_1_handle
+        pruned["input_2_handle"] = input_2_handle
+
+    if mode == "combine_by_fields":
+        pruned["input_1_field"] = str(safe_config.get("input_1_field") or "").strip()
+        pruned["input_2_field"] = str(safe_config.get("input_2_field") or "").strip()
+
+    return pruned
+
 
 class WorkflowNodePosition(BaseModel):
     x: float | int
@@ -276,6 +385,9 @@ class WorkflowNodeDefinition(BaseModel):
             self.config["cases"] = normalized_cases
             default_case = str(self.config.get("default_case") or "").strip()
             self.config["default_case"] = default_case or "default"
+
+        if self.type == "merge":
+            self.config = _normalize_and_prune_merge_config(self.config)
 
         return self
 

@@ -29,6 +29,10 @@ from app.execution.runners.triggers.workflow_trigger import WorkflowTriggerRunne
 
 
 class RunnerTests(unittest.TestCase):
+    @staticmethod
+    def _public_resolver(_host: str, _port: int) -> list[str]:
+        return ["93.184.216.34"]
+
     def test_ai_agent_runner_returns_output_key(self):
         runner = AIAgentRunner()
         runner._run_provider_completion = lambda *args, **kwargs: "hello world"
@@ -530,6 +534,48 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(result, {"c": 3})
 
+    def test_merge_runner_choose_branch_missing_handle_fails_fast(self):
+        runner = MergeRunner()
+        with self.assertRaisesRegex(ValueError, "selected handle 'input9'"):
+            runner.run(
+                config={"mode": "choose_branch", "choose_branch": "input9"},
+                input_data=[
+                    {"handle": "input1", "data": {"a": 1}},
+                    {"handle": "input2", "data": {"b": 2}},
+                ],
+            )
+
+    def test_merge_runner_choose_branch_missing_handle_supports_explicit_legacy_fallback(self):
+        runner = MergeRunner()
+        result = runner.run(
+            config={
+                "mode": "choose_branch",
+                "choose_branch": "input9",
+                "allow_missing_branch_fallback": True,
+            },
+            input_data=[
+                {"handle": "input2", "data": {"b": 2}},
+                {"handle": "input1", "data": {"a": 1}},
+            ],
+        )
+        # Legacy fallback keeps backward-compatible "first available handle" behavior.
+        self.assertEqual(result, {"b": 2})
+
+    def test_merge_runner_choose_branch_rejects_handle_outside_input_count(self):
+        runner = MergeRunner()
+        with self.assertRaisesRegex(ValueError, "exceeds input_count=2"):
+            runner.run(
+                config={
+                    "mode": "choose_branch",
+                    "choose_branch": "input3",
+                    "input_count": 2,
+                },
+                input_data=[
+                    {"handle": "input1", "data": {"a": 1}},
+                    {"handle": "input2", "data": {"b": 2}},
+                ],
+            )
+
     def test_merge_runner_combine_mode_merges_objects_for_downstream(self):
         runner = MergeRunner()
         result = runner.run(
@@ -568,6 +614,24 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(result, {"merged": [{"id": 1, "a": "x", "b": 10}]})
 
+    def test_merge_runner_combine_by_position_requires_both_configured_handles(self):
+        runner = MergeRunner()
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires connected inputs for handle\\(s\\): input2",
+        ):
+            runner.run(
+                config={
+                    "mode": "combine_by_position",
+                    "join_type": "inner",
+                    "input_1_handle": "input1",
+                    "input_2_handle": "input2",
+                },
+                input_data=[
+                    {"handle": "input1", "data": [{"id": 1, "a": "x"}]},
+                ],
+            )
+
     def test_merge_runner_combine_by_fields_outer_join(self):
         runner = MergeRunner()
         result = runner.run(
@@ -592,6 +656,24 @@ class RunnerTests(unittest.TestCase):
                 ]
             },
         )
+
+    def test_merge_runner_combine_by_fields_rejects_handle_outside_input_count(self):
+        runner = MergeRunner()
+        with self.assertRaisesRegex(ValueError, "input_2_handle exceeds input_count=2"):
+            runner.run(
+                config={
+                    "mode": "combine_by_fields",
+                    "input_count": 2,
+                    "input_1_handle": "input1",
+                    "input_2_handle": "input3",
+                    "input_1_field": "email",
+                    "input_2_field": "email",
+                },
+                input_data=[
+                    {"handle": "input1", "data": [{"email": "a@test.com"}]},
+                    {"handle": "input3", "data": [{"email": "a@test.com"}]},
+                ],
+            )
 
     def test_filter_runner_filters_array(self):
         runner = FilterRunner()
@@ -909,7 +991,7 @@ class RunnerTests(unittest.TestCase):
                     "response_format": "auto",
                 },
                 input_data={"source": "unit-test"},
-                context={},
+                context={"outbound_host_resolver": self._public_resolver},
             )
 
         self.assertEqual(result["status_code"], 200)
@@ -943,6 +1025,7 @@ class RunnerTests(unittest.TestCase):
                 },
                 input_data=None,
                 context={
+                    "outbound_host_resolver": self._public_resolver,
                     "resolved_credential_data": {
                         "cred-1": {"api_key": "secret-key"},
                     }
@@ -971,7 +1054,7 @@ class RunnerTests(unittest.TestCase):
                         "body_json": '{"name":"demo"}',
                     },
                     input_data=None,
-                    context={},
+                    context={"outbound_host_resolver": self._public_resolver},
                 )
 
     def test_http_request_runner_blocks_localhost_targets(self):
@@ -1034,12 +1117,68 @@ class RunnerTests(unittest.TestCase):
                     "response_format": "text",
                 },
                 input_data={},
-                context={},
+                context={"outbound_host_resolver": self._public_resolver},
             )
 
         self.assertEqual(result["status_code"], 404)
         self.assertFalse(result["http_response"]["ok"])
         self.assertEqual(result["response_body"], "Not found")
+
+    def test_http_request_runner_uses_injected_resolver_without_live_dns(self):
+        runner = HttpRequestRunner()
+        fake_response = httpx.Response(
+            200,
+            json={"ok": True},
+            headers={"content-type": "application/json"},
+            request=httpx.Request("GET", "https://api.example.com/orders"),
+        )
+
+        with (
+            patch(
+                "app.execution.runners.nodes.http_request.socket.getaddrinfo",
+                side_effect=AssertionError("live DNS should not be called"),
+            ),
+            patch.object(HttpRequestRunner, "_perform_request", return_value=fake_response),
+        ):
+            result = runner.run(
+                config={
+                    "url": "https://api.example.com/orders",
+                    "method": "GET",
+                },
+                input_data={},
+                context={
+                    "outbound_host_resolver": self._public_resolver,
+                },
+            )
+
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(result["response_body"], {"ok": True})
+
+    def test_http_request_runner_blocks_private_ip_from_injected_resolver(self):
+        runner = HttpRequestRunner()
+        with self.assertRaisesRegex(ValueError, "private networks are blocked"):
+            runner.run(
+                config={
+                    "url": "https://api.example.com/orders",
+                    "method": "GET",
+                },
+                input_data={},
+                context={
+                    "outbound_host_resolver": lambda host, port: ["127.0.0.1"],
+                },
+            )
+
+    def test_http_request_runner_rejects_non_callable_injected_resolver(self):
+        runner = HttpRequestRunner()
+        with self.assertRaisesRegex(ValueError, "outbound_host_resolver must be callable"):
+            runner.run(
+                config={
+                    "url": "https://api.example.com/orders",
+                    "method": "GET",
+                },
+                input_data={},
+                context={"outbound_host_resolver": "not-callable"},
+            )
 
     def test_file_write_and_file_read_runners_handle_json_content(self):
         write_runner = FileWriteRunner()

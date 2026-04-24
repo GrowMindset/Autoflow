@@ -14,6 +14,7 @@ from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models.user import User
 from app.schemas.executions import (
+    ExecutionLoopSettings,
     ExecutionDetailResponse,
     ExecutionEnqueueResponse,
     ExecutionListItem,
@@ -44,6 +45,19 @@ def _friendly_http_detail(
 
 def get_execution_service(db: AsyncSession = Depends(get_db)) -> ExecutionService:
     return ExecutionService(db)
+
+
+def _extract_execution_loop_settings(execution: Any) -> ExecutionLoopSettings | None:
+    metadata = getattr(execution, "execution_metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("loop_settings")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return ExecutionLoopSettings.model_validate(raw)
+    except Exception:
+        return None
 
 
 async def _build_webhook_payload(request: Request) -> dict[str, Any]:
@@ -111,6 +125,7 @@ async def run_workflow(
         workflow_id=execution.workflow_id,
         status=execution.status,
         triggered_by=execution.triggered_by,
+        loop_settings=_extract_execution_loop_settings(execution),
     )
 
 
@@ -159,6 +174,7 @@ async def run_workflow_form(
         workflow_id=execution.workflow_id,
         status=execution.status,
         triggered_by=execution.triggered_by,
+        loop_settings=_extract_execution_loop_settings(execution),
     )
 
 
@@ -217,6 +233,7 @@ async def run_workflow_schedule(
         workflow_id=execution.workflow_id,
         status=execution.status,
         triggered_by=execution.triggered_by,
+        loop_settings=_extract_execution_loop_settings(execution),
     )
 
 
@@ -258,6 +275,7 @@ async def run_node_execute(
         workflow_id=execution.workflow_id,
         status=execution.status,
         triggered_by=execution.triggered_by,
+        loop_settings=_extract_execution_loop_settings(execution),
     )
 
 
@@ -287,6 +305,7 @@ async def get_execution(
         started_at=execution.started_at,
         finished_at=execution.finished_at,
         error_message=execution.error_message,
+        loop_settings=_extract_execution_loop_settings(execution),
         node_results=[
             NodeExecutionResult(
                 node_id=node.node_id,
@@ -329,6 +348,7 @@ async def stop_execution(
         started_at=execution.started_at,
         finished_at=execution.finished_at,
         error_message=execution.error_message,
+        loop_settings=_extract_execution_loop_settings(execution),
         node_results=[
             NodeExecutionResult(
                 node_id=node.node_id,
@@ -368,6 +388,7 @@ async def get_latest_execution(
         started_at=execution.started_at,
         finished_at=execution.finished_at,
         error_message=execution.error_message,
+        loop_settings=_extract_execution_loop_settings(execution),
         node_results=[
             NodeExecutionResult(
                 node_id=node.node_id,

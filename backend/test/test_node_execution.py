@@ -64,6 +64,7 @@ class NodeExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.client = ASGITestClient(app)
 
     async def asyncTearDown(self) -> None:
+        await self.client.aclose()
         app.dependency_overrides.clear()
         execute_workflow_tasks._create_task_session_factory = self._original_task_session_factory
         await self.engine.dispose()

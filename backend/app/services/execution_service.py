@@ -26,6 +26,11 @@ from celery_config import WORKFLOW_EXECUTION_QUEUE, WORKFLOW_NODE_TEST_QUEUE
 
 APP_TIMEZONE = ZoneInfo("Asia/Kolkata")
 WORKFLOW_INACTIVE_ERROR_MESSAGE = "Workflow is inactive. Please activate workflow first."
+DEFAULT_LOOP_CONTROL = {
+    "enabled": False,
+    "max_node_executions": 3,
+    "max_total_node_executions": 500,
+}
 
 
 class ExecutionService:
@@ -632,6 +637,9 @@ class ExecutionService:
         enqueue_at_utc: datetime | None = None,
         loop_control_override: dict[str, Any] | None = None,
     ) -> Execution:
+        sanitized_loop_control_override = self._sanitize_loop_control_override(
+            loop_control_override
+        )
         execution = Execution(
             workflow_id=workflow.id,
             user_id=user.id,
@@ -640,6 +648,12 @@ class ExecutionService:
             started_at=None,
             finished_at=None,
             error_message=None,
+            execution_metadata={
+                "loop_settings": self._build_effective_loop_settings_metadata(
+                    workflow_definition=workflow.definition,
+                    loop_control_override=sanitized_loop_control_override,
+                )
+            },
         )
         self.db.add(execution)
         await self.db.flush()
@@ -671,9 +685,7 @@ class ExecutionService:
                     "execution_id": str(execution.id),
                     "initial_payload": initial_payload,
                     "start_node_id": start_node_id,
-                    "loop_control_override": self._sanitize_loop_control_override(
-                        loop_control_override
-                    ),
+                    "loop_control_override": sanitized_loop_control_override,
                 },
             )
         except Exception as exc:
@@ -1003,3 +1015,78 @@ class ExecutionService:
                 pass
 
         return result or None
+
+    @staticmethod
+    def _normalize_loop_control(
+        loop_control: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        raw = loop_control if isinstance(loop_control, dict) else {}
+        raw_enabled = raw.get("enabled", DEFAULT_LOOP_CONTROL["enabled"])
+        if isinstance(raw_enabled, bool):
+            enabled = raw_enabled
+        elif isinstance(raw_enabled, (int, float)):
+            enabled = bool(raw_enabled)
+        elif isinstance(raw_enabled, str):
+            normalized = raw_enabled.strip().lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                enabled = True
+            elif normalized in {"false", "0", "no", "off"}:
+                enabled = False
+            else:
+                enabled = bool(DEFAULT_LOOP_CONTROL["enabled"])
+        else:
+            enabled = bool(DEFAULT_LOOP_CONTROL["enabled"])
+
+        try:
+            max_node = max(
+                1,
+                int(raw.get("max_node_executions", DEFAULT_LOOP_CONTROL["max_node_executions"]) or 1),
+            )
+        except Exception:
+            max_node = int(DEFAULT_LOOP_CONTROL["max_node_executions"])
+        try:
+            max_total = max(
+                1,
+                int(
+                    raw.get(
+                        "max_total_node_executions",
+                        DEFAULT_LOOP_CONTROL["max_total_node_executions"],
+                    )
+                    or 1
+                ),
+            )
+        except Exception:
+            max_total = int(DEFAULT_LOOP_CONTROL["max_total_node_executions"])
+
+        return {
+            "enabled": enabled,
+            "max_node_executions": max_node,
+            "max_total_node_executions": max_total,
+        }
+
+    @classmethod
+    def _build_effective_loop_settings_metadata(
+        cls,
+        *,
+        workflow_definition: dict[str, Any] | None,
+        loop_control_override: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        saved_loop = cls._normalize_loop_control(
+            (workflow_definition or {}).get("loop_control")
+            if isinstance(workflow_definition, dict)
+            else None
+        )
+        override = loop_control_override or None
+        effective_loop = {
+            **saved_loop,
+            **(override or {}),
+        }
+        effective_loop = cls._normalize_loop_control(effective_loop)
+        return {
+            "enabled": bool(effective_loop["enabled"]),
+            "max_node_executions": int(effective_loop["max_node_executions"]),
+            "max_total_node_executions": int(effective_loop["max_total_node_executions"]),
+            "source": "runtime_override" if override else "workflow_definition",
+            "workflow_default": saved_loop,
+            "runtime_override": override,
+        }

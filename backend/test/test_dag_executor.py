@@ -1,9 +1,11 @@
 import unittest
+from unittest.mock import patch
 
 from app.execution.dag_executor import DagExecutor, NodeExecutionError
 from app.execution.registry import RunnerRegistry
 from app.execution.runners.nodes.ai_agent import AIAgentRunner
 from app.execution.runners.nodes.delay import DelayRunner
+from app.execution.runners.nodes.dummy import DummyNodeRunner
 from app.execution.runners.nodes.merge import MergeRunner
 
 
@@ -31,6 +33,21 @@ class _FakeRegistry:
 
     def get_runner(self, node_type):
         return self.runners[node_type]
+
+
+class _CountingMergeRunner(MergeRunner):
+    def __init__(self):
+        super().__init__()
+        self.calls: list[dict[str, object]] = []
+
+    def run(self, config: dict, input_data: list, context=None) -> dict:
+        self.calls.append(
+            {
+                "config": dict(config or {}),
+                "input_data": list(input_data or []),
+            }
+        )
+        return super().run(config=config, input_data=input_data, context=context)
 
 
 class DagExecutorTests(unittest.TestCase):
@@ -66,6 +83,27 @@ class DagExecutorTests(unittest.TestCase):
     def test_runner_registry_registers_ai_agent_runner(self):
         runner = RunnerRegistry().get_runner("ai_agent")
         self.assertIsInstance(runner, AIAgentRunner)
+
+    def test_runner_registry_routes_send_gmail_to_non_dummy_by_default(self):
+        class _SentinelRunner:
+            pass
+
+        class _SafeRegistry(RunnerRegistry):
+            @staticmethod
+            def _build_send_gmail_message():
+                return _SentinelRunner()
+
+        runner = _SafeRegistry().get_runner("send_gmail_message")
+        self.assertIsInstance(runner, _SentinelRunner)
+
+    def test_runner_registry_can_force_legacy_dummy_node_via_env(self):
+        with patch.dict(
+            "os.environ",
+            {"AUTOFLOW_LEGACY_DUMMY_NODE_TYPES": "send_gmail_message"},
+            clear=False,
+        ):
+            runner = RunnerRegistry().get_runner("send_gmail_message")
+        self.assertIsInstance(runner, DummyNodeRunner)
 
     def test_build_context_rejects_cycles(self):
         definition = {
@@ -118,7 +156,7 @@ class DagExecutorTests(unittest.TestCase):
         context = self.executor.build_context(definition)
 
         self.assertTrue(context.loop_enabled)
-        self.assertEqual(context.indegree["n2"], 1)
+        self.assertEqual(context.indegree["n2"], 2)
         self.assertEqual(context.indegree["n3"], 1)
         self.assertIn("n2", context.cycle_node_ids)
         self.assertIn("n3", context.cycle_node_ids)
@@ -248,6 +286,142 @@ class DagExecutorTests(unittest.TestCase):
             )
 
         self.assertIn("max_node_executions=2", str(exc_ctx.exception))
+
+    def test_cycle_readiness_waits_for_all_cycle_feedback_inputs(self):
+        n2_calls: list[dict] = []
+
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "n2_echo", "config": {}},
+                {"id": "n3", "type": "n3_echo", "config": {}},
+                {"id": "n4", "type": "n4_echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2", "targetHandle": "seed"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+                {"id": "e3", "source": "n2", "target": "n4"},
+                {"id": "e4", "source": "n3", "target": "n2", "targetHandle": "feedback_a"},
+                {"id": "e5", "source": "n4", "target": "n2", "targetHandle": "feedback_b"},
+            ],
+            "loop_control": {
+                "enabled": True,
+                "max_node_executions": 2,
+                "max_total_node_executions": 20,
+            },
+        }
+
+        def _manual_trigger(_config, input_data, _ctx):
+            return {
+                "triggered": True,
+                "trigger_type": "manual",
+                **(input_data or {}),
+            }
+
+        def _record_n2(_config, input_data, _ctx):
+            snapshot = dict(input_data or {}) if isinstance(input_data, dict) else {"_default": input_data}
+            n2_calls.append(snapshot)
+            return snapshot
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(result=_manual_trigger),
+                    "n2_echo": _RecordingRunner(result=_record_n2),
+                    "n3_echo": _RecordingRunner(result=lambda _config, input_data, _ctx: dict(input_data or {})),
+                    "n4_echo": _RecordingRunner(result=lambda _config, input_data, _ctx: dict(input_data or {})),
+                }
+            )
+        )
+
+        with self.assertRaises(NodeExecutionError) as exc_ctx:
+            executor.execute(definition=definition, initial_payload={"seed_value": "x"})
+
+        self.assertIn("max_node_executions=2", str(exc_ctx.exception))
+        self.assertEqual(len(n2_calls), 2)
+        second_input = n2_calls[1]
+        self.assertIn("feedback_a", second_input)
+        self.assertIn("feedback_b", second_input)
+
+    def test_cycle_total_cap_does_not_starve_sibling_feedback_branch(self):
+        n2_calls = []
+        n3_calls = []
+        n4_calls = []
+
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "echo", "config": {}},
+                {"id": "n3", "type": "echo", "config": {}},
+                {"id": "n4", "type": "echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2", "targetHandle": "seed"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+                {"id": "e3", "source": "n2", "target": "n4"},
+                {"id": "e4", "source": "n3", "target": "n2", "targetHandle": "feedback_a"},
+                {"id": "e5", "source": "n4", "target": "n2", "targetHandle": "feedback_b"},
+            ],
+            "loop_control": {
+                "enabled": True,
+                "max_node_executions": 50,
+                "max_total_node_executions": 7,
+            },
+        }
+
+        def _manual_trigger(_config, input_data, _ctx):
+            return {
+                "triggered": True,
+                "trigger_type": "manual",
+                **(input_data or {}),
+            }
+
+        def _record_n2(_config, input_data, _ctx):
+            payload = dict(input_data or {}) if isinstance(input_data, dict) else {"_default": input_data}
+            n2_calls.append(payload)
+            return payload
+
+        def _record_n3(_config, input_data, _ctx):
+            payload = dict(input_data or {}) if isinstance(input_data, dict) else {"_default": input_data}
+            n3_calls.append(payload)
+            return payload
+
+        def _record_n4(_config, input_data, _ctx):
+            payload = dict(input_data or {}) if isinstance(input_data, dict) else {"_default": input_data}
+            n4_calls.append(payload)
+            return payload
+
+        class _LoopRegistry:
+            def get_runner(self, node_type):
+                if node_type == "manual_trigger":
+                    return _RecordingRunner(result=_manual_trigger)
+                if node_type == "n2_echo":
+                    return _RecordingRunner(result=_record_n2)
+                if node_type == "n3_echo":
+                    return _RecordingRunner(result=_record_n3)
+                if node_type == "n4_echo":
+                    return _RecordingRunner(result=_record_n4)
+                raise KeyError(node_type)
+
+        rewritten_definition = {
+            **definition,
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "n2_echo", "config": {}},
+                {"id": "n3", "type": "n3_echo", "config": {}},
+                {"id": "n4", "type": "n4_echo", "config": {}},
+            ],
+        }
+
+        executor = DagExecutor(registry=_LoopRegistry())
+
+        with self.assertRaises(NodeExecutionError) as exc_ctx:
+            executor.execute(definition=rewritten_definition, initial_payload={"seed_value": "x"})
+
+        self.assertIn("max_total_node_executions=7", str(exc_ctx.exception))
+        self.assertGreaterEqual(len(n3_calls), 1)
+        self.assertGreaterEqual(len(n4_calls), 1)
+        self.assertEqual(len(n2_calls), 2)
 
     def test_execute_linear_workflow_from_manual_trigger(self):
         definition = {
@@ -700,6 +874,200 @@ class DagExecutorTests(unittest.TestCase):
             {"student_email": "a@test.com"},
         )
 
+    def test_merge_resume_payload_is_deterministic_with_in_memory_persistence(self):
+        definition = {
+            "nodes": [
+                {"id": "a", "type": "echo", "config": {}},
+                {"id": "b", "type": "echo", "config": {}},
+                {"id": "merge_1", "type": "merge", "config": {"mode": "append"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "a", "target": "merge_1", "targetHandle": "input1"},
+                {"id": "e2", "source": "b", "target": "merge_1", "targetHandle": "input2"},
+            ],
+        }
+
+        merge_runner = _CountingMergeRunner()
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "merge": merge_runner,
+                    "echo": _RecordingRunner(result=lambda _config, input_data, _ctx: dict(input_data or {})),
+                }
+            )
+        )
+        context = executor.build_context(definition)
+        context.runner_context = {}
+
+        in_memory_state: dict[str, dict[str, object]] = {}
+
+        def _build_resume_payload(blocked_inputs: int = 0) -> dict[str, object]:
+            return {
+                "__merge_inputs__": [in_memory_state[key] for key in sorted(in_memory_state.keys())],
+                "__merge_blocked_inputs__": blocked_inputs,
+            }
+
+        in_memory_state["a"] = {"handle": "input1", "data": {"source": "A"}}
+        executor._execute_from_node(
+            context=context,
+            node_id="merge_1",
+            input_data=_build_resume_payload(blocked_inputs=0),
+        )
+        self.assertEqual(context.node_states["merge_1"], "pending")
+        self.assertEqual(len(merge_runner.calls), 0)
+
+        in_memory_state["b"] = {"handle": "input2", "data": {"source": "B"}}
+        executor._execute_from_node(
+            context=context,
+            node_id="merge_1",
+            input_data=_build_resume_payload(blocked_inputs=0),
+        )
+
+        self.assertEqual(context.node_states["merge_1"], "completed")
+        self.assertEqual(len(merge_runner.calls), 1)
+        self.assertEqual(
+            context.node_outputs["merge_1"],
+            {"merged": [{"source": "A"}, {"source": "B"}]},
+        )
+        self.assertEqual(context.visited_nodes.count("merge_1"), 1)
+        self.assertEqual(context.pending_inputs["merge_1"], [])
+
+    def test_merge_resume_payload_accounts_for_blocked_inputs_without_external_state(self):
+        definition = {
+            "nodes": [
+                {"id": "a", "type": "echo", "config": {}},
+                {"id": "b", "type": "echo", "config": {}},
+                {"id": "merge_1", "type": "merge", "config": {"mode": "append"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "a", "target": "merge_1", "targetHandle": "input1"},
+                {"id": "e2", "source": "b", "target": "merge_1", "targetHandle": "input2"},
+            ],
+        }
+        merge_runner = _CountingMergeRunner()
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "merge": merge_runner,
+                    "echo": _RecordingRunner(result=lambda _config, input_data, _ctx: dict(input_data or {})),
+                }
+            )
+        )
+        context = executor.build_context(definition)
+        context.runner_context = {}
+
+        resume_payload = {
+            "__merge_inputs__": [{"handle": "input1", "data": {"source": "A"}}],
+            "__merge_blocked_inputs__": 1,
+        }
+        executor._execute_from_node(
+            context=context,
+            node_id="merge_1",
+            input_data=resume_payload,
+        )
+
+        self.assertEqual(context.node_states["merge_1"], "completed")
+        self.assertEqual(len(merge_runner.calls), 1)
+        self.assertEqual(
+            context.node_outputs["merge_1"],
+            {"merged": [{"source": "A"}]},
+        )
+
+    def test_branch_accounting_unblocks_non_merge_join_exactly_once(self):
+        join_runner = _RecordingRunner(result=lambda _config, input_data, _ctx: dict(input_data or {}))
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "echo": join_runner,
+                }
+            )
+        )
+        definition = {
+            "nodes": [
+                {"id": "left", "type": "echo", "config": {}},
+                {"id": "right", "type": "echo", "config": {}},
+                {"id": "join", "type": "echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "left", "target": "join"},
+                {"id": "e2", "source": "right", "target": "join"},
+            ],
+        }
+
+        context = executor.build_context(definition)
+        context.runner_context = {}
+
+        executor._execute_from_node(
+            context=context,
+            node_id="join",
+            input_data={"selected": True},
+        )
+        self.assertEqual(context.node_states["join"], "pending")
+        self.assertEqual(len(join_runner.calls), 0)
+
+        executor._block_path(context=context, node_id="join")
+        self.assertEqual(context.node_states["join"], "completed")
+        self.assertEqual(len(join_runner.calls), 1)
+        self.assertEqual(context.visited_nodes.count("join"), 1)
+
+        # Invariant: duplicate blocked notifications must not trigger a second run.
+        executor._block_path(context=context, node_id="join")
+        executor._execute_from_node(
+            context=context,
+            node_id="join",
+            input_data={"late": True},
+        )
+        self.assertEqual(len(join_runner.calls), 1)
+        self.assertEqual(context.visited_nodes.count("join"), 1)
+
+    def test_branch_accounting_unblocks_merge_join_exactly_once(self):
+        merge_runner = _CountingMergeRunner()
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "merge": merge_runner,
+                    "echo": _RecordingRunner(result=lambda _config, input_data, _ctx: dict(input_data or {})),
+                }
+            )
+        )
+        definition = {
+            "nodes": [
+                {"id": "left", "type": "echo", "config": {}},
+                {"id": "right", "type": "echo", "config": {}},
+                {"id": "join", "type": "merge", "config": {"mode": "append"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "left", "target": "join", "targetHandle": "input1"},
+                {"id": "e2", "source": "right", "target": "join", "targetHandle": "input2"},
+            ],
+        }
+
+        context = executor.build_context(definition)
+        context.runner_context = {}
+
+        executor._execute_from_node(
+            context=context,
+            node_id="join",
+            input_data={"selected": "left"},
+            target_handle="input1",
+        )
+        self.assertEqual(context.node_states["join"], "pending")
+        self.assertEqual(len(merge_runner.calls), 0)
+
+        executor._block_path(context=context, node_id="join")
+        self.assertEqual(context.node_states["join"], "completed")
+        self.assertEqual(len(merge_runner.calls), 1)
+        self.assertEqual(context.visited_nodes.count("join"), 1)
+        self.assertEqual(
+            context.node_outputs["join"],
+            {"merged": [{"selected": "left"}]},
+        )
+
+        # Invariant: duplicate blocked notifications must not trigger merge again.
+        executor._block_path(context=context, node_id="join")
+        self.assertEqual(len(merge_runner.calls), 1)
+        self.assertEqual(context.visited_nodes.count("join"), 1)
+
     def test_execute_rejects_unsupported_split_runtime(self):
         definition = {
             "nodes": [
@@ -820,7 +1188,7 @@ class DagExecutorTests(unittest.TestCase):
         definition = {
             "nodes": [
                 {"id": "n1", "type": "manual_trigger", "config": {}},
-                {"id": "n2", "type": "send_gmail_message", "config": {}},
+                {"id": "n2", "type": "custom_dummy_node", "config": {}},
                 {"id": "n3", "type": "aggregate", "config": {
                     "input_key": "orders",
                     "operation": "count",
@@ -840,7 +1208,7 @@ class DagExecutorTests(unittest.TestCase):
 
         self.assertEqual(result["visited_nodes"], ["n1", "n2", "n3"])
         self.assertEqual(result["node_outputs"]["n2"]["dummy_node_executed"], True)
-        self.assertEqual(result["node_outputs"]["n2"]["dummy_node_type"], "send_gmail_message")
+        self.assertEqual(result["node_outputs"]["n2"]["dummy_node_type"], "custom_dummy_node")
         self.assertEqual(result["node_outputs"]["n3"], {"order_count": 2})
 
     def test_execute_inline_subnodes_before_ai_agent_and_injects_api_key(self):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from collections.abc import AsyncGenerator
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, text
@@ -51,7 +52,7 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         execute_workflow_tasks._create_task_session_factory = override_task_session_factory
 
-        async def override_get_db() -> AsyncSession:
+        async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
             async with self.session_factory() as session:
                 yield session
 
@@ -59,6 +60,7 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.client = ASGITestClient(app)
 
     async def asyncTearDown(self) -> None:
+        await self.client.aclose()
         app.dependency_overrides.clear()
         execute_workflow_tasks._create_task_session_factory = self._original_task_session_factory
         await self.engine.dispose()

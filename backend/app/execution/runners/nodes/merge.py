@@ -1,4 +1,4 @@
-
+import re
 
 from typing import Any
 
@@ -27,7 +27,8 @@ class MergeRunner:
         "input_1_handle": "input1",
         "input_2_handle": "input2",
         "input_1_field": "",
-        "input_2_field": ""
+        "input_2_field": "",
+        "allow_missing_branch_fallback": false
     }
     """
 
@@ -62,10 +63,15 @@ class MergeRunner:
         input_2_handle = self._canonical_handle(cfg.get("input_2_handle") or "input2")
         input_1_field = str(cfg.get("input_1_field") or "").strip()
         input_2_field = str(cfg.get("input_2_field") or "").strip()
+        allow_missing_branch_fallback = bool(
+            cfg.get("allow_missing_branch_fallback", False)
+        )
+        input_count = self._normalize_input_count(cfg.get("input_count"))
 
         normalized_inputs = self._normalize_inputs(valid_inputs)
         grouped_payloads = self._group_payloads_by_handle(normalized_inputs)
         fallback_handles = list(grouped_payloads.keys())
+        available_handles = sorted(grouped_payloads.keys())
 
         if mode in {"append"}:
             return {
@@ -80,10 +86,31 @@ class MergeRunner:
             else:
                 selected_handle = choose_branch
 
+            self._validate_handle_within_input_count(
+                selected_handle=selected_handle,
+                input_count=input_count,
+                config_key="choose_branch" if mode == "choose_branch" else (
+                    "input_1_handle" if mode == "choose_input_1" else "input_2_handle"
+                ),
+            )
             selected = list(grouped_payloads.get(selected_handle, []))
-            if not selected and fallback_handles:
-                # Graceful fallback for legacy workflows that did not set target handles.
-                selected = list(grouped_payloads.get(fallback_handles[0], []))
+            if not selected:
+                if allow_missing_branch_fallback and fallback_handles:
+                    # Explicit legacy mode: preserve old fallback behavior only when requested.
+                    selected = list(grouped_payloads.get(fallback_handles[0], []))
+                else:
+                    if not selected_handle:
+                        raise ValueError(
+                            "MergeRunner: selected branch handle is empty. "
+                            "Set choose_branch/input_1_handle/input_2_handle to a valid handle "
+                            "or set allow_missing_branch_fallback=true for legacy fallback."
+                        )
+                    raise ValueError(
+                        "MergeRunner: selected handle "
+                        f"'{selected_handle}' was not found in incoming inputs. "
+                        f"Available handles: {', '.join(available_handles) or '(none)'}. "
+                        "Set allow_missing_branch_fallback=true to preserve legacy fallback behavior."
+                    )
             if len(selected) == 0:
                 return {output_key: []}
             if len(selected) == 1:
@@ -103,12 +130,23 @@ class MergeRunner:
             return combined
 
         if mode == "combine_by_position":
+            self._validate_handle_within_input_count(
+                selected_handle=input_1_handle,
+                input_count=input_count,
+                config_key="input_1_handle",
+            )
+            self._validate_handle_within_input_count(
+                selected_handle=input_2_handle,
+                input_count=input_count,
+                config_key="input_2_handle",
+            )
+            self._require_handles_present_for_mode(
+                mode=mode,
+                required_handles=[input_1_handle, input_2_handle],
+                available_handles=available_handles,
+            )
             input_1_payloads = list(grouped_payloads.get(input_1_handle, []))
             input_2_payloads = list(grouped_payloads.get(input_2_handle, []))
-            if not input_1_payloads and fallback_handles:
-                input_1_payloads = list(grouped_payloads.get(fallback_handles[0], []))
-            if not input_2_payloads and len(fallback_handles) > 1:
-                input_2_payloads = list(grouped_payloads.get(fallback_handles[1], []))
             items_1 = self._collect_items(input_1_payloads)
             items_2 = self._collect_items(input_2_payloads)
             combined_items = self._combine_by_position(
@@ -123,12 +161,23 @@ class MergeRunner:
                 raise ValueError(
                     "MergeRunner: combine_by_fields mode requires input_1_field and input_2_field."
                 )
+            self._validate_handle_within_input_count(
+                selected_handle=input_1_handle,
+                input_count=input_count,
+                config_key="input_1_handle",
+            )
+            self._validate_handle_within_input_count(
+                selected_handle=input_2_handle,
+                input_count=input_count,
+                config_key="input_2_handle",
+            )
+            self._require_handles_present_for_mode(
+                mode=mode,
+                required_handles=[input_1_handle, input_2_handle],
+                available_handles=available_handles,
+            )
             input_1_payloads = list(grouped_payloads.get(input_1_handle, []))
             input_2_payloads = list(grouped_payloads.get(input_2_handle, []))
-            if not input_1_payloads and fallback_handles:
-                input_1_payloads = list(grouped_payloads.get(fallback_handles[0], []))
-            if not input_2_payloads and len(fallback_handles) > 1:
-                input_2_payloads = list(grouped_payloads.get(fallback_handles[1], []))
             items_1 = self._collect_items(input_1_payloads)
             items_2 = self._collect_items(input_2_payloads)
             combined_items = self._combine_by_fields(
@@ -188,6 +237,56 @@ class MergeRunner:
             grouped.setdefault(handle, []).append(payload)
 
         return grouped
+
+    @staticmethod
+    def _normalize_input_count(raw_count: Any) -> int:
+        try:
+            parsed = int(raw_count)
+        except Exception:
+            return 2
+        return min(6, max(2, parsed))
+
+    @classmethod
+    def _validate_handle_within_input_count(
+        cls,
+        *,
+        selected_handle: str,
+        input_count: int,
+        config_key: str,
+    ) -> None:
+        if not selected_handle:
+            return
+        match = re.fullmatch(r"input(\d+)", selected_handle)
+        if not match:
+            return
+        index = int(match.group(1))
+        if index <= input_count:
+            return
+        raise ValueError(
+            "MergeRunner: configured handle "
+            f"'{selected_handle}' for {config_key} exceeds input_count={input_count}. "
+            f"Use one of input1..input{input_count}, or increase input_count."
+        )
+
+    @staticmethod
+    def _require_handles_present_for_mode(
+        *,
+        mode: str,
+        required_handles: list[str],
+        available_handles: list[str],
+    ) -> None:
+        missing = [
+            handle for handle in required_handles if handle and handle not in available_handles
+        ]
+        if not missing:
+            return
+        missing_display = ", ".join(missing)
+        available_display = ", ".join(available_handles) or "(none)"
+        raise ValueError(
+            f"MergeRunner: {mode} requires connected inputs for handle(s): {missing_display}. "
+            f"Available handles: {available_display}. "
+            "Connect the missing branch handles or update merge handle config/input_count."
+        )
 
     @classmethod
     def _canonical_handle(cls, raw_handle: Any) -> str:

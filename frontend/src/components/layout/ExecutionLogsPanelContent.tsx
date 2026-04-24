@@ -29,6 +29,11 @@ const formatJson = (value: unknown) => {
   }
 };
 
+const loopSourceLabel = (source: string | undefined): string => {
+  if (source === 'runtime_override') return 'Runtime Override';
+  return 'Workflow Default';
+};
+
 const toneByStatus = (status: string) => {
   switch (status) {
     case 'SUCCEEDED':
@@ -78,6 +83,7 @@ const ExecutionLogsPanelContent: React.FC<ExecutionLogsPanelContentProps> = ({
   const executedNodesCount = sortedNodeResults.filter(
     (node) => node.status !== 'PENDING',
   ).length;
+  const loopSettings = executionDetail?.loop_settings;
 
   if (!executionDetail) {
     return (
@@ -134,6 +140,22 @@ const ExecutionLogsPanelContent: React.FC<ExecutionLogsPanelContentProps> = ({
           <span><span className={isDark ? 'text-slate-500' : 'text-slate-400'}>execution</span> {executionDetail.id.slice(0, 8)}...</span>
           <span><span className={isDark ? 'text-slate-500' : 'text-slate-400'}>trigger</span> {executionDetail.triggered_by}</span>
         </div>
+        {loopSettings && (
+          <div
+            className={`mt-3 rounded-xl border px-3 py-2 text-[12px] font-mono ${
+              isDark
+                ? 'border-slate-800 bg-slate-950 text-slate-300'
+                : 'border-slate-200 bg-slate-50 text-slate-700'
+            }`}
+          >
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+              <span><span className={isDark ? 'text-slate-500' : 'text-slate-400'}>loop_enabled</span> {String(loopSettings.enabled)}</span>
+              <span><span className={isDark ? 'text-slate-500' : 'text-slate-400'}>max_node</span> {loopSettings.max_node_executions}</span>
+              <span><span className={isDark ? 'text-slate-500' : 'text-slate-400'}>max_total</span> {loopSettings.max_total_node_executions}</span>
+              <span><span className={isDark ? 'text-slate-500' : 'text-slate-400'}>source</span> {loopSourceLabel(loopSettings.source)}</span>
+            </div>
+          </div>
+        )}
         {executionDetail.error_message && (
           <div
             className={`mt-3 rounded-xl border px-3 py-2 text-sm ${

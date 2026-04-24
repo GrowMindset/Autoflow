@@ -1,10 +1,17 @@
+import os
 from typing import Any
 
 
 class RunnerRegistry:
     """Lazy runner lookup by workflow node type."""
 
-    def __init__(self) -> None:
+    _LEGACY_DUMMY_NODE_TYPES_ENV = "AUTOFLOW_LEGACY_DUMMY_NODE_TYPES"
+
+    def __init__(
+        self,
+        *,
+        legacy_dummy_node_types: set[str] | None = None,
+    ) -> None:
         self._runner_factories = {
             "manual_trigger": self._build_manual_trigger,
             "form_trigger": self._build_form_trigger,
@@ -39,11 +46,21 @@ class RunnerRegistry:
             # n8n compatibility alias
             "n8n-nodes-base.httpRequest": self._build_http_request,
         }
+        self._legacy_dummy_node_types = (
+            set(legacy_dummy_node_types)
+            if legacy_dummy_node_types is not None
+            else self._load_legacy_dummy_node_types_from_env()
+        )
         self._cache: dict[str, Any] = {}
 
     def get_runner(self, node_type: str) -> Any:
         if node_type in self._cache:
             return self._cache[node_type]
+
+        if node_type in self._legacy_dummy_node_types:
+            runner = self._build_dummy(node_type)
+            self._cache[node_type] = runner
+            return runner
 
         factory = self._runner_factories.get(node_type)
         if factory is None:
@@ -54,6 +71,11 @@ class RunnerRegistry:
         runner = factory()
         self._cache[node_type] = runner
         return runner
+
+    @classmethod
+    def _load_legacy_dummy_node_types_from_env(cls) -> set[str]:
+        raw = str(os.getenv(cls._LEGACY_DUMMY_NODE_TYPES_ENV) or "")
+        return {item.strip() for item in raw.split(",") if item.strip()}
 
     @staticmethod
     def _build_dummy(node_type: str) -> Any:
