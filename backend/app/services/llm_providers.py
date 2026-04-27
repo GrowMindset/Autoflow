@@ -22,6 +22,12 @@ async def _maybe_await(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+async def _close_client(client: Any) -> None:
+    close = getattr(client, "close", None) or getattr(client, "aclose", None)
+    if close is not None:
+        await _maybe_await(close())
+
+
 def _build_chat_kwargs(
     model: str,
     system_prompt: str,
@@ -104,6 +110,8 @@ class OpenAIProvider(BaseLLMProvider):
                 )
             else:
                 raise
+        finally:
+            await _close_client(client)
         return _extract_response_text(response)
 
 
