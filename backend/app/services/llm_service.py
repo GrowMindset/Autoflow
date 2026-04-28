@@ -74,6 +74,149 @@ TRIGGER_KEYWORD_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("manual_trigger", ("manual", "manually", "on demand", "run button")),
 )
 
+ASSISTANT_ACTION_HINTS = (
+    "send",
+    "post",
+    "create",
+    "update",
+    "delete",
+    "append",
+    "upsert",
+    "notify",
+    "summarize",
+    "classify",
+    "analyze",
+    "transform",
+    "write",
+    "read",
+    "fetch",
+    "generate",
+    "route",
+    "log",
+    "nurture",
+    "nurturing",
+    "campaign",
+    "follow-up",
+    "follow up",
+    "lead generation",
+    "lead nurturing",
+)
+
+ASSISTANT_COMPLETION_HINTS = (
+    "send",
+    "post",
+    "notify",
+    "message",
+    "email",
+    "mail",
+    "telegram",
+    "whatsapp",
+    "slack",
+    "linkedin",
+    "http",
+    "api",
+    "fetch",
+    "read",
+    "write",
+    "update",
+    "delete",
+    "append",
+    "upsert",
+    "filter",
+    "merge",
+    "split",
+    "delay",
+    "route",
+    "classify",
+    "summarize",
+    "analyze",
+)
+
+ASSISTANT_CHANNEL_HINTS: dict[str, tuple[str, ...]] = {
+    "send_gmail_message": ("gmail", "g mail", "email", "e-mail", "mail"),
+    "slack_send_message": ("slack",),
+    "telegram": ("telegram", "telegarm", "telegrm"),
+    "whatsapp": ("whatsapp", "watsapp", "whatapp", "whats app", "wa"),
+    "linkedin": ("linkedin", "linked in", "linkdin", "likendin"),
+    "create_google_sheets": ("sheet", "sheets", "spreadsheet"),
+    "create_google_docs": ("doc", "docs", "document"),
+}
+
+ASSISTANT_BRANCH_HINTS = (
+    "if ",
+    "if/else",
+    "else",
+    "otherwise",
+    "condition",
+    "branch",
+    "path",
+    "parallel",
+)
+
+ASSISTANT_MODIFY_HINTS = (
+    "modify",
+    "change",
+    "edit",
+    "refine",
+    "tweak",
+    "adjust",
+    "remove",
+    "replace",
+    "add to existing",
+    "update existing",
+    "change existing",
+    "current workflow",
+    "this workflow",
+)
+
+ASSISTANT_TIMING_HINTS = (
+    "schedule",
+    "cron",
+    "every",
+    "daily",
+    "weekly",
+    "monthly",
+    "hourly",
+    "sequence",
+    "follow-up",
+)
+
+ASSISTANT_TIMING_VALUE_PATTERN = re.compile(
+    r"\bevery\s+(\d+\s*)?(minute|minutes|min|hour|hours|day|days|week|weeks|month|months)\b"
+)
+
+ASSISTANT_DATA_MAPPING_HINTS = (
+    "{{",
+    "field",
+    "column",
+    "input",
+    "output",
+    "subject",
+    "message",
+    "body",
+    "status",
+    "email",
+    "phone",
+)
+
+ASSISTANT_SENSITIVE_CONFIG_KEYS = {
+    "credential_id",
+    "bearer_token",
+    "password",
+    "api_key_value",
+    "username",
+}
+
+CHANNEL_DISPLAY_NAMES: dict[str, str] = {
+    "send_gmail_message": "Gmail",
+    "slack_send_message": "Slack",
+    "telegram": "Telegram",
+    "whatsapp": "WhatsApp",
+    "linkedin": "LinkedIn",
+    "create_google_sheets": "Google Sheets",
+    "create_google_docs": "Google Docs",
+}
+
 NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     "manual_trigger": {
         "category": "trigger",
@@ -452,6 +595,663 @@ class LLMService:
             "Could not generate a valid workflow from the model response."
         ) from last_error
 
+    async def assist_workflow(
+        self,
+        *,
+        prompt: str,
+        current_definition: WorkflowDefinition | None = None,
+        conversation_state: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        cleaned_prompt = prompt.strip()
+        if not cleaned_prompt:
+            raise WorkflowGenerationError("Prompt must not be empty.")
+
+        state = conversation_state or {}
+        confirmed_choices = state.get("confirmed_choices")
+        existing_assumptions = self._sanitize_string_list(state.get("assumptions"))
+        last_mode = str(state.get("last_mode") or "").strip().lower() or None
+
+        prompt_with_choices = self._merge_confirmed_choices_into_prompt(
+            cleaned_prompt,
+            confirmed_choices=confirmed_choices,
+        )
+        is_modify_mode = (
+            current_definition is not None
+            and (
+                self._prompt_requests_modify(prompt_with_choices)
+                or last_mode == "modify"
+            )
+        )
+        analysis = self._analyze_prompt_for_assistant(prompt_with_choices)
+        missing_logic_slots = analysis["missing_logic_slots"]
+        needs_clarification = bool(analysis.get("needs_clarification"))
+        assumptions = self._dedupe_non_empty_strings(
+            [*existing_assumptions, *analysis["assumptions"]]
+        )
+        questions = self._build_clarify_questions(
+            missing_logic_slots,
+            prompt=prompt_with_choices,
+            analysis=analysis,
+        )
+
+        if needs_clarification and not is_modify_mode:
+            if not questions:
+                questions = self._build_clarify_questions(
+                    ["trigger_type"],
+                    prompt=prompt_with_choices,
+                    analysis=analysis,
+                )
+            message_lines = [
+                "I need a couple of workflow details before generating an accurate flow.",
+            ]
+            for idx, question in enumerate(questions, start=1):
+                message_lines.append(f"{idx}. {question['question']}")
+            return {
+                "mode": "clarify",
+                "assistant_message": "\n".join(message_lines),
+                "questions": questions[:2],
+                "assumptions": assumptions,
+                "definition": None,
+                "name": None,
+                "change_summary": None,
+            }
+
+        generation_prompt = prompt_with_choices
+        generation_prompt = self._append_inferred_intent_to_prompt(
+            generation_prompt,
+            analysis=analysis,
+        )
+        if assumptions:
+            generation_prompt = self._append_assumptions_to_prompt(
+                generation_prompt,
+                assumptions=assumptions,
+            )
+        if is_modify_mode and current_definition is not None:
+            generation_prompt = self._build_modify_generation_prompt(
+                prompt=generation_prompt,
+                current_definition=current_definition,
+            )
+
+        generated = await self.generate_workflow_definition(generation_prompt)
+        safe_definition = self._strip_sensitive_config_values(generated.definition)
+
+        mode = "modify" if is_modify_mode else "generate"
+        if (
+            mode == "modify"
+            and current_definition is not None
+            and not self._modify_prompt_allows_full_rebuild(prompt_with_choices)
+            and self._is_broad_modify_change(
+                previous_definition=current_definition,
+                updated_definition=safe_definition,
+            )
+        ):
+            strict_modify_prompt = self._build_pinpoint_modify_generation_prompt(
+                prompt=generation_prompt,
+                current_definition=current_definition,
+            )
+            retried = await self.generate_workflow_definition(strict_modify_prompt)
+            safe_definition = self._strip_sensitive_config_values(retried.definition)
+            if retried.name:
+                generated = GeneratedWorkflowResult(
+                    definition=safe_definition,
+                    name=retried.name,
+                )
+
+        summary = self._build_generation_summary(
+            definition=safe_definition,
+            mode=mode,
+            assumptions=assumptions,
+        )
+
+        change_summary = None
+        if mode == "modify" and current_definition is not None:
+            change_summary = self._summarize_definition_changes(
+                previous_definition=current_definition,
+                updated_definition=safe_definition,
+            )
+
+        return {
+            "mode": mode,
+            "assistant_message": summary,
+            "questions": [],
+            "assumptions": assumptions,
+            "definition": safe_definition,
+            "name": generated.name,
+            "change_summary": change_summary,
+        }
+
+    @classmethod
+    def _analyze_prompt_for_assistant(cls, prompt: str) -> dict[str, Any]:
+        lowered = prompt.lower()
+        prompt_word_count = len(re.findall(r"\b\w+\b", lowered))
+
+        trigger_known = cls._infer_trigger_type_from_prompt(prompt) is not None or any(
+            token in lowered for token in (" when ", "when ", "on new ", "on each ", "upon ")
+        )
+        action_known = any(token in lowered for token in ASSISTANT_ACTION_HINTS)
+        requested_channels = cls._infer_requested_channel_node_types(lowered)
+        channel_requested = bool(requested_channels) or any(
+            token in lowered for token in ("send", "post", "notify", "message", "email")
+        )
+        channel_known = any(
+            token in lowered
+            for tokens in ASSISTANT_CHANNEL_HINTS.values()
+            for token in tokens
+        )
+        branching_requested = any(token in lowered for token in ASSISTANT_BRANCH_HINTS)
+        branch_condition_known = any(
+            token in lowered
+            for token in (" equals ", " contains ", " greater", " less", "status", "priority")
+        )
+        timing_requested = any(token in lowered for token in ASSISTANT_TIMING_HINTS)
+        timing_known = (
+            cls._extract_schedule_rule_from_prompt(prompt) is not None
+            or bool(SEQUENCE_DAYS_PATTERN.search(lowered))
+            or bool(ASSISTANT_TIMING_VALUE_PATTERN.search(lowered))
+        )
+        data_mapping_known = any(token in lowered for token in ASSISTANT_DATA_MAPPING_HINTS)
+        multi_channel_requested = len(requested_channels) >= 2
+        image_requested = cls._prompt_requests_image_generation(lowered)
+        has_actionable_signal = (
+            action_known
+            or channel_known
+            or timing_known
+            or branching_requested
+            or image_requested
+            or bool(requested_channels)
+        )
+
+        missing_logic_slots: list[str] = []
+        assumptions: list[str] = []
+
+        if not trigger_known:
+            missing_logic_slots.append("trigger_type")
+            assumptions.append("Default trigger can be manual_trigger if not specified.")
+
+        if not action_known:
+            missing_logic_slots.append("primary_action")
+            if has_actionable_signal:
+                assumptions.append(
+                    "Primary action inferred from your context and channel intent."
+                )
+
+        if channel_requested and not channel_known:
+            missing_logic_slots.append("destination_channel")
+            assumptions.append(
+                "Destination channel will default to slack_send_message when not explicitly recognized."
+            )
+
+        if branching_requested and not branch_condition_known:
+            missing_logic_slots.append("branch_condition")
+            assumptions.append("Single-path flow is used when branch conditions are not provided.")
+
+        if timing_requested and not timing_known:
+            missing_logic_slots.append("timing")
+            assumptions.append("Default schedule cadence can be daily when timing is unspecified.")
+
+        if not data_mapping_known:
+            assumptions.append("Dynamic fields use safe placeholders like {{email}} and {{message}}.")
+
+        questions = cls._build_clarify_questions(missing_logic_slots)
+        needs_clarification = not has_actionable_signal and prompt_word_count <= 6
+        return {
+            "needs_clarification": needs_clarification,
+            "missing_logic_slots": missing_logic_slots,
+            "questions": questions[:2],
+            "assumptions": assumptions,
+            "signals": {
+                "trigger_known": trigger_known,
+                "action_known": action_known,
+                "channel_known": channel_known,
+                "channel_requested": channel_requested,
+                "branching_requested": branching_requested,
+                "branch_condition_known": branch_condition_known,
+                "timing_requested": timing_requested,
+                "timing_known": timing_known,
+                "data_mapping_known": data_mapping_known,
+                "multi_channel_requested": multi_channel_requested,
+                "requested_channels": sorted(requested_channels),
+                "image_requested": image_requested,
+                "has_actionable_signal": has_actionable_signal,
+            },
+        }
+
+    @classmethod
+    def _append_inferred_intent_to_prompt(
+        cls,
+        prompt: str,
+        *,
+        analysis: Mapping[str, Any],
+    ) -> str:
+        signals = analysis.get("signals") if isinstance(analysis, Mapping) else {}
+        if not isinstance(signals, Mapping):
+            return prompt
+
+        inferred_lines: list[str] = []
+        requested_channels = [
+            str(item).strip()
+            for item in (signals.get("requested_channels") or [])
+            if str(item).strip()
+        ]
+        if requested_channels:
+            rendered_channels = ", ".join(
+                CHANNEL_DISPLAY_NAMES.get(channel, channel)
+                for channel in requested_channels
+            )
+            inferred_lines.append(f"Use these requested channels: {rendered_channels}.")
+
+        if not bool(signals.get("trigger_known")):
+            inferred_lines.append("Use manual_trigger as default start unless explicitly specified otherwise.")
+
+        if bool(signals.get("timing_known")) and bool(signals.get("multi_channel_requested")):
+            inferred_lines.append(
+                "Treat this as a multi-step nurture/outreach flow and keep cadence aligned to requested timeline."
+            )
+
+        if not inferred_lines:
+            return prompt
+
+        return (
+            f"{prompt}\n\nInferred execution intent:\n"
+            + "\n".join(f"- {line}" for line in inferred_lines)
+            + "\nGenerate directly using these inferences unless they conflict with explicit user text."
+        )
+
+    @classmethod
+    def _build_clarify_questions(
+        cls,
+        missing_slots: list[str],
+        *,
+        prompt: str = "",
+        analysis: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        lowered_prompt = prompt.lower()
+        signals = analysis.get("signals") if isinstance(analysis, Mapping) else {}
+        if not isinstance(signals, Mapping):
+            signals = {}
+        requested_channels = [
+            str(item).strip()
+            for item in (signals.get("requested_channels") or [])
+            if str(item).strip()
+        ]
+        rendered_channels = ", ".join(
+            CHANNEL_DISPLAY_NAMES.get(item, item)
+            for item in requested_channels
+        )
+        inferred_trigger = cls._infer_trigger_type_from_prompt(prompt)
+
+        question_map: dict[str, tuple[str, str]] = {
+            "trigger_type": (
+                "trigger_type",
+                (
+                    f"I can start this with `{inferred_trigger}` based on your prompt. "
+                    "Should I use that trigger, or switch to manual/webhook/form/schedule?"
+                    if inferred_trigger
+                    else "How should this workflow start: manual, webhook, form, or schedule?"
+                ),
+            ),
+            "primary_action": (
+                "primary_action",
+                "What is the main action this workflow must complete?",
+            ),
+            "destination_channel": (
+                "destination_channel",
+                (
+                    f"Should I deliver through these channels only: {rendered_channels}, "
+                    "or include another destination?"
+                    if rendered_channels
+                    else "Which destination channel should be used (for example Gmail, Slack, Telegram, or WhatsApp)?"
+                ),
+            ),
+            "branch_condition": (
+                "branch_condition",
+                "What exact condition should decide each branch path?",
+            ),
+            "timing": (
+                "timing",
+                (
+                    "What exact cadence should I use (for example every 15 minutes, daily at 9:00, or cron)?"
+                    if ("schedule" in lowered_prompt or "sequence" in lowered_prompt or "every " in lowered_prompt)
+                    else "What timing should we use (for example every day, every hour, or cron)?"
+                ),
+            ),
+        }
+        reason_map: dict[str, str] = {
+            "trigger_type": "Needed to choose the start trigger node.",
+            "primary_action": "Needed to decide the core action path.",
+            "destination_channel": "Needed to select the correct integration nodes.",
+            "branch_condition": "Needed to wire if_else/switch branches correctly.",
+            "timing": "Needed to configure schedule or delay nodes accurately.",
+        }
+
+        questions: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for slot in missing_slots:
+            mapped = question_map.get(slot)
+            if not mapped:
+                continue
+            question_id, question = mapped
+            if question_id in seen_ids:
+                continue
+            seen_ids.add(question_id)
+            questions.append(
+                {
+                    "id": question_id,
+                    "question": question,
+                    "reason": reason_map.get(slot, "Needed to build the workflow accurately."),
+                }
+            )
+        return questions
+
+    @classmethod
+    def _build_modify_generation_prompt(
+        cls,
+        *,
+        prompt: str,
+        current_definition: WorkflowDefinition,
+    ) -> str:
+        summary = cls._build_definition_summary(current_definition)
+        baseline_json = json.dumps(current_definition.model_dump(mode="python"), ensure_ascii=True)
+        return dedent(
+            f"""
+            User modification request:
+            {prompt}
+
+            Existing workflow summary:
+            {summary}
+
+            Existing workflow JSON (authoritative baseline):
+            {baseline_json}
+
+            Modification rules:
+            - Preserve existing workflow intent unless the user explicitly asks to replace it.
+            - Apply only the requested logical changes.
+            - Keep unchanged node ids, edge ids, and wiring intact unless the user explicitly asks to alter them.
+            - Prefer minimal diff edits over regeneration.
+            - Keep credential fields empty; user will configure credentials manually.
+            """
+        ).strip()
+
+    @classmethod
+    def _build_pinpoint_modify_generation_prompt(
+        cls,
+        *,
+        prompt: str,
+        current_definition: WorkflowDefinition,
+    ) -> str:
+        baseline_json = json.dumps(current_definition.model_dump(mode="python"), ensure_ascii=True)
+        return dedent(
+            f"""
+            Refine this workflow with pinpoint edits only.
+
+            Requested change:
+            {prompt}
+
+            Baseline workflow JSON (must remain mostly unchanged):
+            {baseline_json}
+
+            Hard constraints:
+            - Preserve all existing nodes and edges unless explicitly required by the requested change.
+            - Do not rename node ids or edge ids unless unavoidable.
+            - Keep unaffected node configs exactly as-is.
+            - Make the smallest possible structural diff.
+            - Keep credential fields empty strings.
+            - Return only valid workflow JSON.
+            """
+        ).strip()
+
+    @staticmethod
+    def _build_definition_summary(definition: WorkflowDefinition) -> str:
+        node_entries = [
+            f"{node.id}:{node.type}"
+            for node in definition.nodes[:25]
+        ]
+        edge_entries = [
+            f"{edge.source}->{edge.target}"
+            for edge in definition.edges[:30]
+        ]
+        return (
+            f"nodes({len(definition.nodes)}): {', '.join(node_entries) or 'none'}; "
+            f"edges({len(definition.edges)}): {', '.join(edge_entries) or 'none'}"
+        )
+
+    @staticmethod
+    def _append_assumptions_to_prompt(prompt: str, *, assumptions: list[str]) -> str:
+        rendered_assumptions = "\n".join(f"- {item}" for item in assumptions if item)
+        if not rendered_assumptions:
+            return prompt
+        return (
+            f"{prompt}\n\nAssumptions to apply while generating:\n"
+            f"{rendered_assumptions}\n"
+            "Do not ask about credentials; keep credential fields empty strings."
+        )
+
+    @staticmethod
+    def _merge_confirmed_choices_into_prompt(
+        prompt: str,
+        *,
+        confirmed_choices: Any,
+    ) -> str:
+        if not isinstance(confirmed_choices, Mapping) or not confirmed_choices:
+            return prompt
+        lines: list[str] = []
+        for key, value in confirmed_choices.items():
+            normalized_key = str(key).strip()
+            if not normalized_key:
+                continue
+            normalized_value = " ".join(str(value).split()).strip()
+            if not normalized_value:
+                continue
+            lines.append(f"- {normalized_key}: {normalized_value}")
+        if not lines:
+            return prompt
+        return f"{prompt}\n\nConfirmed user choices:\n" + "\n".join(lines)
+
+    @staticmethod
+    def _prompt_requests_modify(prompt: str) -> bool:
+        lowered = prompt.lower()
+        return any(token in lowered for token in ASSISTANT_MODIFY_HINTS)
+
+    @classmethod
+    def _build_generation_summary(
+        cls,
+        *,
+        definition: WorkflowDefinition,
+        mode: str,
+        assumptions: list[str],
+    ) -> str:
+        node_count = len(definition.nodes)
+        edge_count = len(definition.edges)
+        trigger = next(
+            (node.type for node in definition.nodes if node.type in TRIGGER_NODE_TYPES),
+            "manual_trigger",
+        )
+        action_nodes = [
+            node.type
+            for node in definition.nodes
+            if node.type not in TRIGGER_NODE_TYPES
+        ][:4]
+        rendered_actions = ", ".join(action_nodes) if action_nodes else "no downstream actions"
+
+        if mode == "modify":
+            base = "Updated your workflow with the requested changes."
+        else:
+            base = "Generated a workflow aligned to your request."
+
+        summary_parts = [
+            base,
+            f"Structure: {node_count} nodes, {edge_count} edges.",
+            f"Trigger: `{trigger}`.",
+            f"Main steps: {rendered_actions}.",
+        ]
+        if assumptions:
+            summary_parts.append("Applied safe assumptions only where details were missing.")
+        return " ".join(summary_parts)
+
+    @staticmethod
+    def _modify_prompt_allows_full_rebuild(prompt: str) -> bool:
+        lowered = prompt.lower()
+        rebuild_tokens = (
+            "rebuild",
+            "recreate",
+            "replace entire",
+            "replace whole",
+            "from scratch",
+            "start over",
+            "completely new",
+            "full redesign",
+        )
+        return any(token in lowered for token in rebuild_tokens)
+
+    @staticmethod
+    def _is_broad_modify_change(
+        *,
+        previous_definition: WorkflowDefinition,
+        updated_definition: WorkflowDefinition,
+    ) -> bool:
+        old_nodes = {node.id: node for node in previous_definition.nodes}
+        new_nodes = {node.id: node for node in updated_definition.nodes}
+        if not old_nodes:
+            return False
+
+        removed_nodes = set(old_nodes) - set(new_nodes)
+        added_nodes = set(new_nodes) - set(old_nodes)
+        shared_ids = set(old_nodes) & set(new_nodes)
+
+        changed_shared_nodes = {
+            node_id
+            for node_id in shared_ids
+            if old_nodes[node_id].type != new_nodes[node_id].type
+            or old_nodes[node_id].config != new_nodes[node_id].config
+        }
+
+        old_edge_signatures = {
+            (edge.source, edge.target, str(edge.branch or ""), str(edge.targetHandle or ""))
+            for edge in previous_definition.edges
+        }
+        new_edge_signatures = {
+            (edge.source, edge.target, str(edge.branch or ""), str(edge.targetHandle or ""))
+            for edge in updated_definition.edges
+        }
+        edge_delta_count = len(old_edge_signatures ^ new_edge_signatures)
+        edge_delta_threshold = max(6, int(max(1, len(old_edge_signatures)) * 0.8) + 2)
+
+        removed_ratio = len(removed_nodes) / max(1, len(old_nodes))
+        changed_ratio = len(changed_shared_nodes) / max(1, len(old_nodes))
+
+        return (
+            removed_ratio > 0.35
+            or (changed_ratio > 0.75 and len(added_nodes) > 0)
+            or edge_delta_count >= edge_delta_threshold
+        )
+
+    @staticmethod
+    def _sanitize_string_list(raw_values: Any) -> list[str]:
+        if not isinstance(raw_values, list):
+            return []
+        return [
+            " ".join(str(value).split()).strip()
+            for value in raw_values
+            if " ".join(str(value).split()).strip()
+        ]
+
+    @staticmethod
+    def _dedupe_non_empty_strings(values: list[Any]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = " ".join(str(value).split()).strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(normalized)
+        return deduped
+
+    @classmethod
+    def _strip_sensitive_config_values(cls, definition: WorkflowDefinition) -> WorkflowDefinition:
+        payload = definition.model_dump()
+        nodes = payload.get("nodes")
+        if not isinstance(nodes, list):
+            return definition
+
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            config = node.get("config")
+            if not isinstance(config, dict):
+                continue
+            for key in ASSISTANT_SENSITIVE_CONFIG_KEYS:
+                if key in config:
+                    config[key] = ""
+
+        try:
+            return WorkflowDefinition.model_validate(payload)
+        except ValidationError:
+            return definition
+
+    @staticmethod
+    def _summarize_definition_changes(
+        *,
+        previous_definition: WorkflowDefinition,
+        updated_definition: WorkflowDefinition,
+    ) -> str:
+        old_nodes = {node.id: node for node in previous_definition.nodes}
+        new_nodes = {node.id: node for node in updated_definition.nodes}
+
+        added_node_ids = sorted(set(new_nodes) - set(old_nodes))
+        removed_node_ids = sorted(set(old_nodes) - set(new_nodes))
+        changed_type_ids = sorted(
+            node_id
+            for node_id in (set(old_nodes) & set(new_nodes))
+            if old_nodes[node_id].type != new_nodes[node_id].type
+        )
+        changed_config_ids = sorted(
+            node_id
+            for node_id in (set(old_nodes) & set(new_nodes))
+            if old_nodes[node_id].type == new_nodes[node_id].type
+            and old_nodes[node_id].config != new_nodes[node_id].config
+        )
+
+        old_edge_signatures = {
+            (
+                edge.source,
+                edge.target,
+                str(edge.branch or ""),
+                str(edge.targetHandle or ""),
+            )
+            for edge in previous_definition.edges
+        }
+        new_edge_signatures = {
+            (
+                edge.source,
+                edge.target,
+                str(edge.branch or ""),
+                str(edge.targetHandle or ""),
+            )
+            for edge in updated_definition.edges
+        }
+        added_edges = max(0, len(new_edge_signatures - old_edge_signatures))
+        removed_edges = max(0, len(old_edge_signatures - new_edge_signatures))
+
+        summary_parts: list[str] = []
+        if added_node_ids:
+            summary_parts.append(f"added nodes: {', '.join(added_node_ids[:5])}")
+        if removed_node_ids:
+            summary_parts.append(f"removed nodes: {', '.join(removed_node_ids[:5])}")
+        if changed_type_ids:
+            summary_parts.append(f"retargeted node types: {', '.join(changed_type_ids[:5])}")
+        if changed_config_ids:
+            summary_parts.append(f"updated configs: {', '.join(changed_config_ids[:5])}")
+        if added_edges or removed_edges:
+            summary_parts.append(f"edge changes: +{added_edges}/-{removed_edges}")
+
+        if not summary_parts:
+            return "No major structural changes detected; response mostly refined existing configuration."
+        return " | ".join(summary_parts)
+
     @classmethod
     def build_workflow_generation_system_prompt(cls) -> str:
         node_sections: list[str] = []
@@ -518,6 +1318,7 @@ class LLMService:
             - Include exactly one start trigger node with indegree 0.
             - Valid trigger node types are: {", ".join(sorted(TRIGGER_NODE_TYPES))}.
             - Every workflow should be minimal but complete for the user request.
+            - Never return a trigger-only workflow when the user requested downstream actions, logic, integrations, or outputs.
             - Use clear human-readable labels.
             - position.x and position.y must be numbers.
             - Always include a config object, even when it is empty.
@@ -575,7 +1376,8 @@ class LLMService:
             7. If the request specifies a multi-day sequence (for example 14-day), ensure cadence/timing truly matches that duration.
             8. For multi-channel nurture flows, branch channels in parallel rather than chaining all channels serially.
             9. If the request asks for generated images or AI-created visuals, include an image_gen node with model, prompt, size, quality, and style config.
-            10. Return only one JSON object; no explanation text.
+            10. Do not return trigger-only output for actionable prompts; include the needed downstream steps.
+            11. Return only one JSON object; no explanation text.
             {validation_suffix}
             """
         ).strip()
@@ -619,6 +1421,7 @@ class LLMService:
         cls._validate_ai_subnode_structure(definition)
         cls._validate_delay_configs(definition)
         cls._validate_placeholder_syntax(definition)
+        cls._validate_minimum_workflow_usefulness(definition, user_prompt=user_prompt)
         cls._validate_sequence_duration_expectation(definition, user_prompt=user_prompt)
         cls._validate_multi_channel_branching_expectation(definition, user_prompt=user_prompt)
         cls._validate_image_generation_expectation(definition, user_prompt=user_prompt)
@@ -1051,7 +1854,7 @@ class LLMService:
         normalized_model = model.strip().lower()
         if normalized_model.startswith("gpt-5"):
             return None
-        return 0.1
+        return 0.0
 
     @staticmethod
     def _validate_node_types(definition: WorkflowDefinition) -> None:
@@ -1227,6 +2030,37 @@ class LLMService:
             )
 
     @classmethod
+    def _validate_minimum_workflow_usefulness(
+        cls,
+        definition: WorkflowDefinition,
+        *,
+        user_prompt: str | None,
+    ) -> None:
+        if not user_prompt or not cls._prompt_requires_non_trigger_steps(user_prompt):
+            return
+
+        non_trigger_nodes = [
+            node for node in definition.nodes if node.type not in TRIGGER_NODE_TYPES
+        ]
+        if not non_trigger_nodes:
+            raise WorkflowGenerationError(
+                "Generated workflow is trigger-only for an actionable prompt. "
+                "Add the required downstream action/logic nodes."
+            )
+
+        start_trigger_id = cls._resolve_start_trigger_node_id(definition)
+        if not start_trigger_id:
+            return
+        has_outgoing_from_trigger = any(
+            edge.source == start_trigger_id for edge in definition.edges
+        )
+        if not has_outgoing_from_trigger:
+            raise WorkflowGenerationError(
+                "Generated workflow does not connect the trigger to downstream steps. "
+                "Add edges from the start trigger to action/logic nodes."
+            )
+
+    @classmethod
     def _validate_sequence_duration_expectation(
         cls,
         definition: WorkflowDefinition,
@@ -1294,7 +2128,16 @@ class LLMService:
             return
 
         prompt = user_prompt.lower()
-        if not any(token in prompt for token in ("branch", "parallel")):
+        branching_intent_tokens = (
+            "parallel",
+            "in parallel",
+            "fan out",
+            "fanout",
+            "branch into",
+            "branch out",
+            "split across channels",
+        )
+        if not any(token in prompt for token in branching_intent_tokens):
             return
 
         requested_channels = cls._infer_requested_channel_node_types(prompt)
@@ -1319,17 +2162,31 @@ class LLMService:
 
     @staticmethod
     def _infer_requested_channel_node_types(prompt: str) -> set[str]:
-        channel_map = {
-            "send_gmail_message": ("email", "gmail", "mail"),
-            "whatsapp": ("whatsapp", "wa"),
-            "telegram": ("telegram",),
-            "slack_send_message": ("slack",),
-        }
         requested: set[str] = set()
-        for node_type, tokens in channel_map.items():
+        for node_type, tokens in ASSISTANT_CHANNEL_HINTS.items():
             if any(token in prompt for token in tokens):
                 requested.add(node_type)
         return requested
+
+    @classmethod
+    def _prompt_requires_non_trigger_steps(cls, prompt: str) -> bool:
+        lowered = prompt.lower()
+        if "only manual trigger" in lowered or "only a manual trigger" in lowered:
+            return False
+        if "trigger only" in lowered or "only trigger" in lowered:
+            return False
+
+        if cls._prompt_requests_image_generation(lowered):
+            return True
+        if cls._infer_requested_channel_node_types(lowered):
+            return True
+        if any(token in lowered for token in ASSISTANT_COMPLETION_HINTS):
+            return True
+        if any(token in lowered for token in ASSISTANT_BRANCH_HINTS):
+            return True
+        if any(token in lowered for token in ASSISTANT_TIMING_HINTS):
+            return True
+        return False
 
     @classmethod
     def _validate_image_generation_expectation(

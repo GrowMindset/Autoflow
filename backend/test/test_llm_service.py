@@ -4,10 +4,10 @@ import json
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from app.schemas.workflows import NODE_CONFIG_DEFAULTS
-from app.services.llm_service import LLMService, WorkflowGenerationError
+from app.schemas.workflows import NODE_CONFIG_DEFAULTS, WorkflowDefinition
+from app.services.llm_service import GeneratedWorkflowResult, LLMService, WorkflowGenerationError
 
 
 def _valid_definition() -> dict:
@@ -540,6 +540,50 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(definition.nodes[1].config["message"], "Hi {{form.email}}")
 
+    def test_validate_generated_workflow_rejects_trigger_only_for_actionable_prompt(self) -> None:
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "manual_trigger",
+                    "label": "Manual Trigger",
+                    "position": {"x": 100, "y": 120},
+                    "config": {},
+                }
+            ],
+            "edges": [],
+        }
+
+        with self.assertRaises(WorkflowGenerationError) as context:
+            LLMService.validate_generated_workflow(
+                json.dumps(payload),
+                user_prompt="Send a Telegram message when this workflow runs",
+            )
+
+        self.assertIn("trigger-only", str(context.exception))
+
+    def test_validate_generated_workflow_allows_trigger_only_when_explicitly_requested(self) -> None:
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "manual_trigger",
+                    "label": "Manual Trigger",
+                    "position": {"x": 100, "y": 120},
+                    "config": {},
+                }
+            ],
+            "edges": [],
+        }
+
+        definition, _ = LLMService.validate_generated_workflow(
+            json.dumps(payload),
+            user_prompt="Create a workflow with only manual trigger for now",
+        )
+
+        self.assertEqual(len(definition.nodes), 1)
+        self.assertEqual(definition.nodes[0].type, "manual_trigger")
+
     def test_validate_generated_workflow_accepts_delay_days_unit(self) -> None:
         payload = {
             "nodes": [
@@ -752,3 +796,171 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(definition.edges), 3)
+
+    async def test_assist_workflow_returns_clarify_for_low_confidence_prompt(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+
+        result = await service.assist_workflow(prompt="help")
+
+        self.assertEqual(result["mode"], "clarify")
+        self.assertGreaterEqual(len(result["questions"]), 1)
+        self.assertIsNone(result["definition"])
+
+    async def test_assist_workflow_generates_directly_for_clear_request(self) -> None:
+        fake_client = _FakeClient(
+            responses=[json.dumps({"definition": _valid_definition()})]
+        )
+        service = LLMService(client=fake_client, model="test-model")
+
+        result = await service.assist_workflow(
+            prompt="Send a telegram message when I run the workflow manually",
+        )
+
+        self.assertEqual(result["mode"], "generate")
+        self.assertIn("definition", result)
+        self.assertEqual(result["definition"].nodes[1].type, "telegram")
+
+    async def test_assist_workflow_generates_for_actionable_multi_channel_prompt(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        service.generate_workflow_definition = AsyncMock(
+            return_value=GeneratedWorkflowResult(
+                definition=WorkflowDefinition.model_validate(_valid_definition()),
+                name="Lead Nurture",
+            )
+        )
+
+        result = await service.assist_workflow(
+            prompt=(
+                "create a nurturing workflow for 14 days lead generation from different apps "
+                "like watsapp, telegram, slack, gmail, likendin"
+            ),
+        )
+
+        self.assertEqual(result["mode"], "generate")
+        self.assertEqual(result["questions"], [])
+        service.generate_workflow_definition.assert_awaited_once()
+
+    def test_infer_requested_channels_handles_common_typos(self) -> None:
+        requested = LLMService._infer_requested_channel_node_types(
+            "send nurture via watsapp, telegram, slack, gmail and likendin"
+        )
+        self.assertIn("whatsapp", requested)
+        self.assertIn("linkedin", requested)
+        self.assertIn("telegram", requested)
+        self.assertIn("slack_send_message", requested)
+        self.assertIn("send_gmail_message", requested)
+
+    async def test_assist_workflow_strips_credentials_from_generated_output(self) -> None:
+        payload = {
+            "definition": {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "manual_trigger",
+                        "label": "Manual Trigger",
+                        "position": {"x": 100, "y": 150},
+                        "config": {},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "send_gmail_message",
+                        "label": "Send Email",
+                        "position": {"x": 360, "y": 150},
+                        "config": {
+                            "credential_id": "super-secret-id",
+                            "to": "{{email}}",
+                            "cc": "",
+                            "bcc": "",
+                            "reply_to": "",
+                            "subject": "Hello",
+                            "body": "Hi there",
+                            "image": "",
+                            "is_html": False,
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "n1",
+                        "target": "n2",
+                        "sourceHandle": None,
+                        "targetHandle": None,
+                        "branch": None,
+                    }
+                ],
+            }
+        }
+        fake_client = _FakeClient(responses=[json.dumps(payload)])
+        service = LLMService(client=fake_client, model="test-model")
+
+        result = await service.assist_workflow(
+            prompt="Manually send email updates",
+        )
+
+        self.assertEqual(result["mode"], "generate")
+        generated_definition = result["definition"]
+        gmail_node = next(node for node in generated_definition.nodes if node.type == "send_gmail_message")
+        self.assertEqual(gmail_node.config.get("credential_id"), "")
+
+    async def test_assist_workflow_modify_returns_structural_change_summary(self) -> None:
+        current_definition = WorkflowDefinition.model_validate(_valid_definition())
+        updated_payload = {
+            "definition": {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "manual_trigger",
+                        "label": "Manual Trigger",
+                        "position": {"x": 100, "y": 120},
+                        "config": {},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "telegram",
+                        "label": "Send Telegram Message",
+                        "position": {"x": 340, "y": 120},
+                        "config": {"credential_id": "", "message": "Updated message", "parse_mode": ""},
+                    },
+                    {
+                        "id": "n3",
+                        "type": "delay",
+                        "label": "Wait",
+                        "position": {"x": 520, "y": 120},
+                        "config": {"amount": "1", "unit": "hours", "until_datetime": ""},
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "n1",
+                        "target": "n2",
+                        "sourceHandle": None,
+                        "targetHandle": None,
+                        "branch": None,
+                    },
+                    {
+                        "id": "e2",
+                        "source": "n2",
+                        "target": "n3",
+                        "sourceHandle": None,
+                        "targetHandle": None,
+                        "branch": None,
+                    },
+                ],
+            }
+        }
+        fake_client = _FakeClient(responses=[json.dumps(updated_payload)])
+        service = LLMService(client=fake_client, model="test-model")
+
+        result = await service.assist_workflow(
+            prompt="update existing workflow to add delay before completion",
+            current_definition=current_definition,
+            conversation_state={
+                "last_mode": "modify",
+            },
+        )
+
+        self.assertEqual(result["mode"], "modify")
+        self.assertIsInstance(result["change_summary"], str)
+        self.assertTrue(result["change_summary"])

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, CreatedAtMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from app.models.ai_chat_history import AIChatMessage, AIChatState
     from app.models.credential import AppCredential
     from app.models.executions import Execution
     from app.models.webhook import WebhookEndpoint
@@ -46,4 +47,10 @@ class User(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     webhook_endpoints: Mapped[list["WebhookEndpoint"]] = relationship(
         "WebhookEndpoint", back_populates="user", cascade="all, delete-orphan"
+    )
+    ai_chat_messages: Mapped[list["AIChatMessage"]] = relationship(
+        "AIChatMessage", back_populates="user", cascade="all, delete-orphan"
+    )
+    ai_chat_states: Mapped[list["AIChatState"]] = relationship(
+        "AIChatState", back_populates="user", cascade="all, delete-orphan"
     )

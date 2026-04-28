@@ -1,3 +1,4 @@
+from app.models.ai_chat_history import AIChatMessage, AIChatState
 from app.models.base import Base
 from app.models.credential import AppCredential
 from app.models.executions import Execution
@@ -8,6 +9,8 @@ from app.models.workflows import Workflow
 
 __all__ = [
     "AppCredential",
+    "AIChatMessage",
+    "AIChatState",
     "Base",
     "Execution",
     "NodeExecution",

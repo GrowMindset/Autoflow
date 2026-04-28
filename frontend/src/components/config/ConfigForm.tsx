@@ -752,7 +752,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       key: 'model',
       label: 'Model',
       type: 'select',
-      options: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano']
+      options: ['gpt-5.5','gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano']
     },
     { key: 'temperature', label: 'Temperature', type: 'text', placeholder: '0.7' }
   ],

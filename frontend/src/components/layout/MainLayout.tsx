@@ -9,7 +9,7 @@ import WorkflowCanvas from '../canvas/WorkflowCanvas';
 import { workflowService } from '../../services/workflowService';
 import { ExecutionDetail } from '../../services/executionService';
 import AIWorkflowChatPanel from '../chat/AIWorkflowChatPanel';
-import { aiService, Message } from '../../services/aiService';
+import { aiService, ConversationState, Message } from '../../services/aiService';
 
 interface Workflow {
   id: string;
@@ -20,9 +20,19 @@ interface Workflow {
 }
 
 type ChatHistoryByWorkflow = Record<string, Message[]>;
+type ConversationStateByWorkflow = Record<string, ConversationState>;
 
 const AI_CHAT_HISTORY_SESSION_KEY = 'autoflow_ai_chat_history_v2';
+const AI_CONVERSATION_STATE_SESSION_KEY = 'autoflow_ai_conversation_state_v1';
 const AUTO_SAVE_DEBOUNCE_MS = 1200;
+const AI_HISTORY_SAVE_DEBOUNCE_MS = 500;
+
+const createEmptyConversationState = (): ConversationState => ({
+  confirmedChoices: {},
+  assumptions: [],
+  lastMode: undefined,
+});
+const EMPTY_CONVERSATION_STATE: ConversationState = createEmptyConversationState();
 
 const MainLayout: React.FC = () => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -35,12 +45,16 @@ const MainLayout: React.FC = () => {
 
   // AI Chat & Resize State
   const [chatMessagesByWorkflow, setChatMessagesByWorkflow] = useState<ChatHistoryByWorkflow>({});
+  const [aiConversationStateByWorkflow, setAiConversationStateByWorkflow] = useState<ConversationStateByWorkflow>({});
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [reviewedWorkflowSignature, setReviewedWorkflowSignature] = useState<string | null>(null);
   const [chatPanelWidth, setChatPanelWidth] = useState(400);
   const chatResizingRef = useRef(false);
   const chatStartXRef = useRef(0);
   const chatStartWidthRef = useRef(400);
+  const aiHistoryLoadedScopesRef = useRef<Set<string>>(new Set());
+  const aiHistoryHydratingScopesRef = useRef<Set<string>>(new Set());
+  const aiHistoryPersistTimeoutRef = useRef<number | null>(null);
   const pendingDiscardRefinementRef = useRef<{
     scopeId: string;
     workflowDefinition: any;
@@ -175,6 +189,18 @@ const MainLayout: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    const raw = sessionStorage.getItem(AI_CONVERSATION_STATE_SESSION_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return;
+      setAiConversationStateByWorkflow(parsed as ConversationStateByWorkflow);
+    } catch (error) {
+      console.warn('Could not restore AI conversation state from session storage:', error);
+    }
+  }, []);
+
+  useEffect(() => {
     const compacted = Object.entries(chatMessagesByWorkflow).reduce<ChatHistoryByWorkflow>(
       (acc, [workflowId, messages]) => {
         if (!Array.isArray(messages) || messages.length === 0) {
@@ -189,6 +215,13 @@ const MainLayout: React.FC = () => {
   }, [chatMessagesByWorkflow]);
 
   useEffect(() => {
+    sessionStorage.setItem(
+      AI_CONVERSATION_STATE_SESSION_KEY,
+      JSON.stringify(aiConversationStateByWorkflow),
+    );
+  }, [aiConversationStateByWorkflow]);
+
+  useEffect(() => {
     (window as any).openNodePalette = () => setIsRightSidebarOpen(true);
     return () => {
       delete (window as any).openNodePalette;
@@ -200,6 +233,8 @@ const MainLayout: React.FC = () => {
     : workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };
   const activeChatScopeId = currentWorkflowId || 'new';
   const chatMessages = chatMessagesByWorkflow[activeChatScopeId] || [];
+  const activeConversationState =
+    aiConversationStateByWorkflow[activeChatScopeId] || EMPTY_CONVERSATION_STATE;
   const getWorkflowSignature = useCallback((definition: any) => {
     try {
       return JSON.stringify(definition || {});
@@ -212,6 +247,77 @@ const MainLayout: React.FC = () => {
     (window as any).clearAiWorkflowPreview?.();
     setReviewedWorkflowSignature(null);
   }, []);
+
+  useEffect(() => {
+    const scopeId = activeChatScopeId;
+    if (!scopeId) return;
+    if (aiHistoryLoadedScopesRef.current.has(scopeId)) return;
+
+    let cancelled = false;
+    aiHistoryHydratingScopesRef.current.add(scopeId);
+
+    const loadScopeHistory = async () => {
+      try {
+        const payload = await aiService.getChatHistory(scopeId);
+        if (cancelled) return;
+
+        setChatMessagesByWorkflow((prev) => ({
+          ...prev,
+          [scopeId]: payload.messages.slice(-400),
+        }));
+        setAiConversationStateByWorkflow((prev) => ({
+          ...prev,
+          [scopeId]: payload.conversationState || createEmptyConversationState(),
+        }));
+      } catch (error) {
+        console.warn(`Could not load AI chat history for scope '${scopeId}':`, error);
+      } finally {
+        aiHistoryHydratingScopesRef.current.delete(scopeId);
+        aiHistoryLoadedScopesRef.current.add(scopeId);
+      }
+    };
+
+    void loadScopeHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeChatScopeId]);
+
+  useEffect(() => {
+    const scopeId = activeChatScopeId;
+    if (!scopeId) return;
+    if (aiHistoryHydratingScopesRef.current.has(scopeId)) return;
+
+    const hasMessages = chatMessages.length > 0;
+    const hasState = Object.keys(activeConversationState.confirmedChoices || {}).length > 0
+      || activeConversationState.assumptions.length > 0
+      || Boolean(activeConversationState.lastMode);
+    if (!hasMessages && !hasState && !aiHistoryLoadedScopesRef.current.has(scopeId)) {
+      return;
+    }
+
+    if (aiHistoryPersistTimeoutRef.current !== null) {
+      window.clearTimeout(aiHistoryPersistTimeoutRef.current);
+    }
+
+    aiHistoryPersistTimeoutRef.current = window.setTimeout(() => {
+      void aiService
+        .saveChatHistory(scopeId, chatMessages, activeConversationState)
+        .then(() => {
+          aiHistoryLoadedScopesRef.current.add(scopeId);
+        })
+        .catch((error) => {
+          console.warn(`Could not persist AI chat history for scope '${scopeId}':`, error);
+        });
+    }, AI_HISTORY_SAVE_DEBOUNCE_MS);
+
+    return () => {
+      if (aiHistoryPersistTimeoutRef.current !== null) {
+        window.clearTimeout(aiHistoryPersistTimeoutRef.current);
+        aiHistoryPersistTimeoutRef.current = null;
+      }
+    };
+  }, [activeChatScopeId, chatMessages, activeConversationState]);
 
   const isPublished = currentWorkflow.is_published || false;
   const isCurrentWorkflowPollingActive =
@@ -240,8 +346,10 @@ const MainLayout: React.FC = () => {
     // They will get an ID once saved to the backend.
     clearAutoSaveTimeout();
     clearAiReviewState();
+    aiHistoryLoadedScopesRef.current.add('new');
     setCurrentWorkflowId('new');
     setChatMessagesByWorkflow((prev) => ({ ...prev, new: [] }));
+    setAiConversationStateByWorkflow((prev) => ({ ...prev, new: createEmptyConversationState() }));
     setNewWorkflowDraftName('Untitled Workflow');
     setCurrentDescription('');
     lastSavedDefinitionRef.current = JSON.stringify({ nodes: [], edges: [] });
@@ -368,8 +476,11 @@ const MainLayout: React.FC = () => {
 
       // If it was a new workflow, switch to the newly created ID
       if (currentWorkflowId === 'new' && savedResult.id) {
+        const draftMessages = chatMessagesByWorkflow.new || [];
+        const draftConversationState =
+          aiConversationStateByWorkflow.new || createEmptyConversationState();
+
         setChatMessagesByWorkflow((prev) => {
-          const draftMessages = prev.new || [];
           if (draftMessages.length === 0) {
             return prev;
           }
@@ -380,6 +491,27 @@ const MainLayout: React.FC = () => {
             new: [],
           };
         });
+        setAiConversationStateByWorkflow((prev) => ({
+          ...prev,
+          [savedResult.id]: draftConversationState,
+          new: createEmptyConversationState(),
+        }));
+        aiHistoryLoadedScopesRef.current.add(savedResult.id);
+        aiHistoryLoadedScopesRef.current.add('new');
+
+        void (async () => {
+          try {
+            await aiService.saveChatHistory(
+              savedResult.id,
+              draftMessages,
+              draftConversationState,
+            );
+            await aiService.clearChatHistory('new');
+          } catch (error) {
+            console.warn('Could not migrate AI draft history to saved workflow scope:', error);
+          }
+        })();
+
         setCurrentWorkflowId(savedResult.id);
         window.setTimeout(() => {
           (window as any).loadCanvasWorkflowData?.(definition);
@@ -394,7 +526,13 @@ const MainLayout: React.FC = () => {
       setSaveStatus('error');
       console.error('Save failed:', error);
     }
-  }, [currentWorkflow.name, currentWorkflowId, currentDescription]);
+  }, [
+    aiConversationStateByWorkflow,
+    chatMessagesByWorkflow,
+    currentWorkflow.name,
+    currentWorkflowId,
+    currentDescription,
+  ]);
 
   const runAutoSave = useCallback(async () => {
     if (isAutoSaveInFlightRef.current) {
@@ -448,6 +586,15 @@ const MainLayout: React.FC = () => {
       clearAutoSaveTimeout();
     };
   }, [clearAutoSaveTimeout]);
+
+  useEffect(() => {
+    return () => {
+      if (aiHistoryPersistTimeoutRef.current !== null) {
+        window.clearTimeout(aiHistoryPersistTimeoutRef.current);
+        aiHistoryPersistTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   const loadPublishedRunUrl = useCallback(async (workflowId: string) => {
     if (!workflowId || workflowId === 'new') {
@@ -602,7 +749,7 @@ const MainLayout: React.FC = () => {
     }
   }, [workflows]);
 
-  const handleSendMessage = useCallback(async (content: string) => {
+  const handleSendMessage = useCallback(async (content: string, conversationStateOverride?: ConversationState) => {
     clearAiReviewState();
     const scopeId = currentWorkflowId || 'new';
     const pendingRefinement = pendingDiscardRefinementRef.current;
@@ -632,7 +779,47 @@ const MainLayout: React.FC = () => {
         promptToSend = `Refine the reviewed workflow with these requested changes:\n${content}\nKeep the original business goal, modify only what the user requested, and return full updated workflow JSON.`;
       }
 
-      const response = await aiService.generateWorkflow(promptToSend, workflowContext);
+      const previousMessages = chatMessagesByWorkflow[scopeId] || [];
+      const latestClarifyMessage = [...previousMessages]
+        .reverse()
+        .find((message) => message.role === 'assistant' && message.mode === 'clarify' && Array.isArray(message.questions) && message.questions.length > 0);
+
+      const baseConversationState =
+        conversationStateOverride
+        || aiConversationStateByWorkflow[scopeId]
+        || createEmptyConversationState();
+
+      const inferredConfirmedChoices = { ...baseConversationState.confirmedChoices };
+      if (latestClarifyMessage?.questions?.length) {
+        const primaryQuestion = latestClarifyMessage.questions[0];
+        if (primaryQuestion?.id) {
+          inferredConfirmedChoices[primaryQuestion.id] = content.trim();
+        }
+      }
+
+      const response = await aiService.assistWorkflow(
+        promptToSend,
+        workflowContext,
+        {
+          ...baseConversationState,
+          confirmedChoices: inferredConfirmedChoices,
+        },
+      );
+
+      setAiConversationStateByWorkflow((prev) => ({
+        ...prev,
+        [scopeId]: {
+          ...(response.conversationState || {
+            confirmedChoices: {} as Record<string, string>,
+            assumptions: [] as string[],
+          }),
+          confirmedChoices: {
+            ...inferredConfirmedChoices,
+            ...(response.conversationState?.confirmedChoices || {}),
+          },
+        },
+      }));
+
       if (shouldRefineReviewedWorkflow) {
         pendingDiscardRefinementRef.current = null;
       }
@@ -641,9 +828,13 @@ const MainLayout: React.FC = () => {
         role: 'assistant',
         content: response.message,
         timestamp: new Date().toISOString(),
+        mode: response.mode,
+        questions: response.questions,
+        assumptions: response.assumptions,
+        changeSummary: response.changeSummary,
         ...(response.workflow ? { workflow: response.workflow } : {}),
         ...(response.workflowName ? { workflowName: response.workflowName } : {}),
-      } as any;
+      };
       setChatMessagesByWorkflow((prev) => ({
         ...prev,
         [scopeId]: [...(prev[scopeId] || []), assistantMsg].slice(-40),
@@ -659,7 +850,32 @@ const MainLayout: React.FC = () => {
     } finally {
       setIsAiLoading(false);
     }
-  }, [clearAiReviewState, currentWorkflow.name, currentWorkflowId]);
+  }, [aiConversationStateByWorkflow, chatMessagesByWorkflow, clearAiReviewState, currentWorkflow.name, currentWorkflowId]);
+
+  const handleClearAiHistory = useCallback(async () => {
+    const scopeId = currentWorkflowId || 'new';
+    if (!window.confirm('Clear AI chat history for this workflow from the database?')) {
+      return;
+    }
+
+    try {
+      await aiService.clearChatHistory(scopeId);
+      setChatMessagesByWorkflow((prev) => ({
+        ...prev,
+        [scopeId]: [],
+      }));
+      setAiConversationStateByWorkflow((prev) => ({
+        ...prev,
+        [scopeId]: createEmptyConversationState(),
+      }));
+      setReviewedWorkflowSignature(null);
+      aiHistoryLoadedScopesRef.current.add(scopeId);
+      toast.success('AI chat history cleared from database.');
+    } catch (error) {
+      console.error('Failed to clear AI chat history:', error);
+      toast.error('Could not clear AI chat history.');
+    }
+  }, [currentWorkflowId]);
 
   const normalizeAiWorkflowPayload = useCallback((workflowPayload: any) => {
     const workflowDefinition = workflowPayload?.definition || workflowPayload;
@@ -898,6 +1114,7 @@ const MainLayout: React.FC = () => {
             onClose={() => setIsAiAssistantOpen(false)}
             messages={chatMessages}
             onSendMessage={handleSendMessage}
+            onClearHistory={handleClearAiHistory}
             onReviewWorkflow={handleReviewAiWorkflow}
             onAcceptReviewedWorkflow={handleAcceptReviewedWorkflow}
             onDiscardReviewedWorkflow={handleDiscardReviewedWorkflow}

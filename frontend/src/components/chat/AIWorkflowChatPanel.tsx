@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Send, Sparkles, User, Bot, Loader2, Check, Eye, CheckCircle2, XCircle } from 'lucide-react';
+import { X, Send, Sparkles, User, Bot, Loader2, Check, Eye, CheckCircle2, XCircle, Trash2 } from 'lucide-react';
 import { Message } from '../../services/aiService';
 
 interface AIWorkflowChatPanelProps {
@@ -7,6 +7,7 @@ interface AIWorkflowChatPanelProps {
   onClose: () => void;
   messages: Message[];
   onSendMessage: (content: string) => void;
+  onClearHistory: () => void;
   onReviewWorkflow: (workflow: any) => void;
   onAcceptReviewedWorkflow: (workflow: any) => void;
   onDiscardReviewedWorkflow: (workflow: any) => void;
@@ -28,6 +29,7 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
   onClose,
   messages,
   onSendMessage,
+  onClearHistory,
   onReviewWorkflow,
   onAcceptReviewedWorkflow,
   onDiscardReviewedWorkflow,
@@ -84,12 +86,22 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
             <p className="text-[10px] text-slate-500 dark:text-slate-500 font-bold uppercase tracking-widest">Generator</p>
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-        >
-          <X size={20} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onClearHistory}
+            disabled={isLoading}
+            className="p-2 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors text-slate-400 hover:text-rose-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Clear chat history from database"
+          >
+            <Trash2 size={18} />
+          </button>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+          >
+            <X size={20} />
+          </button>
+        </div>
       </div>
 
       {/* Messages */}
@@ -128,10 +140,41 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
                 <div className={`p-3 rounded-2xl text-sm ${
                   msg.role === 'user' 
                     ? 'bg-blue-600 text-white rounded-tr-none' 
-                    : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-tl-none shadow-sm'
+                    : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-tl-none shadow-sm whitespace-pre-wrap leading-relaxed'
                 }`}>
                   {msg.content}
                 </div>
+
+                {msg.role === 'assistant' && msg.mode === 'clarify' && Array.isArray(msg.questions) && msg.questions.length > 0 && (
+                  <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-3 flex flex-col gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                      Clarifications Needed
+                    </span>
+                    <div className="space-y-2">
+                      {msg.questions.map((question, index) => (
+                        <div key={`${msg.id}-${question.id}`} className="text-xs text-amber-900 dark:text-amber-100">
+                          <p className="font-semibold">{index + 1}. {question.question}</p>
+                          <p className="text-[11px] text-amber-700 dark:text-amber-300">{question.reason}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {msg.role === 'assistant' && msg.mode !== 'clarify' && Array.isArray(msg.assumptions) && msg.assumptions.length > 0 && (
+                  <div className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                      Assumptions Applied
+                    </span>
+                    <div className="mt-2 space-y-1">
+                      {msg.assumptions.map((assumption, index) => (
+                        <p key={`${msg.id}-assumption-${index}`} className="text-xs text-slate-700 dark:text-slate-200">
+                          {index + 1}. {assumption}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* AI specific actions/workflow display */}
                 {msg.role === 'assistant' && (msg as any).workflow && (
@@ -140,6 +183,11 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
                       <Check size={14} className="font-bold" />
                       <span className="text-[11px] font-bold uppercase tracking-wider">Workflow Generated</span>
                     </div>
+                    {msg.changeSummary && (
+                      <p className="text-xs text-blue-800 dark:text-blue-100">
+                        {msg.changeSummary}
+                      </p>
+                    )}
                     {(() => {
                       const workflowPayload = {
                         definition: (msg as any).workflow,
