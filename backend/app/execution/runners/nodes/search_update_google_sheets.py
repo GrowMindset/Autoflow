@@ -243,7 +243,7 @@ class SearchUpdateGoogleSheetsRunner:
             row_width = max(int(pair["index"]) for pair in resolved_pairs)
             new_row = [""] * row_width
             for pair in resolved_pairs:
-                new_row[int(pair["index"]) - 1] = pair.get("value")
+                new_row[int(pair["index"]) - 1] = self._to_sheet_cell_value(pair.get("value"))
 
             append_range = self._build_a1_range(
                 sheet_name, f"A2:{self._index_to_column_letter(row_width)}"
@@ -404,9 +404,9 @@ class SearchUpdateGoogleSheetsRunner:
             if operation == "upsert_row":
                 row_width = max_col_index
                 new_row = [""] * row_width
-                new_row[search_col_index - 1] = key_value
+                new_row[search_col_index - 1] = self._to_sheet_cell_value(key_value)
                 for item in resolved_updates:
-                    new_row[int(item["index"]) - 1] = item.get("value")
+                    new_row[int(item["index"]) - 1] = self._to_sheet_cell_value(item.get("value"))
 
                 append_range = self._build_a1_range(
                     sheet_name, f"A2:{self._index_to_column_letter(row_width)}"
@@ -466,9 +466,9 @@ class SearchUpdateGoogleSheetsRunner:
         merged_row = list(matched_row_values or [])
         if len(merged_row) < row_width:
             merged_row.extend([""] * (row_width - len(merged_row)))
-        merged_row[search_col_index - 1] = key_value
+        merged_row[search_col_index - 1] = self._to_sheet_cell_value(key_value)
         for item in resolved_updates:
-            merged_row[int(item["index"]) - 1] = item.get("value")
+            merged_row[int(item["index"]) - 1] = self._to_sheet_cell_value(item.get("value"))
 
         update_range = self._build_a1_range(
             sheet_name,
@@ -674,6 +674,22 @@ class SearchUpdateGoogleSheetsRunner:
             if normalized in {"0", "false", "no", "off", ""}:
                 return False
         return bool(raw_value)
+
+    @staticmethod
+    def _to_sheet_cell_value(value: Any) -> str | int | float | bool:
+        if value is None:
+            return ""
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, list):
+            return ", ".join(
+                str(item)
+                for item in value
+                if item is not None and str(item).strip()
+            )
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False, default=str)
+        return str(value)
 
     @classmethod
     def _normalize_operation(cls, config: dict[str, Any]) -> str:

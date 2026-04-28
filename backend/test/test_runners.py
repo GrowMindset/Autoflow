@@ -402,6 +402,16 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(spreadsheet_id, "1aBcD-12345_xyz")
 
+    def test_sheets_search_update_converts_complex_values_to_cell_text(self):
+        self.assertEqual(
+            SearchUpdateGoogleSheetsRunner._to_sheet_cell_value(["Java", "Python", "FastAPI"]),
+            "Java, Python, FastAPI",
+        )
+        self.assertEqual(
+            SearchUpdateGoogleSheetsRunner._to_sheet_cell_value({"score": 10}),
+            '{"score": 10}',
+        )
+
     def test_delay_runner_resolves_amount_and_unit(self):
         runner = DelayRunner()
         seconds = runner._resolve_delay_seconds({"amount": "2", "unit": "minutes"})

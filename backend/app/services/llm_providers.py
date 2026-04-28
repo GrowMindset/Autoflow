@@ -28,6 +28,14 @@ async def _close_client(client: Any) -> None:
         await _maybe_await(close())
 
 
+def _error_mentions_unsupported_parameter(error_message: str, parameter: str) -> bool:
+    lowered = error_message.lower()
+    return (
+        parameter.lower() in lowered
+        and ("unsupported" in lowered or "not supported" in lowered or "does not support" in lowered)
+    )
+
+
 def _build_chat_kwargs(
     model: str,
     system_prompt: str,
@@ -93,23 +101,30 @@ class OpenAIProvider(BaseLLMProvider):
             max_tokens=max_tokens,
         )
         try:
-            response = await _maybe_await(
-                client.chat.completions.create(**chat_kwargs)
-            )
-        except Exception as exc:
-            # Some models (e.g. GPT-5 family) reject custom temperature values.
-            error_message = str(exc).lower()
-            if (
-                chat_kwargs.get("temperature") is not None
-                and "temperature" in error_message
-                and ("unsupported" in error_message or "does not support" in error_message)
-            ):
-                chat_kwargs.pop("temperature", None)
-                response = await _maybe_await(
-                    client.chat.completions.create(**chat_kwargs)
-                )
-            else:
-                raise
+            while True:
+                try:
+                    response = await _maybe_await(
+                        client.chat.completions.create(**chat_kwargs)
+                    )
+                    break
+                except Exception as exc:
+                    error_message = str(exc).lower()
+                    # Some newer OpenAI models reject custom temperature values.
+                    if (
+                        chat_kwargs.get("temperature") is not None
+                        and _error_mentions_unsupported_parameter(error_message, "temperature")
+                    ):
+                        chat_kwargs.pop("temperature", None)
+                        continue
+                    # Some newer OpenAI models renamed max_tokens to max_completion_tokens.
+                    if (
+                        chat_kwargs.get("max_tokens") is not None
+                        and "max_completion_tokens" in error_message
+                        and _error_mentions_unsupported_parameter(error_message, "max_tokens")
+                    ):
+                        chat_kwargs["max_completion_tokens"] = chat_kwargs.pop("max_tokens")
+                        continue
+                    raise
         finally:
             await _close_client(client)
         return _extract_response_text(response)
