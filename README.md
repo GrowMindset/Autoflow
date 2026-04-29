@@ -29,13 +29,13 @@ npm run dev
 ### Terminal 3: Celery Worker (workflow + node tests + system queue)
 ```bash
 cd backend
-celery -A celery\_config.celery\_app worker --loglevel=info
+celery -A celery_config:celery_app worker --pool=solo --loglevel=info
 ```
 
 ### Terminal 4: Celery Beat (required for schedule trigger recurring runs)
 ```bash
 cd backend
-celery -A celery_config beat -l info
+celery -A celery_config:celery_app beat --loglevel=info
 ```
 
 ## Notes

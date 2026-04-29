@@ -13,8 +13,11 @@ import api from '../../services/api';
 import { formatTimeInAppTimezone, getAppTimezone } from '../../utils/dateTime';
 import { toUserFriendlyErrorMessage } from '../../utils/errorMessages';
 
-const DEFAULT_LEFT_PANEL_WIDTH = 350;
-const DEFAULT_RIGHT_PANEL_WIDTH = 400;
+const DEFAULT_PANEL_WIDTH = 360;
+const COLLAPSED_PANEL_WIDTH = 48;
+const MIN_SIDE_PANEL_WIDTH = 240;
+const MIN_CENTER_PANEL_WIDTH = 320;
+const MAX_SIDE_PANEL_WIDTH = 720;
 
 interface ConfigPanelProps {
   node: WorkflowNode;
@@ -211,14 +214,18 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const [isExecuting, setIsExecuting] = useState(false);
   const [isLeftVisible, setIsLeftVisible] = useState(true);
   const [isRightVisible, setIsRightVisible] = useState(true);
-  const [leftPanelWidth, setLeftPanelWidth] = useState(DEFAULT_LEFT_PANEL_WIDTH);
-  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const [hasManualPanelWidths, setHasManualPanelWidths] = useState(false);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [isSubmittingForm, setIsSubmittingForm] = useState(false);
   const [webhookMeta, setWebhookMeta] = useState<WebhookMeta | null>(null);
   const [webhookMetaLoading, setWebhookMetaLoading] = useState(false);
   const [openNavMenu, setOpenNavMenu] = useState<'prev' | 'next' | null>(null);
   const [editableLabel, setEditableLabel] = useState(node.data.label || '');
+  const layoutContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const leftPanelRef = React.useRef<HTMLDivElement | null>(null);
+  const rightPanelRef = React.useRef<HTMLDivElement | null>(null);
   const resizingSideRef = React.useRef<'left' | 'right' | null>(null);
   const resizeStartXRef = React.useRef(0);
   const resizeStartWidthRef = React.useRef(0);
@@ -329,12 +336,30 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
     const handleMouseMove = (event: MouseEvent) => {
       if (!resizingSideRef.current) return;
 
+      const containerWidth = layoutContainerRef.current?.getBoundingClientRect().width;
+      if (!containerWidth) return;
+
       const delta = event.clientX - resizeStartXRef.current;
+      const leftOccupied = isLeftVisible ? leftPanelWidth : COLLAPSED_PANEL_WIDTH;
+      const rightOccupied = isRightVisible ? rightPanelWidth : COLLAPSED_PANEL_WIDTH;
+
       if (resizingSideRef.current === 'left') {
-        const nextWidth = Math.min(620, Math.max(240, resizeStartWidthRef.current + delta));
+        const desiredWidth = resizeStartWidthRef.current + delta;
+        const maxWidth = Math.min(
+          MAX_SIDE_PANEL_WIDTH,
+          containerWidth - rightOccupied - MIN_CENTER_PANEL_WIDTH,
+        );
+        const minWidth = Math.max(140, Math.min(MIN_SIDE_PANEL_WIDTH, maxWidth));
+        const nextWidth = Math.max(minWidth, Math.min(maxWidth, desiredWidth));
         setLeftPanelWidth(nextWidth);
       } else {
-        const nextWidth = Math.min(700, Math.max(260, resizeStartWidthRef.current - delta));
+        const desiredWidth = resizeStartWidthRef.current - delta;
+        const maxWidth = Math.min(
+          MAX_SIDE_PANEL_WIDTH,
+          containerWidth - leftOccupied - MIN_CENTER_PANEL_WIDTH,
+        );
+        const minWidth = Math.max(140, Math.min(MIN_SIDE_PANEL_WIDTH, maxWidth));
+        const nextWidth = Math.max(minWidth, Math.min(maxWidth, desiredWidth));
         setRightPanelWidth(nextWidth);
       }
     };
@@ -354,7 +379,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
-  }, []);
+  }, [isLeftVisible, isRightVisible, leftPanelWidth, rightPanelWidth]);
 
   useEffect(() => {
     if (node.data.type !== 'webhook_trigger') {
@@ -385,9 +410,18 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   }, [workflowId, node.id, node.data.type]);
 
   const handleResizeStart = (event: React.MouseEvent<HTMLDivElement>, side: 'left' | 'right') => {
+    const measuredLeftWidth = leftPanelRef.current?.getBoundingClientRect().width || leftPanelWidth;
+    const measuredRightWidth = rightPanelRef.current?.getBoundingClientRect().width || rightPanelWidth;
+
+    if (!hasManualPanelWidths) {
+      setLeftPanelWidth(measuredLeftWidth);
+      setRightPanelWidth(measuredRightWidth);
+      setHasManualPanelWidths(true);
+    }
+
     resizingSideRef.current = side;
     resizeStartXRef.current = event.clientX;
-    resizeStartWidthRef.current = side === 'left' ? leftPanelWidth : rightPanelWidth;
+    resizeStartWidthRef.current = side === 'left' ? measuredLeftWidth : measuredRightWidth;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   };
@@ -696,12 +730,13 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
         </div>
 
         {/* 3-Column Layout */}
-        <div className="flex-1 flex overflow-hidden relative bg-slate-50/20 dark:bg-slate-950/20">
+        <div ref={layoutContainerRef} className="flex-1 flex overflow-hidden relative bg-slate-50/20 dark:bg-slate-950/20">
 
           {/* Column 1: Input Data / Global Execution Logs */}
           <div
-            className={`relative flex flex-col border-r border-slate-100 dark:border-slate-800 transition-all duration-300 ease-in-out bg-white dark:bg-slate-900 ${isLeftVisible ? 'opacity-100' : 'w-12 opacity-80'}`}
-            style={isLeftVisible ? { width: `${leftPanelWidth}px` } : undefined}
+            ref={leftPanelRef}
+            className={`relative min-w-0 flex flex-col border-r border-slate-100 dark:border-slate-800 transition-opacity duration-300 ease-in-out bg-white dark:bg-slate-900 ${isLeftVisible ? (hasManualPanelWidths ? 'shrink-0 opacity-100' : 'basis-0 flex-1 opacity-100') : 'w-12 opacity-80'}`}
+            style={isLeftVisible && hasManualPanelWidths ? { width: `${leftPanelWidth}px` } : undefined}
           >
             <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900 group select-none">
               {isLeftVisible ? (
@@ -768,9 +803,9 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
             {isLeftVisible && (
               <div
                 onMouseDown={(event) => handleResizeStart(event, 'left')}
-                onDoubleClick={() => setLeftPanelWidth(DEFAULT_LEFT_PANEL_WIDTH)}
+                onDoubleClick={() => setHasManualPanelWidths(false)}
                 className="group absolute top-0 right-0 h-full w-3 cursor-col-resize flex items-center justify-center bg-slate-100/60 dark:bg-slate-800/70 hover:bg-blue-500/10 active:bg-blue-500/20 transition-colors"
-                title="Drag to resize input panel. Double-click to reset width."
+                title="Drag to resize input panel. Double-click to reset equal panel widths."
               >
                 <span className="h-14 w-[2px] rounded-full bg-slate-300 dark:bg-slate-600 group-hover:bg-blue-500 transition-colors" />
               </div>
@@ -778,7 +813,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
           </div>
 
           {/* Column 2: Parameters Form */}
-          <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-slate-900 z-10 shadow-[0_0_50px_rgba(0,0,0,0.02)]">
+          <div className="min-w-0 basis-0 flex-1 flex flex-col overflow-hidden bg-white dark:bg-slate-900 z-10 shadow-[0_0_50px_rgba(0,0,0,0.02)]">
             <div className="h-12 px-8 flex items-center border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900">
               <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-400">PARAMETERS</span>
             </div>
@@ -997,8 +1032,9 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
 
           {/* Column 3: Output Data / Execution Result */}
           <div
-            className={`relative flex flex-col border-l border-slate-100 dark:border-slate-800 transition-all duration-300 ease-in-out bg-white dark:bg-slate-900 ${isRightVisible ? 'opacity-100' : 'w-12 opacity-80'}`}
-            style={isRightVisible ? { width: `${rightPanelWidth}px` } : undefined}
+            ref={rightPanelRef}
+            className={`relative min-w-0 flex flex-col border-l border-slate-100 dark:border-slate-800 transition-opacity duration-300 ease-in-out bg-white dark:bg-slate-900 ${isRightVisible ? (hasManualPanelWidths ? 'shrink-0 opacity-100' : 'basis-0 flex-1 opacity-100') : 'w-12 opacity-80'}`}
+            style={isRightVisible && hasManualPanelWidths ? { width: `${rightPanelWidth}px` } : undefined}
           >
             <div className="h-12 px-4 flex items-center justify-between border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900 group select-none">
               {!isRightVisible ? (
@@ -1099,9 +1135,9 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
             {isRightVisible && (
               <div
                 onMouseDown={(event) => handleResizeStart(event, 'right')}
-                onDoubleClick={() => setRightPanelWidth(DEFAULT_RIGHT_PANEL_WIDTH)}
+                onDoubleClick={() => setHasManualPanelWidths(false)}
                 className="group absolute top-0 left-0 h-full w-3 cursor-col-resize flex items-center justify-center bg-slate-100/60 dark:bg-slate-800/70 hover:bg-blue-500/10 active:bg-blue-500/20 transition-colors"
-                title="Drag to resize output panel. Double-click to reset width."
+                title="Drag to resize output panel. Double-click to reset equal panel widths."
               >
                 <span className="h-14 w-[2px] rounded-full bg-slate-300 dark:bg-slate-600 group-hover:bg-blue-500 transition-colors" />
               </div>
