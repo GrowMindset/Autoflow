@@ -28,6 +28,7 @@ class RunnerRegistry:
             "split_in": self._build_split_in,
             "split_out": self._build_split_out,
             "ai_agent": self._build_ai_agent,
+            "code": self._build_code,
             "image_gen": self._build_image_gen,
             "chat_model_openai": self._build_chat_model_openai,
             "chat_model_groq": self._build_chat_model_groq,
@@ -184,6 +185,12 @@ class RunnerRegistry:
         from app.execution.runners.nodes.ai_agent import AIAgentRunner
 
         return AIAgentRunner()
+
+    @staticmethod
+    def _build_code() -> Any:
+        from app.execution.runners.code import CodeRunner
+
+        return CodeRunner()
 
     @staticmethod
     def _build_image_gen() -> Any:

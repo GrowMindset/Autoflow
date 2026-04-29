@@ -219,6 +219,10 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "operation": "sum",
         "output_key": "",
     },
+    "code": {
+        "language": "python",
+        "code": "# input_data is available as a dict\n# assign your result to: output\noutput = input_data",
+    },
     "ai_agent": {
         "system_prompt": "",
         "command": "",

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.workflows import WorkflowDefinition
 
@@ -14,6 +15,20 @@ class GenerateWorkflowRequest(BaseModel):
 class GenerateWorkflowResponse(BaseModel):
     definition: WorkflowDefinition
     name: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class GenerateCodeRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+    language: Literal["python", "javascript"]
+    api_key: str | None = Field(default=None, max_length=500)
+    credential_id: UUID | None = None
+    input_fields: list[str] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def require_api_key_or_credential(self) -> "GenerateCodeRequest":
+        if self.credential_id is None and not str(self.api_key or "").strip():
+            raise ValueError("Provide either api_key or credential_id.")
+        return self
 
 
 class AIErrorDetail(BaseModel):

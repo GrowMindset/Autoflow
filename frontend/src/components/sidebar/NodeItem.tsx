@@ -25,6 +25,7 @@ const NodeItem: React.FC<NodeItemProps> = ({ node, onSelect }) => {
       <div className="flex flex-col gap-1">
         <div className="flex items-center justify-between gap-2 overflow-hidden">
           <h4 className="text-[11px] font-bold text-slate-800 dark:text-slate-200 tracking-tight truncate">{node.label}</h4>
+          {node.badge && <NodeBadge variant={node.category}>{node.badge}</NodeBadge>}
           {node.is_dummy && <NodeBadge variant="neutral">Soon</NodeBadge>}
         </div>
         <p className="text-[10px] text-slate-400 dark:text-slate-500 line-clamp-1">

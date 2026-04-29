@@ -25,6 +25,7 @@ const NodeSidebar: React.FC<NodeSidebarProps> = ({ onClose, onSelect }) => {
     { title: 'Input & Output', id: 'input_output', nodes: NODE_LIBRARY.input_output },
     { title: 'Actions', id: 'action', nodes: NODE_LIBRARY.action },
     { title: 'Data Transformation', id: 'transform', nodes: NODE_LIBRARY.transform },
+    { title: 'Utility', id: 'utility', nodes: NODE_LIBRARY.utility },
     { title: 'AI', id: 'ai', nodes: NODE_LIBRARY.ai },
   ];
 

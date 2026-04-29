@@ -7,6 +7,7 @@ import LogSection from './LogSection';
 import DataView from './DataView';
 import ImageGenConfigPanel from './ImageGenConfigPanel';
 import ImageGenResultDisplay from './ImageGenResultDisplay';
+import CodeConfigPanel from './CodeConfigPanel';
 import { executionService } from '../../services/executionService';
 import api from '../../services/api';
 import { formatTimeInAppTimezone, getAppTimezone } from '../../utils/dateTime';
@@ -41,6 +42,56 @@ interface WebhookMeta {
   path: string;
   url: string;
 }
+
+const truncateCodeError = (error: any) => {
+  const message = typeof error === 'string' ? error : String(error || '');
+  return message.length > 500 ? `${message.slice(0, 500)}...` : message;
+};
+
+const CodeExecutionResultDisplay: React.FC<{
+  inputData: any;
+  code: string;
+  outputData: any;
+  errorMessage?: string | null;
+  status?: string;
+}> = ({ inputData, code, outputData, errorMessage, status }) => {
+  const failed = String(status || '').toUpperCase() === 'FAILED' || Boolean(errorMessage);
+
+  return (
+    <div className="space-y-4">
+      {failed && errorMessage && (
+        <div className="rounded-2xl border border-rose-200 dark:border-rose-900/40 bg-rose-50 dark:bg-rose-900/20 p-3 text-xs text-rose-700 dark:text-rose-300 font-mono whitespace-pre-wrap break-words">
+          {truncateCodeError(errorMessage)}
+        </div>
+      )}
+
+      <details className="group rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/30">
+        <summary className="cursor-pointer select-none px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+          input_data
+        </summary>
+        <div className="border-t border-slate-200 dark:border-slate-800 p-3">
+          <DataView data={inputData} emptyMessage="No input data recorded" />
+        </div>
+      </details>
+
+      <details className="group rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/30">
+        <summary className="cursor-pointer select-none px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+          Code That Ran
+        </summary>
+        <pre className="max-h-72 overflow-auto border-t border-slate-200 dark:border-slate-800 p-4 text-xs leading-relaxed font-mono text-slate-700 dark:text-slate-200 whitespace-pre-wrap break-words">{code || 'No code configured'}</pre>
+      </details>
+
+      <details open className="group rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+        <summary className="cursor-pointer select-none px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+          output
+        </summary>
+        <div className="border-t border-slate-200 dark:border-slate-800 p-3">
+          <DataView data={outputData} emptyMessage="No output data recorded" />
+        </div>
+      </details>
+    </div>
+  );
+};
 
 const SCHEDULE_WEEKDAY_LABELS: Record<number, string> = {
   0: 'Sunday',
@@ -344,6 +395,11 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   // Sync state if node changes externally
   const handleConfigChange = (key: string, value: any) => {
     const nextConfig = { ...node.data.config, [key]: value };
+    onUpdate(node.id, nextConfig);
+  };
+
+  const handleConfigPatch = (patch: Record<string, any>) => {
+    const nextConfig = { ...node.data.config, ...patch };
     onUpdate(node.id, nextConfig);
   };
 
@@ -734,6 +790,11 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                     previousNodes={previousNodes}
                     onChange={handleConfigChange}
                   />
+                ) : node.data.type === 'code' ? (
+                  <CodeConfigPanel
+                    config={node.data.config}
+                    onChange={handleConfigPatch}
+                  />
                 ) : (
                   <ConfigForm
                     nodeType={node.data.type}
@@ -984,7 +1045,17 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         errorMessage={node.data.last_execution_result.error_message}
                       />
                     )}
-                    <LogSection title="Result Payload" data={node.data.last_execution_result.output_data} />
+                    {node.data.type === 'code' ? (
+                      <CodeExecutionResultDisplay
+                        inputData={node.data.last_execution_result.input_data}
+                        code={String(node.data.config?.code || '')}
+                        outputData={node.data.last_execution_result.output_data}
+                        errorMessage={node.data.last_execution_result.error_message}
+                        status={node.data.last_execution_result.status}
+                      />
+                    ) : (
+                      <LogSection title="Result Payload" data={node.data.last_execution_result.output_data} />
+                    )}
                   </div>
                 ) : output ? (
                   <div className="space-y-6">

@@ -20,6 +20,7 @@ const CategorySection: React.FC<CategorySectionProps> = ({ title, category, node
       case 'action': return 'bg-blue-500';
       case 'transform': return 'bg-amber-500';
       case 'input_output': return 'bg-cyan-500';
+      case 'utility': return 'bg-purple-500';
       case 'ai': return 'bg-purple-500';
       default: return 'bg-slate-300';
     }

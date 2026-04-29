@@ -1,11 +1,13 @@
 export interface NodeDefinition {
   type: string;
   label: string;
-  category: 'trigger' | 'action' | 'transform' | 'input_output' | 'ai';
+  category: 'trigger' | 'action' | 'transform' | 'input_output' | 'utility' | 'ai';
   description: string;
   default_config: Record<string, any>;
   is_dummy: boolean;
   icon?: string;
+  color?: string;
+  badge?: string;
   phase?: number;
 }
 
@@ -432,6 +434,21 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       is_dummy: false,
     },
   ],
+  utility: [
+    {
+      type: 'code',
+      label: 'Code',
+      category: 'utility',
+      description: 'Run Python or JavaScript against the incoming JSON payload.',
+      default_config: {
+        language: 'python',
+        code: '# input_data is available as a dict\n# assign your result to: output\noutput = input_data',
+      },
+      is_dummy: false,
+      color: 'purple',
+      badge: '</>',
+    },
+  ],
   ai: [
     {
       type: 'ai_agent',
@@ -493,6 +510,7 @@ export const CATEGORY_STYLES = {
   action: 'border-l-4 border-blue-500 bg-white text-slate-700 hover:bg-slate-50',
   transform: 'border-l-4 border-amber-500 bg-white text-slate-700 hover:bg-slate-50',
   input_output: 'border-l-4 border-cyan-500 bg-white text-slate-700 hover:bg-slate-50',
+  utility: 'border-l-4 border-purple-500 bg-white text-slate-700 hover:bg-slate-50',
   ai: 'border-l-4 border-purple-500 bg-white text-slate-700 hover:bg-slate-50',
 };
 
@@ -501,5 +519,6 @@ export const CATEGORY_ACCENTS = {
   action: '#3b82f6', // blue-500
   transform: '#f59e0b', // amber-500
   input_output: '#06b6d4', // cyan-500
+  utility: '#a855f7', // purple-500
   ai: '#a855f7', // purple-500
 };

@@ -34,6 +34,7 @@ const nodeTypes = {
   action: BaseNode,
   transform: BaseNode,
   input_output: BaseNode,
+  utility: BaseNode,
   ai: BaseNode,
 };
 
@@ -2723,6 +2724,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 if (data.category === 'action') return '#3b82f6';
                 if (data.category === 'transform') return '#f59e0b';
                 if (data.category === 'input_output') return '#06b6d4';
+                if (data.category === 'utility') return '#a855f7';
                 if (data.category === 'ai') return '#a855f7';
                 return isDark ? '#334155' : '#cbd5e1';
               }}
