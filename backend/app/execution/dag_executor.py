@@ -1,7 +1,10 @@
 import json
 import re
+import shutil
+import subprocess
 import time
 from collections import deque
+from functools import lru_cache
 from typing import Any, Callable
 
 from app.core.error_messages import to_user_friendly_error_message
@@ -321,6 +324,138 @@ class DagExecutor:
         return input_data
 
     @staticmethod
+    @lru_cache(maxsize=1)
+    def _node_binary_path() -> str | None:
+        for binary_name in ("node", "nodejs"):
+            resolved = shutil.which(binary_name)
+            if resolved:
+                return resolved
+        return None
+
+    @staticmethod
+    def _to_jsonable(value: Any, depth: int = 0) -> Any:
+        if depth > 25:
+            return str(value)
+
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+
+        if isinstance(value, dict):
+            return {
+                str(key): DagExecutor._to_jsonable(item, depth + 1)
+                for key, item in value.items()
+            }
+
+        if isinstance(value, (list, tuple, set)):
+            return [DagExecutor._to_jsonable(item, depth + 1) for item in value]
+
+        isoformat = getattr(value, "isoformat", None)
+        if callable(isoformat):
+            try:
+                return isoformat()
+            except Exception:
+                pass
+
+        return str(value)
+
+    @staticmethod
+    def _evaluate_js_expression(
+        expression: str,
+        context: Any,
+    ) -> tuple[bool, Any]:
+        node_binary = DagExecutor._node_binary_path()
+        if not node_binary:
+            return (False, None)
+
+        js_payload = {
+            "expression": str(expression or ""),
+            "context": DagExecutor._to_jsonable(context),
+        }
+
+        # Evaluate expression in an isolated JS context with a strict timeout.
+        # If it fails or returns undefined, caller falls back to legacy parser.
+        js_script = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+const rawContext = payload.context && typeof payload.context === 'object' ? payload.context : {};
+const sandbox = Object.assign({}, rawContext);
+
+if (!Object.prototype.hasOwnProperty.call(sandbox, '$json')) {
+  sandbox.$json = Object.prototype.hasOwnProperty.call(sandbox, 'json') ? sandbox.json : rawContext;
+}
+if (!Object.prototype.hasOwnProperty.call(sandbox, 'json')) {
+  sandbox.json = sandbox.$json;
+}
+if (!Object.prototype.hasOwnProperty.call(sandbox, '$node')) {
+  sandbox.$node = sandbox.node && typeof sandbox.node === 'object' ? sandbox.node : {};
+}
+
+const expression = String(payload.expression ?? '').trim();
+
+const execute = (source, wrapAsExpression) => {
+  const code = wrapAsExpression ? `(${source})` : source;
+  const script = new vm.Script(code);
+  return script.runInNewContext(sandbox, { timeout: 250 });
+};
+
+let result;
+try {
+  result = execute(expression, true);
+} catch (firstError) {
+  try {
+    result = execute(expression, false);
+  } catch (secondError) {
+    process.stdout.write(JSON.stringify({ ok: false, error: String(secondError) }));
+    process.exit(0);
+  }
+}
+
+if (typeof result === 'undefined') {
+  process.stdout.write(JSON.stringify({ ok: true, hasValue: false }));
+  process.exit(0);
+}
+
+try {
+  process.stdout.write(JSON.stringify({ ok: true, hasValue: true, value: result }));
+} catch (serializationError) {
+  process.stdout.write(JSON.stringify({ ok: false, error: 'serialization_failed' }));
+}
+"""
+
+        try:
+            completed = subprocess.run(
+                [node_binary, "-e", js_script],
+                input=json.dumps(js_payload),
+                text=True,
+                capture_output=True,
+                timeout=0.7,
+                check=False,
+            )
+        except Exception:
+            return (False, None)
+
+        if completed.returncode != 0:
+            return (False, None)
+
+        raw_stdout = (completed.stdout or "").strip()
+        if not raw_stdout:
+            return (False, None)
+
+        try:
+            parsed = json.loads(raw_stdout)
+        except Exception:
+            return (False, None)
+
+        if not isinstance(parsed, dict) or not parsed.get("ok"):
+            return (False, None)
+        if not parsed.get("hasValue"):
+            return (False, None)
+
+        return (True, parsed.get("value"))
+
+    @staticmethod
     def _resolve_templates(
         config: dict[str, Any],
         input_data: Any,
@@ -469,6 +604,10 @@ class DagExecutor:
             return tokens
 
         def _get(expression: str, data: Any) -> Any:
+            js_success, js_value = DagExecutor._evaluate_js_expression(expression, data)
+            if js_success:
+                return js_value
+
             normalized = _normalize_expression(expression)
             if normalized == "":
                 return data

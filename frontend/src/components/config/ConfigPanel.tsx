@@ -986,6 +986,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         config={node.data.config}
                         previousNodes={previousNodes}
                         onChange={handleConfigChange}
+                        onChangePatch={handleConfigPatch}
                       />
                     ) : node.data.type === 'code' ? (
                       <CodeConfigPanel
@@ -999,19 +1000,8 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         previousNodes={previousNodes}
                         onChange={handleConfigChange}
                         onChangePatch={handleConfigPatch}
-
                       />
                     )}
-
-                    {node.data.type === 'webhook_trigger' && (
-                  <ConfigForm
-                    nodeType={node.data.type}
-                    config={node.data.config}
-                    previousNodes={previousNodes}
-                    onChange={handleConfigChange}
-                    onChangePatch={handleConfigPatch}
-                  />
-                )}
                 
                 {node.data.type === 'webhook_trigger' && (
                   <div className="mt-10 space-y-8 animate-in fade-in slide-in-from-bottom-4">

@@ -1469,6 +1469,66 @@ class DagExecutorTests(unittest.TestCase):
         self.assertNotIn("__af_mode", seen_config)
         self.assertNotIn("__af_values", seen_config)
 
+    def test_execute_node_expression_mode_supports_javascript_string_functions(self):
+        if DagExecutor._node_binary_path() is None:
+            self.skipTest("Node.js runtime not available for JS expression evaluation")
+
+        recorder = _RecordingRunner(
+            result=lambda config, _input_data, _ctx: {"seen_config": config},
+        )
+        executor = DagExecutor(registry=_FakeRegistry({"echo": recorder}))
+
+        result = executor.execute_node(
+            node_id="echo_1",
+            node_type="echo",
+            config={
+                "subject": "{{ $json.name.toUpperCase() }}",
+                "__af_mode": {"subject": "expression"},
+                "__af_values": {
+                    "subject": {
+                        "fixed": "Mina",
+                        "expression": "{{ $json.name.toUpperCase() }}",
+                    }
+                },
+            },
+            input_data={"name": "Mina"},
+        )
+
+        seen_config = result["output_data"]["seen_config"]
+        self.assertEqual(seen_config["subject"], "MINA")
+        self.assertNotIn("__af_mode", seen_config)
+        self.assertNotIn("__af_values", seen_config)
+
+    def test_execute_node_expression_mode_supports_javascript_operators(self):
+        if DagExecutor._node_binary_path() is None:
+            self.skipTest("Node.js runtime not available for JS expression evaluation")
+
+        recorder = _RecordingRunner(
+            result=lambda config, _input_data, _ctx: {"seen_config": config},
+        )
+        executor = DagExecutor(registry=_FakeRegistry({"echo": recorder}))
+
+        result = executor.execute_node(
+            node_id="echo_1",
+            node_type="echo",
+            config={
+                "summary": "Total: {{ $json.price * $json.qty }}",
+                "__af_mode": {"summary": "expression"},
+                "__af_values": {
+                    "summary": {
+                        "fixed": "Total: 0",
+                        "expression": "Total: {{ $json.price * $json.qty }}",
+                    }
+                },
+            },
+            input_data={"price": 12, "qty": 3},
+        )
+
+        seen_config = result["output_data"]["seen_config"]
+        self.assertEqual(seen_config["summary"], "Total: 36")
+        self.assertNotIn("__af_mode", seen_config)
+        self.assertNotIn("__af_values", seen_config)
+
     def test_execute_node_fixed_mode_keeps_literal_templates_and_strips_metadata(self):
         recorder = _RecordingRunner(
             result=lambda config, _input_data, _ctx: {"seen_config": config},

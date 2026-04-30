@@ -930,17 +930,52 @@ const hasExpressionDraftValue = (value: any): boolean => {
   return true;
 };
 
+const FULL_MUSTACHE_PATTERN = /^\{\{\s*([\s\S]*?)\s*\}\}$/;
+const ANY_MUSTACHE_PATTERN = /\{\{\s*[\s\S]*?\s*\}\}/;
+
+const looksLikePathExpression = (value: string): boolean => {
+  const token = value.trim();
+  if (!token) return false;
+
+  // Current payload aliases.
+  if (/^(?:\$json|json)(?:$|[.[])/.test(token)) return true;
+
+  // n8n-like node reference.
+  if (/^\$node\[(["']).+?\1\]\.json(?:$|[.[])/.test(token)) return true;
+
+  // Generic dotted/bracket path (e.g. customer.name, items[0].price).
+  return /^[A-Za-z_]\w*(?:\[[^\]]+\]|\.[A-Za-z_]\w*)*$/.test(token);
+};
+
 const toExpressionDraftFromFixedValue = (fixedValue: any, fieldKey: string): string => {
   if (fixedValue === null || typeof fixedValue === 'undefined') return '';
 
   if (typeof fixedValue === 'string') {
-    const trimmed = fixedValue.trim();
+    const rawValue = fixedValue;
+    const trimmed = rawValue.trim();
     if (!trimmed) return '';
 
-    const match = trimmed.match(/^\{\{\s*([\s\S]*?)\s*\}\}$/);
+    const match = trimmed.match(FULL_MUSTACHE_PATTERN);
     const inner = (match?.[1] ?? trimmed).trim();
     if (!inner) return '';
-    return `{{${inner}}}`;
+
+    // Already a single wrapped expression; normalize spacing only.
+    if (match) {
+      return `{{${inner}}}`;
+    }
+
+    // Mixed template text (multiple placeholders + prose) should stay untouched.
+    if (ANY_MUSTACHE_PATTERN.test(rawValue)) {
+      return rawValue;
+    }
+
+    // For plain path tokens, generate a wrapped expression helper draft.
+    if (looksLikePathExpression(trimmed)) {
+      return `{{${trimmed}}}`;
+    }
+
+    // For literal strings, keep the user's text exactly as authored.
+    return rawValue;
   }
 
   // For non-string fixed values, seed with a meaningful $json path draft.
