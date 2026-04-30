@@ -88,9 +88,15 @@ const CodeConfigPanel: React.FC<CodeConfigPanelProps> = ({ config, onChange }) =
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const language = normalizeLanguage(config.language);
-  const code = typeof config.code === 'string' && config.code.length > 0
+  const code = typeof config.code === 'string'
     ? config.code
     : DEFAULT_CODE[language];
+  const [pythonCode, setPythonCode] = useState(
+    language === 'python' ? code : '',
+  );
+  const [jsCode, setJsCode] = useState(
+    language === 'javascript' ? code : '',
+  );
   const editorLanguage = language === 'python' ? 'python' : 'javascript';
 
   const options = useMemo(
@@ -180,15 +186,32 @@ const CodeConfigPanel: React.FC<CodeConfigPanelProps> = ({ config, onChange }) =
 
   const handleLanguageChange = (nextLanguage: 'python' | 'javascript') => {
     if (nextLanguage === language) return;
-    const currentCode = typeof config.code === 'string' ? config.code : '';
-    const shouldSwapDefault =
-      !currentCode.trim() ||
-      currentCode === DEFAULT_CODE.python ||
-      currentCode === DEFAULT_CODE.javascript;
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    const currentCode = editor ? editor.getValue() : code;
+
+    if (language === 'python') {
+      setPythonCode(currentCode);
+    } else {
+      setJsCode(currentCode);
+    }
+
+    const nextCode = nextLanguage === 'python' ? pythonCode : jsCode;
+
+    if (editor) {
+      editor.setValue(nextCode);
+      const model = editor.getModel();
+      if (monaco && model) {
+        monaco.editor.setModelLanguage(
+          model,
+          nextLanguage === 'python' ? 'python' : 'javascript',
+        );
+      }
+    }
 
     onChange({
       language: nextLanguage,
-      code: shouldSwapDefault ? DEFAULT_CODE[nextLanguage] : currentCode,
+      code: nextCode,
     });
   };
 
