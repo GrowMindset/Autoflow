@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import { Plus } from 'lucide-react';
 import { CredentialItem, credentialService } from '../../services/credentialService';
 import { getAppTimezone } from '../../utils/dateTime';
 import { WorkflowNode } from '../../types/workflow';
+import ParameterModeSwitch from './ParameterModeSwitch';
 
 const OAUTH_APPS = ['gmail', 'sheets', 'docs', 'linkedin'] as const;
 const OAUTH_NODE_USAGE: Record<string, string[]> = {
@@ -169,6 +170,40 @@ const normalizeScheduleRule = (rawRule: any, fallbackId?: string): ScheduleRule 
     enabled: rawObject.enabled !== false,
   };
 };
+
+/**
+ * Fixed vs Expression contract (source of truth for upcoming implementation steps).
+ *
+ * Core behavior:
+ * 1) A supported parameter has exactly one active mode: "fixed" or "expression".
+ * 2) "fixed" mode stores and sends a literal value without template evaluation.
+ * 3) "expression" mode stores a template/expression value evaluated at runtime.
+ *
+ * UX behavior:
+ * 4) The mode switch is shown only on field-row hover/focus (n8n-style).
+ * 5) Only explicitly allowed fields show the switch; not every field is eligible.
+ * 6) Switching mode must not erase the value authored in either mode.
+ *
+ * Runtime behavior:
+ * 7) Legacy workflows without mode metadata keep current {{...}} compatibility.
+ * 8) Mode metadata must not leak into runner configs.
+ */
+export type ParameterMode = 'fixed' | 'expression';
+
+export const PARAMETER_MODE_META_KEYS = {
+  modeByField: '__af_mode',
+  valuesByField: '__af_values',
+} as const;
+
+export const PARAMETER_MODE_CONTRACT = {
+  defaultMode: 'fixed' as ParameterMode,
+  availableModes: ['fixed', 'expression'] as ParameterMode[],
+  showSwitchOnHoverOnly: true,
+  evaluateExpressionsOnlyInExpressionMode: true,
+  preserveModeValuesAcrossToggle: true,
+  keepLegacyTemplateCompatibility: true,
+  stripModeMetadataBeforeRunnerExecution: true,
+} as const;
 
 /**
  * Schema defining the fields available for each node type.
@@ -777,14 +812,210 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
   ]
 };
 
+/**
+ * Step 2 matrix: explicit allowlist of essential/applicable fields that can
+ * show Fixed|Expression mode in future steps.
+ *
+ * Any field not listed here is intentionally considered non-applicable.
+ */
+export const EXPRESSION_MODE_FIELD_ALLOWLIST: Record<string, readonly string[]> = {
+  if_else: [],
+  filter: ['value'],
+  aggregate: [],
+  datetime_format: ['output_format'],
+  switch: [],
+  merge: ['input_1_field', 'input_2_field', 'output_key'],
+  split_in: [],
+  split_out: [],
+
+  webhook_trigger: [],
+  schedule_trigger: [],
+  form_trigger: [],
+  workflow_trigger: [],
+
+  get_gmail_message: ['folder', 'query', 'limit', 'unread_only', 'include_body', 'mark_as_read'],
+  send_gmail_message: ['to', 'cc', 'bcc', 'reply_to', 'subject', 'body', 'image', 'is_html'],
+  create_google_sheets: ['title', 'sheet_name', 'columns'],
+  search_update_google_sheets: [
+    'spreadsheet_id',
+    'spreadsheet_url',
+    'sheet_name',
+    'key_column',
+    'key_value',
+    'append_columns',
+    'append_values',
+    'update_mappings',
+    'columns_to_add',
+    'columns_to_delete',
+    'auto_create_headers',
+  ],
+  create_google_docs: ['title', 'initial_content'],
+  update_google_docs: ['document_id', 'text', 'image', 'match_text', 'match_case'],
+  telegram: ['message', 'image', 'parse_mode'],
+  whatsapp: ['to_number', 'template_name', 'template_params', 'language_code'],
+  slack_send_message: ['message'],
+  delay: ['amount', 'unit', 'until_datetime'],
+  linkedin: ['post_text', 'image', 'visibility'],
+  http_request: [
+    'url',
+    'bearer_token',
+    'bearer_prefix',
+    'username',
+    'password',
+    'api_key_name',
+    'api_key_value',
+    'api_key_prefix',
+    'headers_json',
+    'query_json',
+    'body_json',
+    'body_form_json',
+    'body_raw',
+    'timeout_seconds',
+    'follow_redirects',
+    'continue_on_fail',
+  ],
+  file_read: ['file_path', 'encoding', 'max_bytes', 'csv_delimiter'],
+  file_write: ['file_path', 'input_key', 'content_text', 'encoding', 'create_dirs'],
+  ai_agent: ['system_prompt', 'command'],
+  image_gen: ['prompt', 'size', 'quality', 'style'],
+  chat_model_openai: ['temperature'],
+  chat_model_groq: ['temperature'],
+};
+
+const addExpressionEligibilityToSchema = (
+  schema: Record<string, any[]>,
+  allowlist: Record<string, readonly string[]>,
+): Record<string, any[]> => {
+  const nextSchema: Record<string, any[]> = {};
+
+  Object.entries(schema).forEach(([nodeType, fields]) => {
+    const allowedFieldKeys = new Set(allowlist[nodeType] || []);
+    nextSchema[nodeType] = (fields || []).map((field) => ({
+      ...field,
+      supportsExpression: allowedFieldKeys.has(String(field?.key || '')),
+    }));
+  });
+
+  return nextSchema;
+};
+
+export const CONFIG_SCHEMA_WITH_MODE_POLICY = addExpressionEligibilityToSchema(
+  CONFIG_SCHEMA,
+  EXPRESSION_MODE_FIELD_ALLOWLIST,
+);
+
+const isPlainObject = (value: unknown): value is Record<string, any> => (
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+);
+
+const areModeValuesEqual = (left: any, right: any): boolean => {
+  if (left === right) return true;
+
+  const leftIsStructured = Array.isArray(left) || isPlainObject(left);
+  const rightIsStructured = Array.isArray(right) || isPlainObject(right);
+  if (!leftIsStructured || !rightIsStructured) {
+    return false;
+  }
+
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+};
+
+const hasExpressionDraftValue = (value: any): boolean => {
+  if (value === null || typeof value === 'undefined') return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  return true;
+};
+
+const toExpressionDraftFromFixedValue = (fixedValue: any, fieldKey: string): string => {
+  if (fixedValue === null || typeof fixedValue === 'undefined') return '';
+
+  if (typeof fixedValue === 'string') {
+    const trimmed = fixedValue.trim();
+    if (!trimmed) return '';
+
+    const match = trimmed.match(/^\{\{\s*([\s\S]*?)\s*\}\}$/);
+    const inner = (match?.[1] ?? trimmed).trim();
+    if (!inner) return '';
+    return `{{${inner}}}`;
+  }
+
+  // For non-string fixed values, seed with a meaningful $json path draft.
+  return `{{$json.${fieldKey}}}`;
+};
+
+const buildNormalizedModeMetadata = (
+  config: Record<string, any>,
+  expressionCapableFields: any[],
+) => {
+  const rawModeByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.modeByField])
+    ? config[PARAMETER_MODE_META_KEYS.modeByField]
+    : {};
+  const rawValuesByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.valuesByField])
+    ? config[PARAMETER_MODE_META_KEYS.valuesByField]
+    : {};
+
+  const nextModeByField: Record<string, ParameterMode> = {};
+  const nextValuesByField: Record<string, { fixed: any; expression: any }> = {};
+  const nextActiveByField: Record<string, any> = {};
+
+  expressionCapableFields.forEach((field) => {
+    const fieldKey = String(field?.key || '').trim();
+    if (!fieldKey) return;
+
+    const rawMode = rawModeByField[fieldKey];
+    const mode: ParameterMode = rawMode === 'expression' ? 'expression' : 'fixed';
+    nextModeByField[fieldKey] = mode;
+
+    const activeValue = config[fieldKey];
+    const rawFieldValues = isPlainObject(rawValuesByField[fieldKey])
+      ? rawValuesByField[fieldKey]
+      : {};
+    const hasFixed = Object.prototype.hasOwnProperty.call(rawFieldValues, 'fixed');
+    const hasExpression = Object.prototype.hasOwnProperty.call(rawFieldValues, 'expression');
+
+    let fixedValue = hasFixed ? rawFieldValues.fixed : (mode === 'fixed' ? activeValue : '');
+    let expressionValue = hasExpression
+      ? rawFieldValues.expression
+      : mode === 'expression'
+        ? activeValue
+        : '';
+
+    if (typeof fixedValue === 'undefined') fixedValue = '';
+    if (typeof expressionValue === 'undefined') expressionValue = '';
+
+    nextValuesByField[fieldKey] = {
+      fixed: fixedValue,
+      expression: expressionValue,
+    };
+    nextActiveByField[fieldKey] = mode === 'expression' ? expressionValue : fixedValue;
+  });
+
+  return {
+    nextModeByField,
+    nextValuesByField,
+    nextActiveByField,
+  };
+};
+
 interface ConfigFormProps {
   nodeType: string;
   config: Record<string, any>;
   previousNodes?: WorkflowNode[];
   onChange: (key: string, value: any) => void;
+  onChangePatch?: (patch: Record<string, any>) => void;
 }
 
-const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes = [], onChange }) => {
+const ConfigForm: React.FC<ConfigFormProps> = ({
+  nodeType,
+  config,
+  previousNodes = [],
+  onChange,
+  onChangePatch,
+}) => {
   const [credentials, setCredentials] = useState<CredentialItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeCredentialForm, setActiveCredentialForm] = useState<string | null>(null);
@@ -794,6 +1025,17 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
   const [newChannel, setNewChannel] = useState('');
   const [dragOverField, setDragOverField] = useState<string | null>(null);
   const [oauthConnectingApp, setOauthConnectingApp] = useState<string | null>(null);
+
+  const applyConfigPatch = useCallback((patch: Record<string, any>) => {
+    const safePatch = patch || {};
+    if (onChangePatch) {
+      onChangePatch(safePatch);
+      return;
+    }
+    Object.entries(safePatch).forEach(([key, value]) => {
+      onChange(key, value);
+    });
+  }, [onChange, onChangePatch]);
 
   // ── Drag-and-drop handlers for text/textarea fields ──────────────────────
   const handleDragOver = (e: React.DragEvent, fieldKey: string) => {
@@ -813,63 +1055,127 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
     }
   };
 
+  const fieldSupportsExpression = (fieldKey: string): boolean => {
+    const nodeFields = CONFIG_SCHEMA_WITH_MODE_POLICY[nodeType] || [];
+    return nodeFields.some((field) => field?.key === fieldKey && Boolean(field?.supportsExpression));
+  };
+
+  const getFieldModeByKey = (fieldKey: string): ParameterMode => {
+    const rawModeByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.modeByField])
+      ? config[PARAMETER_MODE_META_KEYS.modeByField]
+      : {};
+    return rawModeByField[fieldKey] === 'expression' ? 'expression' : 'fixed';
+  };
+
+  const getModeAwareValueByKey = (fieldKey: string): any => {
+    const fallbackValue = config[fieldKey] ?? '';
+    if (!fieldSupportsExpression(fieldKey)) return fallbackValue;
+
+    const mode = getFieldModeByKey(fieldKey);
+    const rawValuesByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.valuesByField])
+      ? config[PARAMETER_MODE_META_KEYS.valuesByField]
+      : {};
+    const fieldValues = isPlainObject(rawValuesByField[fieldKey])
+      ? rawValuesByField[fieldKey]
+      : null;
+    if (!fieldValues) return fallbackValue;
+    return mode === 'expression'
+      ? (fieldValues.expression ?? fallbackValue)
+      : (fieldValues.fixed ?? fallbackValue);
+  };
+
+  const resolveDropInsertText = ({
+    fieldKey,
+    dataTransfer,
+    mode,
+  }: {
+    fieldKey: string;
+    dataTransfer: DataTransfer;
+    mode: ParameterMode;
+  }): string => {
+    const literalValue = dataTransfer.getData('application/json-value');
+    if (literalValue) {
+      return literalValue;
+    }
+
+    const path = dataTransfer.getData('application/json-path');
+    if (path) {
+      return mode === 'expression'
+        ? `{{${path}}}`
+        : getDroppedPathValue(path, fieldKey);
+    }
+
+    return dataTransfer.getData('text/plain') || '';
+  };
+
   const handleDrop = (e: React.DragEvent, fieldKey: string) => {
     e.preventDefault();
     e.stopPropagation();
     setDragOverField(null);
 
-    let textToInsert = '';
-
-    // Check if dragging a literal value first
-    const literalValue = e.dataTransfer.getData('application/json-value');
-    if (literalValue) {
-      textToInsert = literalValue;
-    } else {
-      const path = e.dataTransfer.getData('application/json-path');
-      if (path) {
-        textToInsert = getDroppedPathValue(path, fieldKey);
-      } else {
-        // Fallback for external drops
-        textToInsert = e.dataTransfer.getData('text/plain') || '';
-      }
-    }
-
+    const supportsExpression = fieldSupportsExpression(fieldKey);
+    const mode = supportsExpression ? getFieldModeByKey(fieldKey) : 'fixed';
+    const textToInsert = resolveDropInsertText({
+      fieldKey,
+      dataTransfer: e.dataTransfer,
+      mode,
+    });
     if (!textToInsert) return;
 
     const el = e.currentTarget as HTMLInputElement | HTMLTextAreaElement;
-    const current = String(config[fieldKey] || '');
+    const current = String(getModeAwareValueByKey(fieldKey) || '');
     const start = el.selectionStart ?? current.length;
     const end = el.selectionEnd ?? start;
-    onChange(fieldKey, current.slice(0, start) + textToInsert + current.slice(end));
+    const nextValue = current.slice(0, start) + textToInsert + current.slice(end);
+
+    if (supportsExpression) {
+      handleModeAwareFieldChange({ key: fieldKey, supportsExpression: true }, nextValue);
+      return;
+    }
+    onChange(fieldKey, nextValue);
   };
 
-  const handleArrayDrop = (e: React.DragEvent, fieldKey: string, arrayRef: any[], index: number, itemKey: string) => {
+  const handleArrayDrop = (
+    e: React.DragEvent,
+    fieldKey: string,
+    arrayRef: any[],
+    index: number,
+    itemKey?: string,
+  ) => {
     e.preventDefault();
     e.stopPropagation();
     setDragOverField(null);
 
-    let textToInsert = '';
-    const literalValue = e.dataTransfer.getData('application/json-value');
-    if (literalValue) {
-      textToInsert = literalValue;
-    } else {
-      const path = e.dataTransfer.getData('application/json-path');
-      if (path) {
-        textToInsert = `{{${path}}}`;
-      } else {
-        textToInsert = e.dataTransfer.getData('text/plain') || '';
-      }
-    }
-
+    const supportsExpression = fieldSupportsExpression(fieldKey);
+    const mode = supportsExpression ? getFieldModeByKey(fieldKey) : 'fixed';
+    const textToInsert = resolveDropInsertText({
+      fieldKey,
+      dataTransfer: e.dataTransfer,
+      mode,
+    });
     if (!textToInsert) return;
 
     const el = e.currentTarget as HTMLInputElement;
-    const current = String(arrayRef[index][itemKey] || '');
+    const current = itemKey
+      ? String(arrayRef[index]?.[itemKey] || '')
+      : String(arrayRef[index] || '');
     const start = el.selectionStart ?? current.length;
     const end = el.selectionEnd ?? start;
-    
+
     const next = [...arrayRef];
-    next[index] = { ...next[index], [itemKey]: current.slice(0, start) + textToInsert + current.slice(end) };
+    if (itemKey) {
+      next[index] = {
+        ...(next[index] || {}),
+        [itemKey]: current.slice(0, start) + textToInsert + current.slice(end),
+      };
+    } else {
+      next[index] = current.slice(0, start) + textToInsert + current.slice(end);
+    }
+
+    if (supportsExpression) {
+      handleModeAwareFieldChange({ key: fieldKey, supportsExpression: true }, next);
+      return;
+    }
     onChange(fieldKey, next);
   };
 
@@ -1020,10 +1326,10 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
       }
     }
 
-    Object.entries(patch).forEach(([key, value]) => {
-      onChange(key, value);
-    });
-  }, [nodeType, config, onChange]);
+    if (Object.keys(patch).length > 0) {
+      applyConfigPatch(patch);
+    }
+  }, [nodeType, config, applyConfigPatch]);
 
   useEffect(() => {
     if (nodeType !== 'schedule_trigger') return;
@@ -1061,13 +1367,13 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
       }
     }
 
-    Object.entries(patch).forEach(([key, value]) => {
-      onChange(key, value);
-    });
+    if (Object.keys(patch).length > 0) {
+      applyConfigPatch(patch);
+    }
   }, [
     nodeType,
     config,
-    onChange,
+    applyConfigPatch,
   ]);
 
   useEffect(() => {
@@ -1081,9 +1387,9 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
     const model = String(config.model || 'dall-e-3');
     const allowedSizes = sizesByModel[model] || sizesByModel['dall-e-3'];
     if (!allowedSizes.includes(String(config.size || ''))) {
-      onChange('size', allowedSizes[0]);
+      applyConfigPatch({ size: allowedSizes[0] });
     }
-  }, [nodeType, config.model, config.size, onChange]);
+  }, [nodeType, config.model, config.size, applyConfigPatch]);
 
   useEffect(() => {
     if (nodeType !== 'merge') return;
@@ -1103,26 +1409,208 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
       ? (mode === 'choose_input_2' || mode === 'choose_input2' ? 'input2' : 'input1')
       : chooseBranchValue;
 
+    const patch: Record<string, any> = {};
     if (!mode) {
-      onChange('mode', 'append');
+      patch.mode = 'append';
     } else if (normalizedMode !== mode) {
-      onChange('mode', normalizedMode);
+      patch.mode = normalizedMode;
     }
     if (String(config.input_count || '') !== String(normalizedInputCount)) {
-      onChange('input_count', normalizedInputCount);
+      patch.input_count = normalizedInputCount;
     }
     if (normalizedChooseBranch !== chooseBranchValue) {
-      onChange('choose_branch', normalizedChooseBranch);
+      patch.choose_branch = normalizedChooseBranch;
     }
-  }, [nodeType, config, onChange]);
+    if (Object.keys(patch).length > 0) {
+      applyConfigPatch(patch);
+    }
+  }, [nodeType, config, applyConfigPatch]);
 
-  const fields = CONFIG_SCHEMA[nodeType] || [];
+  const fields = CONFIG_SCHEMA_WITH_MODE_POLICY[nodeType] || [];
+  const expressionCapableFields = fields.filter((field) => Boolean(field?.supportsExpression));
+
+  useEffect(() => {
+    if (expressionCapableFields.length === 0) return;
+
+    const { nextModeByField, nextValuesByField, nextActiveByField } = buildNormalizedModeMetadata(
+      config,
+      expressionCapableFields,
+    );
+
+    const rawModeByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.modeByField])
+      ? config[PARAMETER_MODE_META_KEYS.modeByField]
+      : {};
+    const rawValuesByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.valuesByField])
+      ? config[PARAMETER_MODE_META_KEYS.valuesByField]
+      : {};
+    const patch: Record<string, any> = {};
+    if (JSON.stringify(rawModeByField) !== JSON.stringify(nextModeByField)) {
+      patch[PARAMETER_MODE_META_KEYS.modeByField] = nextModeByField;
+    }
+    if (JSON.stringify(rawValuesByField) !== JSON.stringify(nextValuesByField)) {
+      patch[PARAMETER_MODE_META_KEYS.valuesByField] = nextValuesByField;
+    }
+
+    const fieldKeys = Object.keys(nextActiveByField);
+    for (const fieldKey of fieldKeys) {
+      if (!areModeValuesEqual(config[fieldKey], nextActiveByField[fieldKey])) {
+        patch[fieldKey] = nextActiveByField[fieldKey];
+      }
+    }
+
+    if (Object.keys(patch).length > 0) {
+      applyConfigPatch(patch);
+    }
+  }, [config, expressionCapableFields, applyConfigPatch]);
+
   const imageTemplateHints = previousNodes
     .filter((previousNode) => previousNode.data?.type === 'image_gen')
     .flatMap((previousNode) => [
       `{{${previousNode.id}.image_base64}}`,
       `{{${previousNode.id}.image_url}}`,
     ]);
+
+  const getFieldMode = (field: any): ParameterMode => {
+    if (!field?.supportsExpression) {
+      return PARAMETER_MODE_CONTRACT.defaultMode;
+    }
+    const rawModeByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.modeByField])
+      ? config[PARAMETER_MODE_META_KEYS.modeByField]
+      : {};
+    return rawModeByField[field.key] === 'expression' ? 'expression' : 'fixed';
+  };
+
+  const handleFieldModeChange = (field: any, nextMode: ParameterMode) => {
+    if (!field?.supportsExpression) return;
+
+    const fieldKey = String(field.key || '').trim();
+    if (!fieldKey) return;
+
+    const currentMode = getFieldMode(field);
+    if (currentMode === nextMode) return;
+
+    const rawModeByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.modeByField])
+      ? config[PARAMETER_MODE_META_KEYS.modeByField]
+      : {};
+    const rawValuesByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.valuesByField])
+      ? config[PARAMETER_MODE_META_KEYS.valuesByField]
+      : {};
+
+    const activeValue = config[fieldKey];
+    const rawFieldValues = isPlainObject(rawValuesByField[fieldKey])
+      ? rawValuesByField[fieldKey]
+      : {};
+    const hasFixed = Object.prototype.hasOwnProperty.call(rawFieldValues, 'fixed');
+    const hasExpression = Object.prototype.hasOwnProperty.call(rawFieldValues, 'expression');
+
+    let fixedValue = hasFixed ? rawFieldValues.fixed : activeValue;
+    let expressionValue = hasExpression ? rawFieldValues.expression : '';
+
+    if (currentMode === 'fixed') {
+      fixedValue = activeValue;
+    } else {
+      expressionValue = activeValue;
+    }
+
+    if (nextMode === 'expression' && !hasExpressionDraftValue(expressionValue)) {
+      expressionValue = toExpressionDraftFromFixedValue(fixedValue, fieldKey);
+    }
+
+    const nextModeByField = {
+      ...rawModeByField,
+      [fieldKey]: nextMode,
+    };
+    const nextValuesByField = {
+      ...rawValuesByField,
+      [fieldKey]: {
+        fixed: fixedValue,
+        expression: expressionValue,
+      },
+    };
+    const nextFieldValue = nextMode === 'expression'
+      ? nextValuesByField[fieldKey].expression
+      : nextValuesByField[fieldKey].fixed;
+
+    applyConfigPatch({
+      [PARAMETER_MODE_META_KEYS.modeByField]: nextModeByField,
+      [PARAMETER_MODE_META_KEYS.valuesByField]: nextValuesByField,
+      [fieldKey]: nextFieldValue,
+    });
+  };
+
+  const getModeAwareFieldValue = (field: any, fallbackValue: any): any => {
+    if (!field?.supportsExpression) return fallbackValue;
+
+    const mode = getFieldMode(field);
+    const rawValuesByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.valuesByField])
+      ? config[PARAMETER_MODE_META_KEYS.valuesByField]
+      : {};
+    const fieldValues = isPlainObject(rawValuesByField[field.key])
+      ? rawValuesByField[field.key]
+      : null;
+    if (!fieldValues) return fallbackValue;
+
+    return mode === 'expression'
+      ? (fieldValues.expression ?? fallbackValue)
+      : (fieldValues.fixed ?? fallbackValue);
+  };
+
+  const handleModeAwareFieldChange = (field: any, nextValue: any) => {
+    if (!field?.supportsExpression) {
+      onChange(field.key, nextValue);
+      return;
+    }
+
+    const fieldKey = String(field.key || '').trim();
+    if (!fieldKey) return;
+    const mode = getFieldMode(field);
+    const activeValue = config[fieldKey];
+    const rawValuesByField = isPlainObject(config[PARAMETER_MODE_META_KEYS.valuesByField])
+      ? config[PARAMETER_MODE_META_KEYS.valuesByField]
+      : {};
+    const rawFieldValues = isPlainObject(rawValuesByField[fieldKey])
+      ? rawValuesByField[fieldKey]
+      : {};
+
+    const hasFixed = Object.prototype.hasOwnProperty.call(rawFieldValues, 'fixed');
+    const hasExpression = Object.prototype.hasOwnProperty.call(rawFieldValues, 'expression');
+    let fixedValue = hasFixed ? rawFieldValues.fixed : activeValue;
+    let expressionValue = hasExpression ? rawFieldValues.expression : '';
+
+    if (mode === 'fixed') {
+      fixedValue = nextValue;
+    } else {
+      expressionValue = nextValue;
+    }
+
+    applyConfigPatch({
+      [PARAMETER_MODE_META_KEYS.valuesByField]: {
+        ...rawValuesByField,
+        [fieldKey]: {
+          fixed: fixedValue,
+          expression: expressionValue,
+        },
+      },
+      [fieldKey]: nextValue,
+    });
+  };
+
+  const getModeAwareTextValue = (field: any): any =>
+    getModeAwareFieldValue(field, config[field.key] ?? '');
+
+  const handleModeAwareTextChange = (field: any, nextValue: any) => {
+    handleModeAwareFieldChange(field, nextValue);
+  };
+
+  const toBooleanLike = (rawValue: any): boolean => {
+    if (typeof rawValue === 'boolean') return rawValue;
+    if (typeof rawValue === 'number') return rawValue !== 0;
+    if (typeof rawValue === 'string') {
+      const normalized = rawValue.trim().toLowerCase();
+      return ['1', 'true', 'yes', 'on'].includes(normalized);
+    }
+    return false;
+  };
 
   const insertImageHint = (fieldKey: string, hint: string) => {
     const current = String(config[fieldKey] || '');
@@ -1137,14 +1625,28 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
 
     switch (field.type) {
       case 'select': {
+        const mode = getFieldMode(field);
         const selectOptions = field.dynamicOptionsBy
           ? (field.optionsByProvider?.[config[field.dynamicOptionsBy] || 'openai'] || [])
           : field.options;
+        if (field.supportsExpression && mode === 'expression') {
+          const expressionValue = String(getModeAwareFieldValue(field, value) ?? '');
+          return (
+            <input
+              type="text"
+              value={expressionValue}
+              placeholder={field.placeholder || 'e.g. {{$json.value}}'}
+              onChange={(e) => handleModeAwareFieldChange(field, e.target.value)}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
+            />
+          );
+        }
+        const selectValue = getModeAwareFieldValue(field, value);
 
         return (
           <select
-            value={value}
-            onChange={(e) => onChange(field.key, e.target.value)}
+            value={String(selectValue ?? '')}
+            onChange={(e) => handleModeAwareFieldChange(field, e.target.value)}
             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
           >
             <option value="">Select option...</option>
@@ -1188,10 +1690,23 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
         );
 
       case 'boolean':
+        if (field.supportsExpression && getFieldMode(field) === 'expression') {
+          const expressionValue = String(getModeAwareFieldValue(field, value) ?? '');
+          return (
+            <input
+              type="text"
+              value={expressionValue}
+              placeholder={field.placeholder || 'e.g. {{$json.flag}}'}
+              onChange={(e) => handleModeAwareFieldChange(field, e.target.value)}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
+            />
+          );
+        }
+        const boolValue = toBooleanLike(getModeAwareFieldValue(field, value));
         return (
           <select
-            value={String(Boolean(value))}
-            onChange={(e) => onChange(field.key, e.target.value === 'true')}
+            value={String(boolValue)}
+            onChange={(e) => handleModeAwareFieldChange(field, e.target.value === 'true')}
             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
           >
             <option value="false">false</option>
@@ -1831,7 +2346,20 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
         );
 
       case 'string_array':
-        const stringArray = Array.isArray(value) ? value : [];
+        if (field.supportsExpression && getFieldMode(field) === 'expression') {
+          const expressionValue = String(getModeAwareFieldValue(field, value) ?? '');
+          return (
+            <textarea
+              value={expressionValue}
+              placeholder={field.placeholder || 'e.g. {{$json.items}}'}
+              onChange={(e) => handleModeAwareFieldChange(field, e.target.value)}
+              rows={3}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 shadow-sm resize-y"
+            />
+          );
+        }
+        const rawStringArrayValue = getModeAwareFieldValue(field, value);
+        const stringArray = Array.isArray(rawStringArrayValue) ? rawStringArrayValue : [];
         return (
           <div className="space-y-2">
             {stringArray.map((str: string, idx: number) => (
@@ -1843,35 +2371,11 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
                   onChange={(e) => {
                     const next = [...stringArray];
                     next[idx] = e.target.value;
-                    onChange(field.key, next);
+                    handleModeAwareFieldChange(field, next);
                   }}
                   onDragOver={(e) => handleDragOver(e, `${field.key}_${idx}`)}
                   onDragLeave={(e) => handleDragLeave(e)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setDragOverField(null);
-                    let textToInsert = '';
-                    const literalValue = e.dataTransfer.getData('application/json-value');
-                    if (literalValue) {
-                      textToInsert = literalValue;
-                    } else {
-                      const path = e.dataTransfer.getData('application/json-path');
-                      if (path) {
-                        textToInsert = `{{${path}}}`;
-                      } else {
-                        textToInsert = e.dataTransfer.getData('text/plain') || '';
-                      }
-                    }
-                    if (!textToInsert) return;
-                    const el = e.currentTarget as HTMLInputElement;
-                    const current = String(stringArray[idx] || '');
-                    const start = el.selectionStart ?? current.length;
-                    const end = el.selectionEnd ?? start;
-                    const nextArr = [...stringArray];
-                    nextArr[idx] = current.slice(0, start) + textToInsert + current.slice(end);
-                    onChange(field.key, nextArr);
-                  }}
+                  onDrop={(e) => handleArrayDrop(e, field.key, stringArray, idx)}
                   className={`w-full bg-slate-50 dark:bg-slate-800 border rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 outline-none transition-all pr-8 ${dragOverField === `${field.key}_${idx}`
                     ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
                     : 'border-slate-200 dark:border-slate-700 focus:border-blue-500 dark:focus:border-blue-400'
@@ -1881,7 +2385,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
                   onClick={() => {
                     const next = [...stringArray];
                     next.splice(idx, 1);
-                    onChange(field.key, next);
+                    handleModeAwareFieldChange(field, next);
                   }}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
                 >
@@ -1890,7 +2394,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
               </div>
             ))}
             <button
-              onClick={() => onChange(field.key, [...stringArray, ''])}
+              onClick={() => handleModeAwareFieldChange(field, [...stringArray, ''])}
               className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-600 text-[10px] font-bold hover:border-blue-300 dark:hover:border-blue-900 hover:text-blue-500 dark:hover:text-blue-400 transition-all flex items-center justify-center gap-2"
             >
               <Plus size={12} strokeWidth={3} />
@@ -1900,7 +2404,21 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
         );
 
       case 'sheet_update_mappings': {
-        const rawMappings = Array.isArray(value) ? value : [];
+        if (field.supportsExpression && getFieldMode(field) === 'expression') {
+          const expressionValue = String(getModeAwareFieldValue(field, value) ?? '');
+          return (
+            <textarea
+              value={expressionValue}
+              placeholder={field.placeholder || 'e.g. {{$json.mappings}}'}
+              onChange={(e) => handleModeAwareFieldChange(field, e.target.value)}
+              rows={4}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none transition-all placeholder:text-slate-300 dark:placeholder:text-slate-700 shadow-sm resize-y"
+            />
+          );
+        }
+
+        const rawMappingsValue = getModeAwareFieldValue(field, value);
+        const rawMappings = Array.isArray(rawMappingsValue) ? rawMappingsValue : [];
         const legacyColumn = String(config.update_column || '').trim();
         const legacyValue = config.update_value ?? '';
 
@@ -1917,13 +2435,13 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
         }));
 
         if (JSON.stringify(rawMappings) !== JSON.stringify(normalizedMappings)) {
-          onChange(field.key, normalizedMappings);
+          handleModeAwareFieldChange(field, normalizedMappings);
         }
 
         const updateMapping = (index: number, patch: Record<string, any>) => {
           const next = [...normalizedMappings];
           next[index] = { ...next[index], ...patch };
-          onChange(field.key, next);
+          handleModeAwareFieldChange(field, next);
         };
 
         return (
@@ -1934,7 +2452,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
                   onClick={() => {
                     const next = [...normalizedMappings];
                     next.splice(idx, 1);
-                    onChange(field.key, next);
+                    handleModeAwareFieldChange(field, next);
                   }}
                   className="absolute top-2 right-2 text-slate-300 dark:text-slate-700 hover:text-red-500 dark:hover:text-red-400 transition-colors"
                 >
@@ -1965,7 +2483,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
               </div>
             ))}
             <button
-              onClick={() => onChange(field.key, [...normalizedMappings, { id: `mapping_${Date.now()}`, column: '', value: '' }])}
+              onClick={() => handleModeAwareFieldChange(field, [...normalizedMappings, { id: `mapping_${Date.now()}`, column: '', value: '' }])}
               className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-600 text-xs font-bold hover:border-blue-300 dark:hover:border-blue-900 hover:text-blue-500 dark:hover:text-blue-400 transition-all flex items-center justify-center gap-2"
             >
               <Plus size={12} strokeWidth={3} />
@@ -2125,12 +2643,19 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
 
       case 'textarea':
         const isPathPlaceholderForTextarea = PATH_STYLE_FIELD_KEYS.has(field.key);
+        const textareaMode = field.supportsExpression ? getFieldMode(field) : 'fixed';
+        const textareaDropPlaceholder = isPathPlaceholderForTextarea
+          ? 'Drop to insert path…'
+          : textareaMode === 'expression'
+            ? 'Drop to insert {{path}}…'
+            : 'Drop to insert value…';
+        const textareaValue = getModeAwareTextValue(field);
         return (
           <div className="relative">
             <textarea
-              value={value}
-              placeholder={dragOverField === field.key ? (isPathPlaceholderForTextarea ? 'Drop to insert path…' : 'Drop to insert {{path}}…') : field.placeholder}
-              onChange={(e) => onChange(field.key, e.target.value)}
+              value={textareaValue}
+              placeholder={dragOverField === field.key ? textareaDropPlaceholder : field.placeholder}
+              onChange={(e) => handleModeAwareTextChange(field, e.target.value)}
               onDragOver={(e) => handleDragOver(e, field.key)}
               onDragLeave={(e) => handleDragLeave(e)}
               onDrop={(e) => handleDrop(e, field.key)}
@@ -2156,13 +2681,20 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
       case 'text':
       default:
         const isPathPlaceholderForText = PATH_STYLE_FIELD_KEYS.has(field.key);
+        const textMode = field.supportsExpression ? getFieldMode(field) : 'fixed';
+        const textDropPlaceholder = isPathPlaceholderForText
+          ? 'Drop to insert path…'
+          : textMode === 'expression'
+            ? 'Drop to insert {{path}}…'
+            : 'Drop to insert value…';
+        const textValue = getModeAwareTextValue(field);
         return (
           <div className="relative">
             <input
               type="text"
-              value={value}
-              placeholder={dragOverField === field.key ? (isPathPlaceholderForText ? 'Drop to insert path…' : 'Drop to insert {{path}}…') : field.placeholder}
-              onChange={(e) => onChange(field.key, e.target.value)}
+              value={textValue}
+              placeholder={dragOverField === field.key ? textDropPlaceholder : field.placeholder}
+              onChange={(e) => handleModeAwareTextChange(field, e.target.value)}
               onDragOver={(e) => handleDragOver(e, field.key)}
               onDragLeave={(e) => handleDragLeave(e)}
               onDrop={(e) => handleDrop(e, field.key)}
@@ -2253,12 +2785,24 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ nodeType, config, previousNodes
         </div>
       ) : (
         fields.filter((field) => shouldRenderField(field)).map((field) => (
-          <div key={field.key} className="space-y-2">
+          <div key={field.key} className="group/field space-y-2">
             <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-600 flex items-center justify-between">
-              {field.label}
-              {(field.type === 'text' || field.type === 'textarea' || field.type === 'sheet_update_mappings' || field.type === 'string_array') && (
-                <span className="text-[9px] font-medium lowercase text-slate-300 dark:text-slate-700 normal-case">Supports mapping</span>
-              )}
+              <span>{field.label}</span>
+              <span className="flex items-center gap-2">
+                {field.supportsExpression && getFieldMode(field) === 'expression' && (
+                  <span className="rounded-full border border-emerald-200/80 bg-emerald-50/80 px-2 py-0.5 text-[9px] font-bold normal-case tracking-normal text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300">
+                    Expression
+                  </span>
+                )}
+                {field.supportsExpression && (
+                  <span className="pointer-events-none opacity-0 transition-opacity duration-150 group-hover/field:pointer-events-auto group-hover/field:opacity-100 group-focus-within/field:pointer-events-auto group-focus-within/field:opacity-100">
+                    <ParameterModeSwitch
+                      mode={getFieldMode(field)}
+                      onModeChange={(nextMode) => handleFieldModeChange(field, nextMode)}
+                    />
+                  </span>
+                )}
+              </span>
             </label>
             {renderField(field)}
             {field.helperText && (

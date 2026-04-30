@@ -340,9 +340,50 @@ class DagExecutor:
         - Whole-string placeholder keeps original type (dict/list/number/bool).
         - Embedded placeholder in larger text is stringified.
         - Unresolvable paths are preserved as-is.
+
+        Expression mode support:
+        - ``__af_mode`` and ``__af_values`` are editor metadata keys.
+        - For fields marked ``expression``, template resolution is applied.
+        - For fields marked ``fixed``, values are passed through literally.
+        - Metadata keys are stripped before runner execution.
         """
+        meta_mode_key = "__af_mode"
+        meta_values_key = "__af_values"
         _MISSING = object()
         _PATTERN = re.compile(r"\{\{\s*(.+?)\s*\}\}")
+
+        raw_mode_by_field = (
+            config.get(meta_mode_key)
+            if isinstance(config.get(meta_mode_key), dict)
+            else {}
+        )
+        raw_values_by_field = (
+            config.get(meta_values_key)
+            if isinstance(config.get(meta_values_key), dict)
+            else {}
+        )
+
+        mode_by_field: dict[str, str] = {}
+        for raw_field_key, raw_mode in raw_mode_by_field.items():
+            field_key = str(raw_field_key or "").strip()
+            if not field_key:
+                continue
+            mode_by_field[field_key] = "expression" if raw_mode == "expression" else "fixed"
+
+        values_by_field: dict[str, dict[str, Any]] = {}
+        for raw_field_key, raw_field_values in raw_values_by_field.items():
+            field_key = str(raw_field_key or "").strip()
+            if not field_key or not isinstance(raw_field_values, dict):
+                continue
+
+            normalized_values: dict[str, Any] = {}
+            if "fixed" in raw_field_values:
+                normalized_values["fixed"] = raw_field_values.get("fixed")
+            if "expression" in raw_field_values:
+                normalized_values["expression"] = raw_field_values.get("expression")
+
+            if normalized_values:
+                values_by_field[field_key] = normalized_values
 
         def _normalize_expression(expression: str) -> str:
             expr = expression.strip()
@@ -488,7 +529,31 @@ class DagExecutor:
                 return [_resolve(item) for item in value]
             return value
 
-        return {k: _resolve(v) for k, v in config.items()}
+        resolved_config: dict[str, Any] = {}
+        for key, value in config.items():
+            if key in {meta_mode_key, meta_values_key}:
+                continue
+
+            field_key = str(key)
+            mode = mode_by_field.get(field_key)
+            field_values = values_by_field.get(field_key, {})
+            # Harden mode application: only honor mode when metadata is complete
+            # for that field. Otherwise fall back to legacy template resolution.
+            effective_mode: str | None = None
+            if (
+                mode in {"fixed", "expression"}
+                and field_key in values_by_field
+                and mode in field_values
+            ):
+                effective_mode = mode
+                value = field_values[mode]
+
+            if effective_mode == "fixed":
+                resolved_config[key] = value
+            else:
+                resolved_config[key] = _resolve(value)
+
+        return resolved_config
 
     @staticmethod
     def _build_template_context(

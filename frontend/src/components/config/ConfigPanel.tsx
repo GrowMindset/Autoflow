@@ -237,6 +237,7 @@ const SettingsSection: React.FC<{
 const NodeSettingsPanel: React.FC<{
   node: WorkflowNode;
   onChange: (key: string, value: any) => void;
+  onChangePatch?: (patch: Record<string, any>) => void;
 }> = ({ node, onChange }) => {
   const visibility = getNodeSettingsVisibility(node.data.type, node.data.category);
   const config = node.data.config || {};
@@ -353,6 +354,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const layoutContainerRef = React.useRef<HTMLDivElement | null>(null);
   const leftPanelRef = React.useRef<HTMLDivElement | null>(null);
   const rightPanelRef = React.useRef<HTMLDivElement | null>(null);
+  const configDraftRef = React.useRef<Record<string, any>>(node.data.config || {});
   const resizingSideRef = React.useRef<'left' | 'right' | null>(null);
   const resizeStartXRef = React.useRef(0);
   const resizeStartWidthRef = React.useRef(0);
@@ -373,6 +375,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   useEffect(() => {
     setOutput(node.data.last_output || null);
   }, [node.id, node.data.last_output]);
+
+  useEffect(() => {
+    configDraftRef.current = node.data.config || {};
+  }, [node.id, node.data.config]);
 
   useEffect(() => {
     setOpenNavMenu(null);
@@ -555,14 +561,21 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   };
 
   // Sync state if node changes externally
-  const handleConfigChange = (key: string, value: any) => {
-    const nextConfig = { ...node.data.config, [key]: value };
+  const applyConfigPatch = (patch: Record<string, any>) => {
+    const nextConfig = {
+      ...(configDraftRef.current || {}),
+      ...(patch || {}),
+    };
+    configDraftRef.current = nextConfig;
     onUpdate(node.id, nextConfig);
   };
 
+  const handleConfigChange = (key: string, value: any) => {
+    applyConfigPatch({ [key]: value });
+  };
+
   const handleConfigPatch = (patch: Record<string, any>) => {
-    const nextConfig = { ...node.data.config, ...patch };
-    onUpdate(node.id, nextConfig);
+    applyConfigPatch(patch);
   };
 
   const handleScheduleToggle = () => {
@@ -964,6 +977,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                   <NodeSettingsPanel
                     node={node}
                     onChange={handleConfigChange}
+                    onChangePatch={handleConfigPatch}
                   />
                 ) : (
                   <>
@@ -984,10 +998,22 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         config={node.data.config}
                         previousNodes={previousNodes}
                         onChange={handleConfigChange}
+                        onChangePatch={handleConfigPatch}
+
                       />
                     )}
 
                     {node.data.type === 'webhook_trigger' && (
+                  <ConfigForm
+                    nodeType={node.data.type}
+                    config={node.data.config}
+                    previousNodes={previousNodes}
+                    onChange={handleConfigChange}
+                    onChangePatch={handleConfigPatch}
+                  />
+                )}
+                
+                {node.data.type === 'webhook_trigger' && (
                   <div className="mt-10 space-y-8 animate-in fade-in slide-in-from-bottom-4">
                     <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 flex flex-col gap-4">
                       <div>

@@ -66,6 +66,59 @@ const DEFAULT_LOOP_CONTROL = {
   max_node_executions: 3,
   max_total_node_executions: 500,
 } as const;
+const PARAMETER_MODE_META_KEYS = {
+  modeByField: '__af_mode',
+  valuesByField: '__af_values',
+} as const;
+
+const isPlainObject = (value: unknown): value is Record<string, any> => (
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+);
+
+const normalizeExpressionModeMetadata = (config: Record<string, any> | undefined): Record<string, any> => {
+  const safeConfig = isPlainObject(config) ? { ...config } : {};
+  const hasModeKey = Object.prototype.hasOwnProperty.call(
+    safeConfig,
+    PARAMETER_MODE_META_KEYS.modeByField,
+  );
+  const hasValuesKey = Object.prototype.hasOwnProperty.call(
+    safeConfig,
+    PARAMETER_MODE_META_KEYS.valuesByField,
+  );
+  if (!hasModeKey && !hasValuesKey) {
+    return safeConfig;
+  }
+
+  const rawModes = isPlainObject(safeConfig[PARAMETER_MODE_META_KEYS.modeByField])
+    ? safeConfig[PARAMETER_MODE_META_KEYS.modeByField]
+    : {};
+  const normalizedModes: Record<string, 'fixed' | 'expression'> = {};
+  Object.entries(rawModes).forEach(([fieldKey, rawMode]) => {
+    const key = String(fieldKey || '').trim();
+    if (!key) return;
+    normalizedModes[key] = rawMode === 'expression' ? 'expression' : 'fixed';
+  });
+
+  const rawValues = isPlainObject(safeConfig[PARAMETER_MODE_META_KEYS.valuesByField])
+    ? safeConfig[PARAMETER_MODE_META_KEYS.valuesByField]
+    : {};
+  const normalizedValues: Record<string, { fixed: any; expression: any }> = {};
+  Object.entries(rawValues).forEach(([fieldKey, rawValue]) => {
+    const key = String(fieldKey || '').trim();
+    if (!key || !isPlainObject(rawValue)) return;
+
+    const hasFixed = Object.prototype.hasOwnProperty.call(rawValue, 'fixed');
+    const hasExpression = Object.prototype.hasOwnProperty.call(rawValue, 'expression');
+    normalizedValues[key] = {
+      fixed: hasFixed ? rawValue.fixed : '',
+      expression: hasExpression ? rawValue.expression : '',
+    };
+  });
+
+  safeConfig[PARAMETER_MODE_META_KEYS.modeByField] = normalizedModes;
+  safeConfig[PARAMETER_MODE_META_KEYS.valuesByField] = normalizedValues;
+  return safeConfig;
+};
 
 const parseBooleanLike = (rawValue: unknown, fallback = true): boolean => {
   if (rawValue === undefined || rawValue === null) return fallback;
@@ -417,12 +470,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             delete nextConfig.channel;
           }
           if (node.data.type === 'switch') {
-            return normalizeSwitchNodeConfig(nextConfig);
+            return normalizeExpressionModeMetadata(normalizeSwitchNodeConfig(nextConfig));
           }
           if (node.data.type === 'merge') {
-            return pruneMergeConfigForPersistence(nextConfig);
+            return normalizeExpressionModeMetadata(pruneMergeConfigForPersistence(nextConfig));
           }
-          return nextConfig;
+          return normalizeExpressionModeMetadata(nextConfig);
         })(),
         id: node.id,
         type: node.data.type,
@@ -2011,11 +2064,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         NODE_LIBRARY.action.some(ref => ref.type === n.type) ? 'action' :
           NODE_LIBRARY.transform.some(ref => ref.type === n.type) ? 'transform' :
             NODE_LIBRARY.input_output.some(ref => ref.type === n.type) ? 'input_output' : 'ai';
-      const normalizedConfig = n.type === 'switch'
-        ? normalizeSwitchNodeConfig(n.config)
-        : n.type === 'merge'
-          ? normalizeMergeConfigForEditor(n.config)
-        : n.config;
+      const normalizedConfig = normalizeExpressionModeMetadata(
+        n.type === 'switch'
+          ? normalizeSwitchNodeConfig(n.config)
+          : n.type === 'merge'
+            ? normalizeMergeConfigForEditor(n.config)
+            : n.config,
+      );
 
       return {
         id: n.id,
@@ -2309,19 +2364,20 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   ]);
 
   const updateNodeConfig = useCallback((id: string, config: Record<string, any>, output?: any) => {
+    const normalizedConfig = normalizeExpressionModeMetadata(config);
     setNodes((nds) =>
       nds.map((node) => {
         if (node.id === id) {
           const scheduleIsActive = isScheduleVisualActive(
             node.data.type,
-            config,
+            normalizedConfig,
             isPublished,
           );
           return {
             ...node,
             data: {
               ...node.data,
-              config,
+              config: normalizedConfig,
               last_output: output || node.data.last_output,
               schedule_is_active: scheduleIsActive,
             },

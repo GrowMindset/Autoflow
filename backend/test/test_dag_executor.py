@@ -1442,6 +1442,252 @@ class DagExecutorTests(unittest.TestCase):
             },
         )
 
+    def test_execute_node_expression_mode_resolves_templates_and_strips_metadata(self):
+        recorder = _RecordingRunner(
+            result=lambda config, _input_data, _ctx: {"seen_config": config},
+        )
+        executor = DagExecutor(registry=_FakeRegistry({"echo": recorder}))
+
+        result = executor.execute_node(
+            node_id="echo_1",
+            node_type="echo",
+            config={
+                "subject": "Hello {{name}}",
+                "__af_mode": {"subject": "expression"},
+                "__af_values": {
+                    "subject": {
+                        "fixed": "Hello {{name}}",
+                        "expression": "Hello {{name}}",
+                    }
+                },
+            },
+            input_data={"name": "Mina"},
+        )
+
+        seen_config = result["output_data"]["seen_config"]
+        self.assertEqual(seen_config["subject"], "Hello Mina")
+        self.assertNotIn("__af_mode", seen_config)
+        self.assertNotIn("__af_values", seen_config)
+
+    def test_execute_node_fixed_mode_keeps_literal_templates_and_strips_metadata(self):
+        recorder = _RecordingRunner(
+            result=lambda config, _input_data, _ctx: {"seen_config": config},
+        )
+        executor = DagExecutor(registry=_FakeRegistry({"echo": recorder}))
+
+        result = executor.execute_node(
+            node_id="echo_1",
+            node_type="echo",
+            config={
+                "subject": "Hello {{name}}",
+                "__af_mode": {"subject": "fixed"},
+                "__af_values": {
+                    "subject": {
+                        "fixed": "Hello {{name}}",
+                        "expression": "Hello {{name}}",
+                    }
+                },
+            },
+            input_data={"name": "Mina"},
+        )
+
+        seen_config = result["output_data"]["seen_config"]
+        self.assertEqual(seen_config["subject"], "Hello {{name}}")
+        self.assertNotIn("__af_mode", seen_config)
+        self.assertNotIn("__af_values", seen_config)
+
+    def test_execute_workflow_expression_mode_resolves_templates_and_strips_metadata(self):
+        class ManualTriggerRunner:
+            def run(self, config, input_data, context=None):
+                return {
+                    "triggered": True,
+                    "trigger_type": "manual",
+                    **(input_data or {}),
+                }
+
+        class EchoRunner:
+            def run(self, config, input_data, context=None):
+                return {
+                    "seen_config": config,
+                    "seen_input": input_data,
+                }
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": ManualTriggerRunner(),
+                    "echo": EchoRunner(),
+                }
+            )
+        )
+
+        definition = {
+            "nodes": [
+                {"id": "trigger", "type": "manual_trigger", "config": {}},
+                {
+                    "id": "echo_1",
+                    "type": "echo",
+                    "config": {
+                        "subject": "Hello {{name}}",
+                        "__af_mode": {"subject": "expression"},
+                        "__af_values": {
+                            "subject": {
+                                "fixed": "Hello {{name}}",
+                                "expression": "Hello {{name}}",
+                            }
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "trigger", "target": "echo_1"},
+            ],
+        }
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"name": "Mina"},
+        )
+
+        seen_config = result["node_outputs"]["echo_1"]["seen_config"]
+        self.assertEqual(seen_config["subject"], "Hello Mina")
+        self.assertNotIn("__af_mode", seen_config)
+        self.assertNotIn("__af_values", seen_config)
+
+    def test_execute_workflow_fixed_mode_keeps_literal_templates_and_strips_metadata(self):
+        class ManualTriggerRunner:
+            def run(self, config, input_data, context=None):
+                return {
+                    "triggered": True,
+                    "trigger_type": "manual",
+                    **(input_data or {}),
+                }
+
+        class EchoRunner:
+            def run(self, config, input_data, context=None):
+                return {
+                    "seen_config": config,
+                    "seen_input": input_data,
+                }
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": ManualTriggerRunner(),
+                    "echo": EchoRunner(),
+                }
+            )
+        )
+
+        definition = {
+            "nodes": [
+                {"id": "trigger", "type": "manual_trigger", "config": {}},
+                {
+                    "id": "echo_1",
+                    "type": "echo",
+                    "config": {
+                        "subject": "Hello {{name}}",
+                        "__af_mode": {"subject": "fixed"},
+                        "__af_values": {
+                            "subject": {
+                                "fixed": "Hello {{name}}",
+                                "expression": "Hello {{name}}",
+                            }
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "trigger", "target": "echo_1"},
+            ],
+        }
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"name": "Mina"},
+        )
+
+        seen_config = result["node_outputs"]["echo_1"]["seen_config"]
+        self.assertEqual(seen_config["subject"], "Hello {{name}}")
+        self.assertNotIn("__af_mode", seen_config)
+        self.assertNotIn("__af_values", seen_config)
+
+    def test_execute_node_ignores_incomplete_mode_metadata_and_uses_legacy_resolution(self):
+        recorder = _RecordingRunner(
+            result=lambda config, _input_data, _ctx: {"seen_config": config},
+        )
+        executor = DagExecutor(registry=_FakeRegistry({"echo": recorder}))
+
+        result = executor.execute_node(
+            node_id="echo_1",
+            node_type="echo",
+            config={
+                "subject": "Hello {{name}}",
+                "__af_mode": {"subject": "fixed"},
+                # Incomplete metadata: values object missing for field.
+            },
+            input_data={"name": "Mina"},
+        )
+
+        seen_config = result["output_data"]["seen_config"]
+        # Falls back to legacy behavior (resolve templates) if metadata is malformed.
+        self.assertEqual(seen_config["subject"], "Hello Mina")
+        self.assertNotIn("__af_mode", seen_config)
+        self.assertNotIn("__af_values", seen_config)
+
+    def test_execute_workflow_ignores_incomplete_mode_metadata_and_uses_legacy_resolution(self):
+        class ManualTriggerRunner:
+            def run(self, config, input_data, context=None):
+                return {
+                    "triggered": True,
+                    "trigger_type": "manual",
+                    **(input_data or {}),
+                }
+
+        class EchoRunner:
+            def run(self, config, input_data, context=None):
+                return {
+                    "seen_config": config,
+                    "seen_input": input_data,
+                }
+
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": ManualTriggerRunner(),
+                    "echo": EchoRunner(),
+                }
+            )
+        )
+
+        definition = {
+            "nodes": [
+                {"id": "trigger", "type": "manual_trigger", "config": {}},
+                {
+                    "id": "echo_1",
+                    "type": "echo",
+                    "config": {
+                        "subject": "Hello {{name}}",
+                        "__af_mode": {"subject": "fixed"},
+                        # Incomplete metadata: values object missing for field.
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "trigger", "target": "echo_1"},
+            ],
+        }
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"name": "Mina"},
+        )
+
+        seen_config = result["node_outputs"]["echo_1"]["seen_config"]
+        self.assertEqual(seen_config["subject"], "Hello Mina")
+        self.assertNotIn("__af_mode", seen_config)
+        self.assertNotIn("__af_values", seen_config)
+
     def test_execute_delay_defers_downstream_edges_when_delay_positive(self):
         deferred_calls: list[dict[str, object]] = []
         executor = DagExecutor(
