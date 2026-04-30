@@ -317,24 +317,28 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
     );
   };
 
+  const rawNote = String(data.config?.notes || '').trim();
+  const notePreview = rawNote.length > 60 ? `${rawNote.slice(0, 60)}...` : rawNote;
+
   return (
-    <div
-      className={`px-3 py-2.5 rounded-xl border-2 transition-colors duration-200 shadow-none min-w-[150px] max-w-[150px] group/node relative 
+    <div className="relative flex flex-col items-center">
+      <div
+        className={`px-3 py-2.5 rounded-xl border-2 transition-colors duration-200 shadow-none min-w-[150px] max-w-[150px] group/node relative 
         ${selected ? 'ring-2 ring-blue-500/10 border-blue-500' : 'border-slate-200 dark:border-slate-800'}
         ${isScheduleLive ? 'shadow-[0_0_20px_rgba(6,182,212,0.18)]' : ''}
         ${isRunningLike ? 'border-emerald-600 ring-[6px] ring-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-900/10 animate-pulse' : ''}
         ${isSucceeded ? 'bg-emerald-50/30 dark:bg-emerald-500/5 border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)] ring-[6px] ring-emerald-500/30' : 'bg-white dark:bg-slate-900'}
         ${isFailed ? 'bg-rose-50/30 dark:bg-rose-500/5 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.2)] ring-[6px] ring-rose-500/30' : ''}
       `}
-      style={{
-        borderTop: `6px solid ${isRunningLike || isSucceeded ? '#10b981' :
+        style={{
+          borderTop: `6px solid ${isRunningLike || isSucceeded ? '#10b981' :
             isFailed ? '#f43f5e' :
               isScheduleLive ? '#06b6d4' :
               accentColor
           }`
-      }}
-      title={hasIncomplete ? 'This node is missing required configuration' : ''}
-    >
+        }}
+        title={hasIncomplete ? 'This node is missing required configuration' : ''}
+      >
       {isScheduleLive && (
         <>
           <div className="pointer-events-none absolute -inset-[6px] rounded-2xl border border-cyan-400/40 animate-pulse" />
@@ -603,6 +607,15 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           />
           <PlusButton handleId={null} className="-right-8 top-1/2 -translate-y-1/2" />
         </>
+      )}
+      </div>
+      {data.config?.display_note && rawNote && (
+        <div
+          className="nodrag mt-1 max-w-[190px] rounded-md border border-slate-200 bg-white/95 px-2 py-1 text-center text-[8px] font-semibold leading-snug text-slate-500 shadow-sm dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-400"
+          title={rawNote}
+        >
+          {notePreview}
+        </div>
       )}
     </div>
   );

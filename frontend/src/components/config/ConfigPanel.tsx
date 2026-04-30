@@ -12,6 +12,7 @@ import { executionService } from '../../services/executionService';
 import api from '../../services/api';
 import { formatTimeInAppTimezone, getAppTimezone } from '../../utils/dateTime';
 import { toUserFriendlyErrorMessage } from '../../utils/errorMessages';
+import { getNodeSettingsVisibility } from '../../constants/nodeSettings';
 
 const DEFAULT_PANEL_WIDTH = 360;
 const COLLAPSED_PANEL_WIDTH = 48;
@@ -196,6 +197,131 @@ const getSchedulePreviewLines = (config: Record<string, any> | undefined) => {
   return lines;
 };
 
+const ToggleSwitch: React.FC<{
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+}> = ({ checked, onChange, label }) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    onClick={() => onChange(!checked)}
+    className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors ${
+      checked
+        ? 'border-blue-500 bg-blue-600'
+        : 'border-slate-200 bg-slate-200 dark:border-slate-700 dark:bg-slate-800'
+    }`}
+    title={label}
+  >
+    <span
+      className={`inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
+        checked ? 'translate-x-5' : 'translate-x-1'
+      }`}
+    />
+  </button>
+);
+
+const SettingsSection: React.FC<{
+  title: string;
+  children: React.ReactNode;
+}> = ({ title, children }) => (
+  <section className="space-y-3 border-t border-slate-100 pt-6 first:border-t-0 first:pt-0 dark:border-slate-800">
+    <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500">
+      {title}
+    </h3>
+    {children}
+  </section>
+);
+
+const NodeSettingsPanel: React.FC<{
+  node: WorkflowNode;
+  onChange: (key: string, value: any) => void;
+}> = ({ node, onChange }) => {
+  const visibility = getNodeSettingsVisibility(node.data.type, node.data.category);
+  const config = node.data.config || {};
+  const retryOnFail = Boolean(config.retry_on_fail);
+  const retryCount = Number.isFinite(Number(config.retry_count))
+    ? Math.max(1, Number(config.retry_count))
+    : 3;
+
+  return (
+    <div className="space-y-8">
+      {visibility.onError && (
+        <SettingsSection title="On Error">
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+              What to do when this node fails:
+            </label>
+            <select
+              value={config.on_error === 'continue' ? 'continue' : 'stop'}
+              onChange={(event) => onChange('on_error', event.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 shadow-sm outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+            >
+              <option value="stop">Stop Workflow</option>
+              <option value="continue">Continue</option>
+            </select>
+          </div>
+        </SettingsSection>
+      )}
+
+      {visibility.retryOnFail && (
+        <SettingsSection title="Retry On Fail">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Retry failed executions</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500">Waits 1 second between attempts.</p>
+            </div>
+            <ToggleSwitch
+              checked={retryOnFail}
+              onChange={(checked) => onChange('retry_on_fail', checked)}
+              label="Retry on fail"
+            />
+          </div>
+          {retryOnFail && (
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                Retry count
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={retryCount}
+                onChange={(event) => {
+                  const parsed = Number.parseInt(event.target.value, 10);
+                  onChange('retry_count', Number.isFinite(parsed) ? Math.max(1, parsed) : 1);
+                }}
+                className="w-28 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 shadow-sm outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+              />
+            </div>
+          )}
+        </SettingsSection>
+      )}
+
+      {visibility.notes && (
+        <SettingsSection title="Notes">
+          <textarea
+            value={String(config.notes ?? '')}
+            onChange={(event) => onChange('notes', event.target.value)}
+            className="min-h-[150px] w-full resize-y rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 shadow-sm outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          />
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Display note in flow</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500">Show this note under the node on the canvas.</p>
+            </div>
+            <ToggleSwitch
+              checked={Boolean(config.display_note)}
+              onChange={(checked) => onChange('display_note', checked)}
+              label="Display note in flow"
+            />
+          </div>
+        </SettingsSection>
+      )}
+    </div>
+  );
+};
+
 
 const ConfigPanel: React.FC<ConfigPanelProps> = ({
   node,
@@ -223,6 +349,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const [webhookMetaLoading, setWebhookMetaLoading] = useState(false);
   const [openNavMenu, setOpenNavMenu] = useState<'prev' | 'next' | null>(null);
   const [editableLabel, setEditableLabel] = useState(node.data.label || '');
+  const [activeConfigTab, setActiveConfigTab] = useState<'parameters' | 'settings'>('parameters');
   const layoutContainerRef = React.useRef<HTMLDivElement | null>(null);
   const leftPanelRef = React.useRef<HTMLDivElement | null>(null);
   const rightPanelRef = React.useRef<HTMLDivElement | null>(null);
@@ -249,6 +376,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
 
   useEffect(() => {
     setOpenNavMenu(null);
+    setActiveConfigTab('parameters');
   }, [node.id]);
 
   useEffect(() => {
@@ -814,32 +942,52 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
 
           {/* Column 2: Parameters Form */}
           <div className="min-w-0 basis-0 flex-1 flex flex-col overflow-hidden bg-white dark:bg-slate-900 z-10 shadow-[0_0_50px_rgba(0,0,0,0.02)]">
-            <div className="h-12 px-8 flex items-center border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900">
-              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-slate-400">PARAMETERS</span>
+            <div className="h-12 px-8 flex items-center gap-2 border-b border-slate-50 dark:border-slate-800 bg-white dark:bg-slate-900">
+              {(['parameters', 'settings'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveConfigTab(tab)}
+                  className={`rounded-xl px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] transition-colors ${
+                    activeConfigTab === tab
+                      ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
+                      : 'text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-300'
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
             </div>
             <div className="flex-1 overflow-auto p-10 custom-scrollbar">
               <div className="max-w-2xl mx-auto pb-20">
-                {node.data.type === 'image_gen' ? (
-                  <ImageGenConfigPanel
-                    config={node.data.config}
-                    previousNodes={previousNodes}
+                {activeConfigTab === 'settings' ? (
+                  <NodeSettingsPanel
+                    node={node}
                     onChange={handleConfigChange}
-                  />
-                ) : node.data.type === 'code' ? (
-                  <CodeConfigPanel
-                    config={node.data.config}
-                    onChange={handleConfigPatch}
                   />
                 ) : (
-                  <ConfigForm
-                    nodeType={node.data.type}
-                    config={node.data.config}
-                    previousNodes={previousNodes}
-                    onChange={handleConfigChange}
-                  />
-                )}
-                
-                {node.data.type === 'webhook_trigger' && (
+                  <>
+                    {node.data.type === 'image_gen' ? (
+                      <ImageGenConfigPanel
+                        config={node.data.config}
+                        previousNodes={previousNodes}
+                        onChange={handleConfigChange}
+                      />
+                    ) : node.data.type === 'code' ? (
+                      <CodeConfigPanel
+                        config={node.data.config}
+                        onChange={handleConfigPatch}
+                      />
+                    ) : (
+                      <ConfigForm
+                        nodeType={node.data.type}
+                        config={node.data.config}
+                        previousNodes={previousNodes}
+                        onChange={handleConfigChange}
+                      />
+                    )}
+
+                    {node.data.type === 'webhook_trigger' && (
                   <div className="mt-10 space-y-8 animate-in fade-in slide-in-from-bottom-4">
                     <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 flex flex-col gap-4">
                       <div>
@@ -882,9 +1030,9 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                       )}
                     </section>
                   </div>
-                )}
+                    )}
 
-                {node.data.type === 'form_trigger' && (
+                    {node.data.type === 'form_trigger' && (
                   <div className="mt-10 space-y-8">
                     <section className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 p-6">
                       <div className="flex items-center justify-between gap-4">
@@ -978,9 +1126,9 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                       </form>
                     </section>
                   </div>
-                )}
+                    )}
 
-                {node.data.type === 'schedule_trigger' && (
+                    {node.data.type === 'schedule_trigger' && (
                   <div className="mt-10 space-y-8">
                     <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 flex flex-col gap-3">
                       <div className="flex items-center justify-between gap-3">
@@ -1025,6 +1173,8 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                       </p>
                     </section>
                   </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>

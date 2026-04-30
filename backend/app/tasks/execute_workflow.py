@@ -731,7 +731,7 @@ async def _run_execution(
                             row.status = "FAILED"
                             if input_data is not None:
                                 row.input_data = input_data
-                            row.output_data = None
+                            row.output_data = output_data
                             row.error_message = normalized_error_message
                             row.started_at = row.started_at or now
                             row.finished_at = now

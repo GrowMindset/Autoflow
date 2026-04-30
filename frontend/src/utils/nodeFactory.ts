@@ -1,5 +1,6 @@
 import { XYPosition } from 'reactflow';
 import { NODE_LIBRARY, NodeDefinition } from '../constants/nodeLibrary';
+import { DEFAULT_NODE_SETTINGS } from '../constants/nodeSettings';
 import { WorkflowNode } from '../types/workflow';
 
 /**
@@ -35,7 +36,7 @@ export const createNode = (type: string, position: XYPosition): WorkflowNode => 
       type: definition.type,
       category: definition.category,
       // Shallow copy the default config to prevent shared state between nodes
-      config: { ...definition.default_config },
+      config: { ...DEFAULT_NODE_SETTINGS, ...definition.default_config },
       is_dummy: definition.is_dummy,
     },
   };

@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from collections import deque
 from typing import Any, Callable
 
@@ -211,10 +212,11 @@ class DagExecutor:
             self._build_template_context(resolved_input),
         )
         try:
-            output_data = runner.run(
+            output_data = self._run_with_retries(
+                runner=runner,
                 config=resolved_config,
                 input_data=resolved_input,
-                context=runner_context or {},
+                runner_context=runner_context or {},
             )
             return {
                 "node_id": node_id,
@@ -225,6 +227,18 @@ class DagExecutor:
                 "error_message": None,
             }
         except Exception as exc:
+            if self._should_continue_on_error(resolved_config):
+                return {
+                    "node_id": node_id,
+                    "node_type": node_type,
+                    "input_data": resolved_input,
+                    "output_data": resolved_input,
+                    "status": "FAILED",
+                    "error_message": to_user_friendly_error_message(
+                        exc,
+                        node_type=node_type,
+                    ),
+                }
             return {
                 "node_id": node_id,
                 "node_type": node_type,
@@ -236,6 +250,75 @@ class DagExecutor:
                     node_type=node_type,
                 ),
             }
+
+    @staticmethod
+    def _should_continue_on_error(config: dict[str, Any] | None) -> bool:
+        if not isinstance(config, dict):
+            return False
+        return str(config.get("on_error", "stop")).strip().lower() == "continue"
+
+    @staticmethod
+    def _max_runner_attempts(config: dict[str, Any] | None) -> int:
+        if not isinstance(config, dict) or not bool(config.get("retry_on_fail", False)):
+            return 1
+
+        try:
+            return max(1, int(config.get("retry_count", 3)))
+        except (TypeError, ValueError):
+            return 3
+
+    def _run_with_retries(
+        self,
+        *,
+        runner: Any,
+        config: dict[str, Any],
+        input_data: Any,
+        runner_context: dict[str, Any] | None = None,
+    ) -> Any:
+        max_attempts = self._max_runner_attempts(config)
+        last_exception: Exception | None = None
+
+        for attempt in range(max_attempts):
+            try:
+                return runner.run(
+                    config=config,
+                    input_data=input_data,
+                    context=runner_context or {},
+                )
+            except Exception as exc:
+                last_exception = exc
+                if attempt < max_attempts - 1:
+                    time.sleep(1)
+
+        if last_exception is not None:
+            raise last_exception
+
+        return None
+
+    def _continue_after_node_failure(
+        self,
+        *,
+        context: ExecutionContext,
+        node_id: str,
+        node_type: str,
+        input_data: Any,
+        exc: Exception,
+    ) -> Any:
+        context.node_outputs[node_id] = input_data
+        context.node_states[node_id] = "failed"
+        context.pending_inputs[node_id] = []
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type=node_type,
+            status="FAILED",
+            input_data=input_data,
+            output_data=input_data,
+            error_message=to_user_friendly_error_message(
+                exc,
+                node_type=node_type,
+            ),
+        )
+        return input_data
 
     @staticmethod
     def _resolve_templates(
@@ -1048,49 +1131,70 @@ class DagExecutor:
             status="RUNNING",
             input_data=resolved_input,
         )
+        continued_after_failure = False
         try:
-            output_data = runner.run(config=config, input_data=resolved_input, context=context.runner_context)
+            output_data = self._run_with_retries(
+                runner=runner,
+                config=config,
+                input_data=resolved_input,
+                runner_context=context.runner_context,
+            )
         except Exception as exc:
+            if self._should_continue_on_error(config):
+                output_data = self._continue_after_node_failure(
+                    context=context,
+                    node_id=node_id,
+                    node_type=node_type,
+                    input_data=resolved_input,
+                    exc=exc,
+                )
+                continued_after_failure = True
+            else:
+                self._emit_node_progress(
+                    node_id=node_id,
+                    node_type=node_type,
+                    status="FAILED",
+                    input_data=resolved_input,
+                    error_message=to_user_friendly_error_message(
+                        exc,
+                        node_type=node_type,
+                    ),
+                )
+                raise NodeExecutionError(
+                    node_id=node_id,
+                    node_type=node_type,
+                    input_data=resolved_input,
+                    original_exception=exc,
+                ) from exc
+
+        if not continued_after_failure:
+            output_data = self._preserve_internal_fields(
+                node_type=node_type,
+                input_data=resolved_input,
+                output_data=output_data,
+            )
+            context.node_outputs[node_id] = output_data
+            context.visited_nodes.append(node_id)
+            context.node_states[node_id] = "completed"
+            self._seed_cycle_non_cycle_inputs(context=context, node_id=node_id)
+            context.pending_inputs[node_id] = []
             self._emit_node_progress(
                 node_id=node_id,
                 node_type=node_type,
-                status="FAILED",
+                status="SUCCEEDED",
                 input_data=resolved_input,
-                error_message=to_user_friendly_error_message(
-                    exc,
-                    node_type=node_type,
-                ),
+                output_data=output_data,
             )
-            raise NodeExecutionError(
-                node_id=node_id,
-                node_type=node_type,
-                input_data=resolved_input,
-                original_exception=exc,
-            ) from exc
-        
-        output_data = self._preserve_internal_fields(
-            node_type=node_type,
-            input_data=resolved_input,
-            output_data=output_data,
-        )
-        context.node_outputs[node_id] = output_data
-        context.visited_nodes.append(node_id)
-        context.node_states[node_id] = "completed"
-        self._seed_cycle_non_cycle_inputs(context=context, node_id=node_id)
-        context.pending_inputs[node_id] = []
-        self._emit_node_progress(
-            node_id=node_id,
-            node_type=node_type,
-            status="SUCCEEDED",
-            input_data=resolved_input,
-            output_data=output_data,
-        )
 
-        selected_edges, blocked_edges = self._select_next_edges(
-            node_type=node_type,
-            output_data=output_data,
-            outgoing_edges=context.outgoing_edges.get(node_id, []),
-        )
+        if continued_after_failure and node_type in BRANCHING_NODE_TYPES:
+            selected_edges = context.outgoing_edges.get(node_id, [])
+            blocked_edges = []
+        else:
+            selected_edges, blocked_edges = self._select_next_edges(
+                node_type=node_type,
+                output_data=output_data,
+                outgoing_edges=context.outgoing_edges.get(node_id, []),
+            )
 
         # For branching nodes, mark untaken paths immediately before traversing
         # selected paths so downstream joins (especially deferred merge resumes)
@@ -1287,8 +1391,29 @@ class DagExecutor:
             input_data=input_data,
         )
         try:
-            split_outputs = runner.run(config=config, input_data=input_data)
+            split_outputs = self._run_with_retries(
+                runner=runner,
+                config=config,
+                input_data=input_data,
+                runner_context=context.runner_context,
+            )
         except Exception as exc:
+            if self._should_continue_on_error(config):
+                next_input = self._continue_after_node_failure(
+                    context=context,
+                    node_id=node_id,
+                    node_type="split_in",
+                    input_data=input_data,
+                    exc=exc,
+                )
+                for edge in context.outgoing_edges.get(node_id, []):
+                    self._execute_from_node(
+                        context=context,
+                        node_id=edge["target"],
+                        input_data=next_input,
+                        target_handle=edge.get("targetHandle"),
+                    )
+                return
             self._emit_node_progress(
                 node_id=node_id,
                 node_type="split_in",
@@ -1369,46 +1494,67 @@ class DagExecutor:
             status="RUNNING",
             input_data=input_data,
         )
+        continued_after_failure = False
         try:
-            output_data = runner.run(config=config, input_data=input_data, context=context.runner_context)
+            output_data = self._run_with_retries(
+                runner=runner,
+                config=config,
+                input_data=input_data,
+                runner_context=context.runner_context,
+            )
         except Exception as exc:
+            if self._should_continue_on_error(config):
+                output_data = self._continue_after_node_failure(
+                    context=context,
+                    node_id=node_id,
+                    node_type=node_type,
+                    input_data=input_data,
+                    exc=exc,
+                )
+                continued_after_failure = True
+            else:
+                self._emit_node_progress(
+                    node_id=node_id,
+                    node_type=node_type,
+                    status="FAILED",
+                    input_data=input_data,
+                    error_message=to_user_friendly_error_message(
+                        exc,
+                        node_type=node_type,
+                    ),
+                )
+                raise NodeExecutionError(
+                    node_id=node_id,
+                    node_type=node_type,
+                    input_data=input_data,
+                    original_exception=exc,
+                ) from exc
+
+        if not continued_after_failure:
+            output_data = self._preserve_internal_fields(
+                node_type=node_type,
+                input_data=input_data,
+                output_data=output_data,
+            )
+            context.node_outputs[node_id] = output_data
+            context.visited_nodes.append(node_id)
+            context.node_states[node_id] = "completed"
             self._emit_node_progress(
                 node_id=node_id,
                 node_type=node_type,
-                status="FAILED",
+                status="SUCCEEDED",
                 input_data=input_data,
-                error_message=to_user_friendly_error_message(
-                    exc,
-                    node_type=node_type,
-                ),
+                output_data=output_data,
             )
-            raise NodeExecutionError(
-                node_id=node_id,
-                node_type=node_type,
-                input_data=input_data,
-                original_exception=exc,
-            ) from exc
-        output_data = self._preserve_internal_fields(
-            node_type=node_type,
-            input_data=input_data,
-            output_data=output_data,
-        )
-        context.node_outputs[node_id] = output_data
-        context.visited_nodes.append(node_id)
-        context.node_states[node_id] = "completed"
-        self._emit_node_progress(
-            node_id=node_id,
-            node_type=node_type,
-            status="SUCCEEDED",
-            input_data=input_data,
-            output_data=output_data,
-        )
 
-        selected_edges, _blocked_edges = self._select_next_edges(
-            node_type=node_type,
-            output_data=output_data,
-            outgoing_edges=context.outgoing_edges.get(node_id, []),
-        )
+        if continued_after_failure and node_type in BRANCHING_NODE_TYPES:
+            selected_edges = context.outgoing_edges.get(node_id, [])
+        else:
+            selected_edges, _blocked_edges = self._select_next_edges(
+                node_type=node_type,
+                output_data=output_data,
+                outgoing_edges=context.outgoing_edges.get(node_id, []),
+            )
 
         next_input = self._strip_internal_fields(output_data)
         for edge in selected_edges:
@@ -1438,8 +1584,29 @@ class DagExecutor:
             input_data=collected_inputs,
         )
         try:
-            output_data = runner.run(config=config, input_data=collected_inputs)
+            output_data = self._run_with_retries(
+                runner=runner,
+                config=config,
+                input_data=collected_inputs,
+                runner_context=context.runner_context,
+            )
         except Exception as exc:
+            if self._should_continue_on_error(config):
+                output_data = self._continue_after_node_failure(
+                    context=context,
+                    node_id=node_id,
+                    node_type="split_out",
+                    input_data=collected_inputs,
+                    exc=exc,
+                )
+                next_input = self._strip_internal_fields(output_data)
+                for edge in context.outgoing_edges.get(node_id, []):
+                    self._execute_from_node(
+                        context=context,
+                        node_id=edge["target"],
+                        input_data=next_input,
+                    )
+                return
             self._emit_node_progress(
                 node_id=node_id,
                 node_type="split_out",
@@ -1520,8 +1687,30 @@ class DagExecutor:
             input_data=merge_payloads,
         )
         try:
-            output_data = runner.run(config=config, input_data=merge_inputs)
+            output_data = self._run_with_retries(
+                runner=runner,
+                config=config,
+                input_data=merge_inputs,
+                runner_context=context.runner_context,
+            )
         except Exception as exc:
+            if self._should_continue_on_error(config):
+                output_data = self._continue_after_node_failure(
+                    context=context,
+                    node_id=node_id,
+                    node_type="merge",
+                    input_data=merge_payloads,
+                    exc=exc,
+                )
+                next_input = self._strip_internal_fields(output_data)
+                for edge in context.outgoing_edges.get(node_id, []):
+                    self._execute_from_node(
+                        context=context,
+                        node_id=edge["target"],
+                        input_data=next_input,
+                        target_handle=edge.get("targetHandle"),
+                    )
+                return
             self._emit_node_progress(
                 node_id=node_id,
                 node_type="merge",
@@ -1681,7 +1870,10 @@ class DagExecutor:
         return split_out_candidates[0]
 
     @staticmethod
-    def _strip_internal_fields(output_data: dict[str, Any]) -> dict[str, Any]:
+    def _strip_internal_fields(output_data: Any) -> Any:
+        if not isinstance(output_data, dict):
+            return output_data
+
         return {
             key: value
             for key, value in output_data.items()
