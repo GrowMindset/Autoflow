@@ -930,6 +930,13 @@ const hasExpressionDraftValue = (value: any): boolean => {
   return true;
 };
 
+const EXPRESSION_TOKEN_PATTERN = /\{\{[\s\S]*\}\}/;
+
+const hasExpressionToken = (value: any): boolean => {
+  if (typeof value !== 'string') return false;
+  return EXPRESSION_TOKEN_PATTERN.test(value);
+};
+
 const FULL_MUSTACHE_PATTERN = /^\{\{\s*([\s\S]*?)\s*\}\}$/;
 const ANY_MUSTACHE_PATTERN = /\{\{\s*[\s\S]*?\s*\}\}/;
 
@@ -1612,10 +1619,37 @@ const ConfigForm: React.FC<ConfigFormProps> = ({
     let fixedValue = hasFixed ? rawFieldValues.fixed : activeValue;
     let expressionValue = hasExpression ? rawFieldValues.expression : '';
 
+    const shouldAutoSwitchToExpression = (
+      mode === 'fixed'
+      && hasExpressionToken(nextValue)
+    );
+
     if (mode === 'fixed') {
       fixedValue = nextValue;
     } else {
       expressionValue = nextValue;
+    }
+
+    if (shouldAutoSwitchToExpression) {
+      const nextModeByField = {
+        ...(isPlainObject(config[PARAMETER_MODE_META_KEYS.modeByField])
+          ? config[PARAMETER_MODE_META_KEYS.modeByField]
+          : {}),
+        [fieldKey]: 'expression',
+      };
+
+      applyConfigPatch({
+        [PARAMETER_MODE_META_KEYS.modeByField]: nextModeByField,
+        [PARAMETER_MODE_META_KEYS.valuesByField]: {
+          ...rawValuesByField,
+          [fieldKey]: {
+            fixed: fixedValue,
+            expression: nextValue,
+          },
+        },
+        [fieldKey]: nextValue,
+      });
+      return;
     }
 
     applyConfigPatch({
