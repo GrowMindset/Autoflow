@@ -80,20 +80,22 @@ const JsonTree: React.FC<JsonTreeProps> = ({ data, path = '', isRoot = true }) =
   }
 
   return (
-    <div className={`font-mono text-xs ${isRoot ? 'p-1' : 'ml-4'}`}>
+    <div className={`font-mono text-xs ${isRoot ? 'p-1.5' : 'ml-4'}`}>
       <div
-        className="flex items-center gap-1 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 rounded select-none"
+        className="flex items-center gap-1.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 rounded-md px-1.5 py-1 select-none"
         onClick={() => setIsExpanded(!isExpanded)}
       >
         <span className="text-slate-400 dark:text-slate-600 w-3 inline-block text-[10px]">
           {isExpanded ? '▼' : '▶'}
         </span>
-        <span className="text-slate-600 dark:text-slate-400 font-bold">{isArray ? 'Array' : 'Object'}</span>
-        <span className="text-slate-400 dark:text-slate-600 text-[10px]">({keys.length} items)</span>
+        <span className="inline-flex items-center rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+          {isArray ? 'Array' : 'Object'}
+        </span>
+        <span className="text-slate-400 dark:text-slate-500 text-[10px]">{keys.length} item{keys.length === 1 ? '' : 's'}</span>
       </div>
 
       {isExpanded && (
-        <div className="mt-1 border-l border-slate-200 dark:border-slate-800 ml-1.5 pl-3 space-y-1">
+        <div className="mt-1 border-l border-slate-200 dark:border-slate-800 ml-2 pl-3 space-y-1">
           {keys.map((key) => {
             const currentPath = path ? `${path}.${key}` : key;
             const ph = `{{${currentPath}}}`;
