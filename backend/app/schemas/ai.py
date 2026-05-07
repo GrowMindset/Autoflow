@@ -36,7 +36,8 @@ class AIErrorDetail(BaseModel):
     message: str
 
 
-AssistantMode = Literal["clarify", "generate", "modify"]
+AssistantMode = Literal["clarify", "generate", "modify", "ask"]
+AssistantInteractionMode = Literal["build", "ask"]
 
 
 class ClarificationQuestion(BaseModel):
@@ -45,14 +46,21 @@ class ClarificationQuestion(BaseModel):
     reason: str = Field(min_length=1, max_length=240)
 
 
+class ConversationMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2000)
+
+
 class ConversationState(BaseModel):
     confirmed_choices: dict[str, Any] = Field(default_factory=dict)
     assumptions: list[str] = Field(default_factory=list)
+    recent_messages: list[ConversationMessage] = Field(default_factory=list, max_length=20)
     last_mode: AssistantMode | None = None
 
 
 class WorkflowAssistantRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
+    interaction_mode: AssistantInteractionMode = "build"
     current_definition: WorkflowDefinition | None = None
     conversation_state: ConversationState = Field(default_factory=ConversationState)
 

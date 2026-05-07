@@ -5,7 +5,8 @@ export interface WorkflowDefinition {
   edges: any[];
 }
 
-export type AssistantMode = 'clarify' | 'generate' | 'modify';
+export type AssistantMode = 'clarify' | 'generate' | 'modify' | 'ask';
+export type AssistantInteractionMode = 'build' | 'ask';
 
 export interface ClarificationQuestion {
   id: string;
@@ -16,6 +17,7 @@ export interface ClarificationQuestion {
 export interface ConversationState {
   confirmedChoices: Record<string, string>;
   assumptions: string[];
+  recentMessages: Array<{ role: 'user' | 'assistant'; content: string }>;
   lastMode?: AssistantMode;
 }
 
@@ -71,6 +73,7 @@ interface AssistantApiResponse {
 interface AssistantApiConversationState {
   confirmed_choices?: Record<string, string>;
   assumptions?: string[];
+  recent_messages?: Array<{ role?: string; content?: string }>;
   last_mode?: AssistantMode;
 }
 
@@ -149,6 +152,7 @@ class AIService {
     prompt: string,
     currentWorkflow?: WorkflowDefinition,
     conversationState?: ConversationState,
+    interactionMode: AssistantInteractionMode = 'build',
   ): Promise<AIResponse> {
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) {
@@ -160,6 +164,15 @@ class AIService {
     const statePayload: AssistantApiConversationState = {
       confirmed_choices: conversationState?.confirmedChoices || {},
       assumptions: conversationState?.assumptions || [],
+      recent_messages: Array.isArray(conversationState?.recentMessages)
+        ? conversationState?.recentMessages
+            .slice(-12)
+            .map((item) => ({
+              role: item?.role === 'assistant' ? 'assistant' : 'user',
+              content: String(item?.content || '').trim().slice(0, 500),
+            }))
+            .filter((item) => Boolean(item.content))
+        : [],
       last_mode: conversationState?.lastMode,
     };
 
@@ -167,6 +180,7 @@ class AIService {
       '/ai/workflow-assistant',
       {
         prompt: contextualPrompt,
+        interaction_mode: interactionMode,
         current_definition: currentWorkflow,
         conversation_state: statePayload,
       },
@@ -197,11 +211,16 @@ class AIService {
     const normalizedMessage = String(response.data?.assistant_message || '').trim();
     const fallbackMessage = mode === 'clarify'
       ? 'I need a little more workflow detail before generating.'
-      : 'Workflow generated from backend AI service.';
+      : mode === 'ask'
+        ? 'Here is Autoflow guidance based on your question.'
+        : 'Workflow generated from backend AI service.';
 
     const nextConversationState: ConversationState = {
       confirmedChoices: conversationState?.confirmedChoices || {},
       assumptions,
+      recentMessages: Array.isArray(conversationState?.recentMessages)
+        ? conversationState.recentMessages
+        : [],
       lastMode: mode,
     };
 
@@ -224,8 +243,14 @@ class AIService {
       return {
         confirmedChoices: {},
         assumptions: [],
+        recentMessages: [],
       };
     }
+
+    const rawRecentMessages =
+      Array.isArray(rawState.recentMessages) ? rawState.recentMessages :
+      Array.isArray(rawState.recent_messages) ? rawState.recent_messages :
+      [];
 
     return {
       confirmedChoices: rawState.confirmedChoices && typeof rawState.confirmedChoices === 'object'
@@ -234,7 +259,14 @@ class AIService {
       assumptions: Array.isArray(rawState.assumptions)
         ? rawState.assumptions.map((item: unknown) => String(item || '').trim()).filter(Boolean)
         : [],
-      lastMode: (rawState.lastMode === 'clarify' || rawState.lastMode === 'generate' || rawState.lastMode === 'modify')
+      recentMessages: rawRecentMessages
+        .map((item: any) => ({
+          role: item?.role === 'assistant' ? 'assistant' : 'user',
+          content: String(item?.content || '').trim(),
+        }))
+        .filter((item: any) => Boolean(item.content))
+        .slice(-12),
+      lastMode: (rawState.lastMode === 'clarify' || rawState.lastMode === 'generate' || rawState.lastMode === 'modify' || rawState.lastMode === 'ask')
         ? rawState.lastMode
         : undefined,
     };
@@ -258,7 +290,7 @@ class AIService {
       timestamp,
     };
 
-    if (rawMessage.mode === 'clarify' || rawMessage.mode === 'generate' || rawMessage.mode === 'modify') {
+    if (rawMessage.mode === 'clarify' || rawMessage.mode === 'generate' || rawMessage.mode === 'modify' || rawMessage.mode === 'ask') {
       normalized.mode = rawMessage.mode;
     }
 
@@ -340,6 +372,15 @@ class AIService {
         conversation_state: {
           confirmedChoices: conversationState?.confirmedChoices || {},
           assumptions: conversationState?.assumptions || [],
+          recentMessages: Array.isArray(conversationState?.recentMessages)
+            ? conversationState.recentMessages
+                .slice(-12)
+                .map((item) => ({
+                  role: item?.role === 'assistant' ? 'assistant' : 'user',
+                  content: String(item?.content || '').trim().slice(0, 500),
+                }))
+                .filter((item) => Boolean(item.content))
+            : [],
           lastMode: conversationState?.lastMode,
         },
       },

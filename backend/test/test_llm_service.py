@@ -512,6 +512,39 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(definition.nodes[0].config["rules"][0]["interval"], "minutes")
         self.assertEqual(definition.nodes[0].config["rules"][0]["every"], 15)
 
+    def test_validate_generated_workflow_infers_webhook_trigger_for_event_prompt(self) -> None:
+        payload = _valid_definition()
+        payload["nodes"][0]["type"] = "manual_trigger"
+        payload["nodes"][0]["config"] = {}
+
+        definition, _ = LLMService.validate_generated_workflow(
+            json.dumps(payload),
+            user_prompt="When a new order event arrives from Shopify API, send Telegram alert",
+        )
+
+        self.assertEqual(definition.nodes[0].type, "webhook_trigger")
+        self.assertEqual(definition.nodes[0].config["method"], "POST")
+        self.assertTrue(str(definition.nodes[0].config["path"]).strip())
+
+    def test_validate_generated_workflow_infers_form_trigger_and_fields_for_lead_prompt(self) -> None:
+        payload = _valid_definition()
+        payload["nodes"][0]["type"] = "manual_trigger"
+        payload["nodes"][0]["config"] = {}
+
+        definition, _ = LLMService.validate_generated_workflow(
+            json.dumps(payload),
+            user_prompt="When a lead submits name, email and phone, send Telegram message",
+        )
+
+        self.assertEqual(definition.nodes[0].type, "form_trigger")
+        fields = definition.nodes[0].config.get("fields") or []
+        field_names = {
+            str(item.get("name") or "").strip()
+            for item in fields
+            if isinstance(item, dict)
+        }
+        self.assertTrue({"name", "email", "phone"}.issubset(field_names))
+
     def test_validate_generated_workflow_prefers_groq_chat_model_when_prompt_mentions_groq(self) -> None:
         payload = _definition_for_prompt_kind("manual_ai_agent_openai")
 
@@ -539,6 +572,54 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         definition, _ = LLMService.validate_generated_workflow(json.dumps(payload))
 
         self.assertEqual(definition.nodes[1].config["message"], "Hi {{form.email}}")
+
+    def test_validate_generated_workflow_normalizes_ai_agent_structured_output_paths(self) -> None:
+        payload = _definition_for_prompt_kind("manual_ai_agent_openai")
+        payload["nodes"].append(
+            {
+                "id": "n4",
+                "type": "telegram",
+                "label": "Send Telegram Message",
+                "position": {"x": 640, "y": 150},
+                "config": {
+                    "credential_id": "",
+                    "message": (
+                        "Summary {{n2.summary}} | "
+                        "Sentiment {{$node[\"n2\"].json.sentiment}} | "
+                        "Decision {{n2.output.decision}} | "
+                        "Classification {{$node[\"n2\"].json.output.classification}} | "
+                        "Ticket {{n2.ticket_id}} | "
+                        "Local {{output.summary}}"
+                    ),
+                    "image": "",
+                    "parse_mode": "",
+                },
+            }
+        )
+        payload["edges"].append(
+            {
+                "id": "e3",
+                "source": "n2",
+                "target": "n4",
+                "sourceHandle": None,
+                "targetHandle": None,
+                "branch": None,
+            }
+        )
+
+        definition, _ = LLMService.validate_generated_workflow(json.dumps(payload))
+        telegram_node = next(node for node in definition.nodes if node.id == "n4")
+        message = str(telegram_node.config.get("message") or "")
+
+        self.assertIn("{{output.summary}}", message)
+        self.assertIn("{{output.sentiment}}", message)
+        self.assertIn("{{output.decision}}", message)
+        self.assertIn("{{output.classification}}", message)
+        self.assertIn("{{n2.ticket_id}}", message)
+        self.assertNotIn("{{n2.summary}}", message)
+        self.assertNotIn("{{$node[\"n2\"].json.sentiment}}", message)
+        self.assertNotIn("{{n2.output.decision}}", message)
+        self.assertNotIn("{{$node[\"n2\"].json.output.classification}}", message)
 
     def test_validate_generated_workflow_rejects_trigger_only_for_actionable_prompt(self) -> None:
         payload = {
@@ -747,6 +828,37 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("does not fan out enough branches", str(context.exception))
 
+    def test_validate_generated_workflow_rejects_overly_complex_simple_request(self) -> None:
+        payload = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "label": "Start", "position": {"x": 0, "y": 0}, "config": {}},
+                {"id": "n2", "type": "filter", "label": "Filter 1", "position": {"x": 180, "y": 0}, "config": {"input_key": "", "field": "", "operator": "equals", "value": ""}},
+                {"id": "n3", "type": "aggregate", "label": "Aggregate", "position": {"x": 360, "y": 0}, "config": {"input_key": "", "field": "", "operation": "count", "output_key": "count"}},
+                {"id": "n4", "type": "delay", "label": "Delay", "position": {"x": 540, "y": 0}, "config": {"amount": "1", "unit": "minutes", "until_datetime": ""}},
+                {"id": "n5", "type": "merge", "label": "Merge", "position": {"x": 720, "y": 0}, "config": {"mode": "append", "input_count": 2, "output_key": "merged"}},
+                {"id": "n6", "type": "filter", "label": "Filter 2", "position": {"x": 900, "y": 0}, "config": {"input_key": "", "field": "", "operator": "equals", "value": ""}},
+                {"id": "n7", "type": "telegram", "label": "Notify", "position": {"x": 1080, "y": 0}, "config": {"credential_id": "", "message": "hello", "parse_mode": ""}},
+                {"id": "n8", "type": "create_google_docs", "label": "Doc", "position": {"x": 1260, "y": 0}, "config": {"credential_id": "", "title": "log", "initial_content": ""}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+                {"id": "e3", "source": "n3", "target": "n4"},
+                {"id": "e4", "source": "n4", "target": "n5"},
+                {"id": "e5", "source": "n5", "target": "n6"},
+                {"id": "e6", "source": "n6", "target": "n7"},
+                {"id": "e7", "source": "n7", "target": "n8"},
+            ],
+        }
+
+        with self.assertRaises(WorkflowGenerationError) as context:
+            LLMService.validate_generated_workflow(
+                json.dumps(payload),
+                user_prompt="Send a Telegram message when I run the workflow manually",
+            )
+
+        self.assertIn("unnecessarily complex", str(context.exception))
+
     def test_validate_generated_workflow_accepts_trigger_fanout_for_multi_channel_prompt(self) -> None:
         payload = {
             "nodes": [
@@ -806,6 +918,220 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(result["questions"]), 1)
         self.assertIsNone(result["definition"])
 
+    async def test_assist_workflow_ask_mode_returns_guidance_without_definition(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        service._answer_autoflow_question = AsyncMock(  # type: ignore[attr-defined]
+            return_value="Use webhook_trigger for API events and map values with {{payload.field}}."
+        )
+        service.generate_workflow_definition = AsyncMock()
+
+        result = await service.assist_workflow(
+            prompt="Which trigger is best for incoming API payloads?",
+            interaction_mode="ask",
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIsNone(result["definition"])
+        self.assertIn("webhook_trigger", result["assistant_message"])
+        service._answer_autoflow_question.assert_awaited_once()
+        service.generate_workflow_definition.assert_not_awaited()
+
+    async def test_assist_workflow_ask_mode_uses_local_fallback_on_llm_error(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        current_definition = WorkflowDefinition.model_validate(_valid_definition())
+
+        result = await service.assist_workflow(
+            prompt="give the brief of this workflow and also provide upgrades",
+            interaction_mode="ask",
+            current_definition=current_definition,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIsNone(result["definition"])
+        self.assertIn("Workflow Brief:", result["assistant_message"])
+        self.assertIn("Suggested Upgrades:", result["assistant_message"])
+
+    async def test_assist_workflow_ask_mode_returns_routing_steps_and_parameters(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "form_trigger",
+                        "label": "Form Trigger",
+                        "position": {"x": 100, "y": 120},
+                        "config": NODE_CONFIG_DEFAULTS["form_trigger"],
+                    },
+                    {
+                        "id": "n2",
+                        "type": "ai_agent",
+                        "label": "Classify Input",
+                        "position": {"x": 340, "y": 120},
+                        "config": {
+                            "system_prompt": "Classify request",
+                            "command": "Return summary and sentiment",
+                            "response_enhancement": "off",
+                        },
+                    },
+                    {
+                        "id": "n3",
+                        "type": "chat_model_openai",
+                        "label": "OpenAI Chat Model",
+                        "position": {"x": 340, "y": 320},
+                        "config": NODE_CONFIG_DEFAULTS["chat_model_openai"],
+                    },
+                    {
+                        "id": "n4",
+                        "type": "image_gen",
+                        "label": "Image Gen",
+                        "position": {"x": 580, "y": 120},
+                        "config": {
+                            "credential_id": "",
+                            "model": "dall-e-3",
+                            "prompt": "Generate image for {{output.summary}}",
+                            "size": "1024x1024",
+                            "quality": "standard",
+                            "style": "vivid",
+                        },
+                    },
+                    {
+                        "id": "n5",
+                        "type": "linkedin",
+                        "label": "LinkedIn",
+                        "position": {"x": 820, "y": 120},
+                        "config": {
+                            "credential_id": "",
+                            "post_text": "{{output.summary}}",
+                            "image": "{{n4.image_url}}",
+                            "visibility": "PUBLIC",
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "n1", "target": "n2"},
+                    {"id": "e2", "source": "n3", "target": "n2", "targetHandle": "chat_model"},
+                    {"id": "e3", "source": "n2", "target": "n4"},
+                    {"id": "e4", "source": "n4", "target": "n5"},
+                ],
+            }
+        )
+
+        result = await service.assist_workflow(
+            prompt=(
+                "Add explicit routing logic (if_else/switch) so priority, sentiment, or category paths are handled clearly. "
+                "what are steps to implement this and at which place this will come also give the parameters"
+            ),
+            interaction_mode="ask",
+            current_definition=current_definition,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIsNone(result["definition"])
+        self.assertIn("Where to place it:", result["assistant_message"])
+        self.assertIn("Implementation Steps:", result["assistant_message"])
+        self.assertIn("if_else parameters", result["assistant_message"])
+        self.assertIn("switch parameters", result["assistant_message"])
+        self.assertIn("output.sentiment", result["assistant_message"])
+
+    async def test_assist_workflow_ask_mode_answers_http_node_question_directly(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "webhook_trigger",
+                        "label": "Receive Support Request",
+                        "position": {"x": 100, "y": 120},
+                        "config": {"path": "support/inbound", "method": "POST"},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "http_request",
+                        "label": "Send To CRM API",
+                        "position": {"x": 360, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["http_request"],
+                            "method": "POST",
+                            "url": "https://api.example.com/tickets",
+                            "auth_mode": "bearer",
+                            "body_type": "json",
+                            "body_json": "{\"ticket_id\":\"{{ticket_id}}\",\"summary\":\"{{output.summary}}\"}",
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "n1", "target": "n2"},
+                ],
+            }
+        )
+
+        result = await service.assist_workflow(
+            prompt="read flow and give idea what is this HTTP node and what i have to send and where i have to send",
+            interaction_mode="ask",
+            current_definition=current_definition,
+            conversation_state={
+                "recent_messages": [
+                    {
+                        "role": "assistant",
+                        "content": "if_else parameters example: output.sentiment equals negative",
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIsNone(result["definition"])
+        self.assertIn("HTTP Node Overview:", result["assistant_message"])
+        self.assertIn("https://api.example.com/tickets", result["assistant_message"])
+        self.assertIn("What you have to send:", result["assistant_message"])
+        self.assertIn("Where to send:", result["assistant_message"])
+        self.assertNotIn("if_else parameters", result["assistant_message"])
+
+    async def test_assist_workflow_ask_mode_answers_merge_node_question(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "manual_trigger",
+                        "label": "Start",
+                        "position": {"x": 100, "y": 120},
+                        "config": {},
+                    },
+                    {
+                        "id": "merge_urgent_normal",
+                        "type": "merge",
+                        "label": "Join Urgent and Normal Save Path",
+                        "position": {"x": 340, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["merge"],
+                            "mode": "combine",
+                            "input_count": 2,
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "n1", "target": "merge_urgent_normal"},
+                ],
+            }
+        )
+
+        result = await service.assist_workflow(
+            prompt="what this Join Urgent and Normal Save Path node do and what parameters should i use",
+            interaction_mode="ask",
+            current_definition=current_definition,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIsNone(result["definition"])
+        self.assertIn("Node: merge", result["assistant_message"])
+        self.assertIn("Key parameters:", result["assistant_message"])
+        self.assertIn("mode", result["assistant_message"])
+        self.assertIn("input_count", result["assistant_message"])
+
     async def test_assist_workflow_generates_directly_for_clear_request(self) -> None:
         fake_client = _FakeClient(
             responses=[json.dumps({"definition": _valid_definition()})]
@@ -839,6 +1165,36 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["mode"], "generate")
         self.assertEqual(result["questions"], [])
         service.generate_workflow_definition.assert_awaited_once()
+
+    async def test_assist_workflow_includes_recent_chat_context_in_generation_prompt(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        service.generate_workflow_definition = AsyncMock(
+            return_value=GeneratedWorkflowResult(
+                definition=WorkflowDefinition.model_validate(_valid_definition()),
+                name="Contextual Flow",
+            )
+        )
+
+        await service.assist_workflow(
+            prompt="Add a delay before telegram send",
+            conversation_state={
+                "recent_messages": [
+                    {"role": "user", "content": "Use webhook trigger and validate payload"},
+                    {"role": "assistant", "content": "Noted. We can use webhook + code node."},
+                ],
+            },
+        )
+
+        generated_prompt = service.generate_workflow_definition.await_args.args[0]
+        self.assertIn("Recent chat context:", generated_prompt)
+        self.assertIn("user: Use webhook trigger and validate payload", generated_prompt)
+
+    def test_sanitize_ask_response_format_removes_markdown_bold_markers(self) -> None:
+        raw = "**Workflow Brief**\n* First step\n**Parameters**: Use field."
+        sanitized = LLMService._sanitize_ask_response_format(raw)
+        self.assertNotIn("**", sanitized)
+        self.assertIn("Workflow Brief", sanitized)
+        self.assertIn("- First step", sanitized)
 
     def test_infer_requested_channels_handles_common_typos(self) -> None:
         requested = LLMService._infer_requested_channel_node_types(
@@ -964,3 +1320,4 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["mode"], "modify")
         self.assertIsInstance(result["change_summary"], str)
         self.assertTrue(result["change_summary"])
+        self.assertIsNone(result["name"])

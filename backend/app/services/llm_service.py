@@ -30,7 +30,10 @@ SHARED_OPERATORS = (
 
 AI_CHAT_MODEL_NODE_TYPES = {"chat_model_openai", "chat_model_groq"}
 TEMPLATE_SINGLE_BRACE_PATTERN = re.compile(r"(?<!\{)\{([a-zA-Z_][a-zA-Z0-9_.]*)\}(?!\})")
-SEQUENCE_DAYS_PATTERN = re.compile(r"\b(\d{1,2})\s*-\s*day\b|\b(\d{1,2})\s*day\b")
+TEMPLATE_DOUBLE_BRACE_PATTERN = re.compile(r"\{\{\s*(.+?)\s*\}\}")
+SEQUENCE_DAYS_PATTERN = re.compile(
+    r"\b(\d{1,2})\s*-\s*day(?:s)?\b|\b(\d{1,2})\s*day(?:s)?\b"
+)
 IMAGE_GENERATION_HINTS = (
     "generate image",
     "generate an image",
@@ -55,13 +58,21 @@ IMAGE_GENERATION_HINTS = (
 )
 
 TRIGGER_KEYWORD_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("workflow_trigger", ("workflow trigger", "from another workflow", "parent workflow")),
-    ("form_trigger", ("form", "submission", "submit", "user input form")),
-    ("webhook_trigger", ("webhook", "endpoint", "api call", "http request", "callback")),
+    (
+        "workflow_trigger",
+        (
+            "workflow trigger",
+            "workflow_trigger",
+            "from another workflow",
+            "parent workflow",
+            "upstream workflow",
+        ),
+    ),
     (
         "schedule_trigger",
         (
-            "schedule",
+            "schedule trigger",
+            "schedule_trigger",
             "cron",
             "hourly",
             "daily",
@@ -71,7 +82,90 @@ TRIGGER_KEYWORD_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "each day",
         ),
     ),
-    ("manual_trigger", ("manual", "manually", "on demand", "run button")),
+    (
+        "form_trigger",
+        (
+            "form trigger",
+            "form_trigger",
+            "form submission",
+            "submit form",
+            "lead form",
+            "contact form",
+            "registration form",
+            "survey form",
+            "application form",
+            "feedback form",
+            "user input form",
+        ),
+    ),
+    (
+        "webhook_trigger",
+        (
+            "webhook",
+            "webhook trigger",
+            "webhook_trigger",
+            "endpoint",
+            "api call",
+            "http request",
+            "callback",
+            "incoming event",
+            "incoming payload",
+            "from api",
+        ),
+    ),
+    (
+        "manual_trigger",
+        (
+            "manual trigger",
+            "manual_trigger",
+            "manually",
+            "run manually",
+            "on demand",
+            "run button",
+            "click run",
+            "test run",
+        ),
+    ),
+)
+
+EVENT_LANGUAGE_HINTS = (
+    " when ",
+    "whenever",
+    "upon ",
+    " on new ",
+    "on each ",
+    "once ",
+)
+
+FORM_INTENT_HINTS = (
+    "lead",
+    "signup",
+    "sign up",
+    "registration",
+    "register",
+    "contact us",
+    "feedback",
+    "survey",
+    "application",
+    "form",
+    "submission",
+)
+
+WEBHOOK_SOURCE_HINTS = (
+    "website",
+    "api",
+    "app",
+    "service",
+    "system",
+    "crm",
+    "erp",
+    "shopify",
+    "stripe",
+    "hubspot",
+    "salesforce",
+    "callback",
+    "payload",
+    "event",
 )
 
 ASSISTANT_ACTION_HINTS = (
@@ -215,6 +309,21 @@ CHANNEL_DISPLAY_NAMES: dict[str, str] = {
     "linkedin": "LinkedIn",
     "create_google_sheets": "Google Sheets",
     "create_google_docs": "Google Docs",
+}
+
+AI_AGENT_STRUCTURED_OUTPUT_KEYS = {
+    "summary",
+    "sentiment",
+    "urgency_reason",
+    "recommended_next_action",
+    "confidence_score",
+    "category",
+    "intent",
+    "label",
+    "classification",
+    "analysis",
+    "reason",
+    "score",
 }
 
 NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
@@ -462,6 +571,8 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
             "Put the main task instruction in command.",
             "Use system_prompt for role or behavior instructions.",
             "response_enhancement can be auto, always, or off.",
+            "Structured AI results are returned under output (for example output.summary, output.sentiment).",
+            "When referencing structured AI results downstream, prefer {{output.some_key}}.",
             "When referencing upstream workflow data, use {{path.to.value}} templates.",
             "For form triggers, both {{field_name}} and {{form.field_name}} are supported.",
         ],
@@ -599,6 +710,7 @@ class LLMService:
         self,
         *,
         prompt: str,
+        interaction_mode: str = "build",
         current_definition: WorkflowDefinition | None = None,
         conversation_state: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -606,15 +718,41 @@ class LLMService:
         if not cleaned_prompt:
             raise WorkflowGenerationError("Prompt must not be empty.")
 
+        normalized_interaction_mode = str(interaction_mode or "build").strip().lower()
+        if normalized_interaction_mode not in {"build", "ask"}:
+            normalized_interaction_mode = "build"
+
         state = conversation_state or {}
         confirmed_choices = state.get("confirmed_choices")
         existing_assumptions = self._sanitize_string_list(state.get("assumptions"))
+        recent_messages = self._sanitize_recent_messages(state.get("recent_messages"))
         last_mode = str(state.get("last_mode") or "").strip().lower() or None
 
         prompt_with_choices = self._merge_confirmed_choices_into_prompt(
             cleaned_prompt,
             confirmed_choices=confirmed_choices,
         )
+        direct_question_prompt = prompt_with_choices
+        prompt_with_choices = self._append_recent_chat_context_to_prompt(
+            prompt_with_choices,
+            recent_messages=recent_messages,
+        )
+        if normalized_interaction_mode == "ask":
+            assistant_message = await self._answer_autoflow_question(
+                prompt_with_choices,
+                current_definition=current_definition,
+                question_text=direct_question_prompt,
+            )
+            return {
+                "mode": "ask",
+                "assistant_message": assistant_message,
+                "questions": [],
+                "assumptions": existing_assumptions,
+                "definition": None,
+                "name": None,
+                "change_summary": None,
+            }
+
         is_modify_mode = (
             current_definition is not None
             and (
@@ -709,6 +847,7 @@ class LLMService:
                 previous_definition=current_definition,
                 updated_definition=safe_definition,
             )
+        returned_name = generated.name if mode != "modify" else None
 
         return {
             "mode": mode,
@@ -716,7 +855,7 @@ class LLMService:
             "questions": [],
             "assumptions": assumptions,
             "definition": safe_definition,
-            "name": generated.name,
+            "name": returned_name,
             "change_summary": change_summary,
         }
 
@@ -725,9 +864,9 @@ class LLMService:
         lowered = prompt.lower()
         prompt_word_count = len(re.findall(r"\b\w+\b", lowered))
 
-        trigger_known = cls._infer_trigger_type_from_prompt(prompt) is not None or any(
-            token in lowered for token in (" when ", "when ", "on new ", "on each ", "upon ")
-        )
+        inferred_trigger = cls._infer_trigger_type_from_prompt(prompt)
+        event_language_present = any(token in lowered for token in EVENT_LANGUAGE_HINTS)
+        trigger_known = inferred_trigger is not None
         action_known = any(token in lowered for token in ASSISTANT_ACTION_HINTS)
         requested_channels = cls._infer_requested_channel_node_types(lowered)
         channel_requested = bool(requested_channels) or any(
@@ -752,6 +891,10 @@ class LLMService:
         data_mapping_known = any(token in lowered for token in ASSISTANT_DATA_MAPPING_HINTS)
         multi_channel_requested = len(requested_channels) >= 2
         image_requested = cls._prompt_requests_image_generation(lowered)
+        default_trigger = cls._infer_default_trigger_from_prompt(
+            prompt=prompt,
+            inferred_trigger=inferred_trigger,
+        )
         has_actionable_signal = (
             action_known
             or channel_known
@@ -765,8 +908,17 @@ class LLMService:
         assumptions: list[str] = []
 
         if not trigger_known:
-            missing_logic_slots.append("trigger_type")
-            assumptions.append("Default trigger can be manual_trigger if not specified.")
+            if default_trigger and default_trigger != "manual_trigger":
+                assumptions.append(
+                    f"Start trigger inferred as {default_trigger} from your prompt context."
+                )
+            elif has_actionable_signal and event_language_present:
+                assumptions.append("Event-style intent detected; using webhook_trigger by default.")
+            else:
+                missing_logic_slots.append("trigger_type")
+                assumptions.append(
+                    "Default trigger can be manual_trigger only when the request is truly on-demand/test."
+                )
 
         if not action_known:
             missing_logic_slots.append("primary_action")
@@ -792,6 +944,13 @@ class LLMService:
         if not data_mapping_known:
             assumptions.append("Dynamic fields use safe placeholders like {{email}} and {{message}}.")
 
+        complexity_level = cls._classify_prompt_complexity(
+            prompt=prompt,
+            requested_channels=requested_channels,
+            branching_requested=branching_requested,
+            timing_requested=timing_requested,
+        )
+
         questions = cls._build_clarify_questions(missing_logic_slots)
         needs_clarification = not has_actionable_signal and prompt_word_count <= 6
         return {
@@ -813,6 +972,10 @@ class LLMService:
                 "requested_channels": sorted(requested_channels),
                 "image_requested": image_requested,
                 "has_actionable_signal": has_actionable_signal,
+                "inferred_trigger": inferred_trigger,
+                "default_trigger": default_trigger,
+                "event_language_present": event_language_present,
+                "complexity_level": complexity_level,
             },
         }
 
@@ -833,6 +996,9 @@ class LLMService:
             for item in (signals.get("requested_channels") or [])
             if str(item).strip()
         ]
+        inferred_trigger = str(signals.get("inferred_trigger") or "").strip()
+        default_trigger = str(signals.get("default_trigger") or "").strip()
+        complexity_level = str(signals.get("complexity_level") or "").strip()
         if requested_channels:
             rendered_channels = ", ".join(
                 CHANNEL_DISPLAY_NAMES.get(channel, channel)
@@ -840,12 +1006,29 @@ class LLMService:
             )
             inferred_lines.append(f"Use these requested channels: {rendered_channels}.")
 
-        if not bool(signals.get("trigger_known")):
-            inferred_lines.append("Use manual_trigger as default start unless explicitly specified otherwise.")
+        if inferred_trigger:
+            inferred_lines.append(f"Use {inferred_trigger} as the start trigger.")
+        elif default_trigger and default_trigger != "manual_trigger":
+            inferred_lines.append(
+                f"If trigger type is not explicit, use {default_trigger} based on user intent."
+            )
+        elif not bool(signals.get("trigger_known")):
+            inferred_lines.append(
+                "Use manual_trigger only if no event-based or schedule-based trigger is implied."
+            )
 
         if bool(signals.get("timing_known")) and bool(signals.get("multi_channel_requested")):
             inferred_lines.append(
                 "Treat this as a multi-step nurture/outreach flow and keep cadence aligned to requested timeline."
+            )
+
+        if complexity_level == "simple":
+            inferred_lines.append(
+                "Keep the workflow concise: only include nodes that are necessary to satisfy the request."
+            )
+        elif complexity_level == "complex":
+            inferred_lines.append(
+                "This is a complex request: include required routing/timing nodes, but avoid redundant steps."
             )
 
         if not inferred_lines:
@@ -879,6 +1062,10 @@ class LLMService:
             for item in requested_channels
         )
         inferred_trigger = cls._infer_trigger_type_from_prompt(prompt)
+        default_trigger = cls._infer_default_trigger_from_prompt(
+            prompt=prompt,
+            inferred_trigger=inferred_trigger,
+        )
 
         question_map: dict[str, tuple[str, str]] = {
             "trigger_type": (
@@ -887,7 +1074,12 @@ class LLMService:
                     f"I can start this with `{inferred_trigger}` based on your prompt. "
                     "Should I use that trigger, or switch to manual/webhook/form/schedule?"
                     if inferred_trigger
-                    else "How should this workflow start: manual, webhook, form, or schedule?"
+                    else (
+                        f"I can infer `{default_trigger}` as a good default start trigger. "
+                        "Should I use that, or switch to manual/webhook/form/schedule?"
+                        if default_trigger and default_trigger != "manual_trigger"
+                        else "How should this workflow start: manual, webhook, form, or schedule?"
+                    )
                 ),
             ),
             "primary_action": (
@@ -942,6 +1134,73 @@ class LLMService:
                 }
             )
         return questions
+
+    @classmethod
+    def _infer_default_trigger_from_prompt(
+        cls,
+        *,
+        prompt: str,
+        inferred_trigger: str | None = None,
+    ) -> str:
+        if inferred_trigger:
+            return inferred_trigger
+
+        lowered = prompt.lower()
+        has_event_language = any(token in lowered for token in EVENT_LANGUAGE_HINTS)
+        has_form_intent = any(token in lowered for token in FORM_INTENT_HINTS)
+        has_webhook_source = any(token in lowered for token in WEBHOOK_SOURCE_HINTS)
+        has_schedule_cadence = cls._extract_schedule_rule_from_prompt(prompt) is not None
+        has_sequence_window = bool(SEQUENCE_DAYS_PATTERN.search(lowered)) or any(
+            token in lowered for token in ("sequence", "follow-up", "follow up", "nurture", "campaign")
+        )
+
+        if has_schedule_cadence:
+            return "schedule_trigger"
+        if has_sequence_window and has_form_intent:
+            return "form_trigger"
+        if has_sequence_window and has_webhook_source:
+            return "webhook_trigger"
+        if has_sequence_window:
+            return "schedule_trigger"
+        if has_event_language and has_form_intent:
+            return "form_trigger"
+        if has_event_language and (has_webhook_source or any(token in lowered for token in ASSISTANT_ACTION_HINTS)):
+            return "webhook_trigger"
+        if has_form_intent and "form" in lowered:
+            return "form_trigger"
+        if has_webhook_source and has_event_language:
+            return "webhook_trigger"
+        return "manual_trigger"
+
+    @classmethod
+    def _classify_prompt_complexity(
+        cls,
+        *,
+        prompt: str,
+        requested_channels: set[str],
+        branching_requested: bool,
+        timing_requested: bool,
+    ) -> str:
+        lowered = prompt.lower()
+        score = 0
+        if len(requested_channels) >= 2:
+            score += 2
+        elif len(requested_channels) == 1:
+            score += 1
+        if branching_requested:
+            score += 2
+        if timing_requested or cls._extract_schedule_rule_from_prompt(prompt) is not None:
+            score += 1
+        if "sequence" in lowered or "nurture" in lowered or "campaign" in lowered:
+            score += 1
+        if len(re.findall(r"\b\w+\b", lowered)) >= 28:
+            score += 1
+
+        if score >= 4:
+            return "complex"
+        if score >= 2:
+            return "moderate"
+        return "simple"
 
     @classmethod
     def _build_modify_generation_prompt(
@@ -1088,6 +1347,541 @@ class LLMService:
             summary_parts.append("Applied safe assumptions only where details were missing.")
         return " ".join(summary_parts)
 
+    @classmethod
+    def _build_ask_system_prompt(cls) -> str:
+        node_reference: list[str] = []
+        for node_type in sorted(NODE_CONFIG_DEFAULTS):
+            details = NODE_TYPE_DETAILS.get(node_type, {})
+            description = str(details.get("description") or "").strip()
+            config_schema = NODE_CONFIG_DEFAULTS.get(node_type) or {}
+            config_keys = (
+                ", ".join(sorted(config_schema.keys()))
+                if isinstance(config_schema, Mapping)
+                else ""
+            )
+            rules = details.get("rules") or []
+            notable_rules = "; ".join(str(rule).strip() for rule in rules[:2] if str(rule).strip())
+            parts = [f"- {node_type}"]
+            if description:
+                parts.append(description)
+            if config_keys:
+                parts.append(f"config keys: {config_keys}")
+            if notable_rules:
+                parts.append(f"notes: {notable_rules}")
+            node_reference.append(" | ".join(parts))
+
+        return dedent(
+            f"""
+            You are the Autoflow product expert assistant in ASK mode.
+
+            Your job in ASK mode:
+            - Answer questions about Autoflow features, nodes, parameters, triggers, edges, and best practices.
+            - Explain what each parameter does and when to use it.
+            - Help users choose practical node combinations for their use case.
+            - If users ask "how to build X", provide a concise step-by-step plan with suggested nodes and why.
+            - For implementation questions, answer in this structure: Where to place it, Implementation Steps, Parameters.
+            - If users ask about if_else or switch routing, include concrete config examples and branch wiring.
+            - Avoid repeating the same generic brief when the user asks a specific follow-up.
+            - Do not use markdown bold markers like * or ** in your response.
+            - Always answer the latest user question first. Do not let older context override the current question intent.
+            - If the question is about one node (for example http_request), focus on that node only and explain exactly what to send and where.
+            - Do NOT generate workflow JSON in ASK mode unless user explicitly asks for JSON.
+            - Keep guidance concrete and actionable.
+            - If uncertain, say what is uncertain instead of inventing facts.
+
+            Important Autoflow conventions:
+            - Use double-brace templates for dynamic values, like {{{{email}}}}.
+            - For ai_agent structured fields, use {{{{output.field_name}}}} (example: {{{{output.summary}}}}).
+            - chat_model_openai/chat_model_groq connect to ai_agent with targetHandle "chat_model".
+            - Keep credentials as user-provided values; do not invent secrets.
+
+            Supported nodes quick reference:
+            {chr(10).join(node_reference)}
+            """
+        ).strip()
+
+    @classmethod
+    def _build_ask_user_prompt(
+        cls,
+        *,
+        prompt: str,
+        current_definition: WorkflowDefinition,
+    ) -> str:
+        summary = cls._build_definition_summary(current_definition)
+        return (
+            f"User question:\n{prompt}\n\n"
+            f"Current workflow context:\n{summary}\n\n"
+            "Answer specifically in context of this current workflow where relevant."
+        )
+
+    async def _answer_autoflow_question(
+        self,
+        prompt: str,
+        *,
+        current_definition: WorkflowDefinition | None = None,
+        question_text: str | None = None,
+    ) -> str:
+        cleaned_prompt = str(prompt or "").strip()
+        if not cleaned_prompt:
+            return "Please share your Autoflow question, and I can guide you step-by-step."
+        latest_question = " ".join(str(question_text or cleaned_prompt).split()).strip()
+
+        local_fallback = self._build_local_ask_response(
+            prompt=latest_question,
+            current_definition=current_definition,
+        )
+
+        try:
+            client = self._get_client()
+            system_prompt = self._build_ask_system_prompt()
+            ask_temperature = self._default_temperature_for_model(self.model)
+            user_prompt = cleaned_prompt
+            if current_definition is not None:
+                user_prompt = self._build_ask_user_prompt(
+                    prompt=cleaned_prompt,
+                    current_definition=current_definition,
+                )
+
+            if isinstance(client, BaseLLMProvider):
+                answer = await client.complete(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    model=self.model,
+                    temperature=ask_temperature,
+                    max_tokens=900,
+                )
+                normalized_answer = str(answer or "").strip()
+                if normalized_answer:
+                    return self._clip_assistant_message(
+                        self._sanitize_ask_response_format(normalized_answer)
+                    )
+                return local_fallback
+
+            chat_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "max_tokens": 900,
+            }
+            if ask_temperature is not None:
+                chat_kwargs["temperature"] = ask_temperature
+
+            response = await client.chat.completions.create(**chat_kwargs)
+            normalized_answer = self._extract_response_text(response).strip()
+            if normalized_answer:
+                return self._clip_assistant_message(
+                    self._sanitize_ask_response_format(normalized_answer)
+                )
+        except Exception:
+            return local_fallback
+        return local_fallback
+
+    @staticmethod
+    def _clip_assistant_message(message: str, *, max_chars: int = 3900) -> str:
+        normalized = str(message or "").strip()
+        if not normalized:
+            return "I can help with Autoflow workflows, nodes, parameters, and best practices."
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max_chars - 3].rstrip() + "..."
+
+    @staticmethod
+    def _sanitize_ask_response_format(message: str) -> str:
+        normalized = str(message or "").strip()
+        if not normalized:
+            return normalized
+        normalized = re.sub(r"\*\*(.*?)\*\*", r"\1", normalized)
+        normalized = re.sub(r"(?m)^\s*\*\s+", "- ", normalized)
+        return normalized
+
+    @classmethod
+    def _build_local_ask_response(
+        cls,
+        *,
+        prompt: str,
+        current_definition: WorkflowDefinition | None,
+    ) -> str:
+        lowered = prompt.lower()
+        wants_brief = any(token in lowered for token in ("brief", "summary", "overview"))
+        wants_upgrades = any(
+            token in lowered
+            for token in ("upgrade", "improve", "optimization", "optimize", "enhance", "better")
+        )
+        wants_steps = any(
+            token in lowered
+            for token in ("steps", "step by step", "how to implement", "implementation", "implement")
+        )
+        wants_place = any(
+            token in lowered
+            for token in ("where", "which place", "at which place", "where to place")
+        )
+        wants_parameters = any(
+            token in lowered
+            for token in ("parameter", "parameters", "config", "configuration")
+        )
+        routing_topic = any(
+            token in lowered
+            for token in ("if_else", "if else", "switch", "routing", "branch", "branching", "priority", "sentiment", "category path")
+        )
+        wants_implementation_guide = routing_topic and (wants_steps or wants_place or wants_parameters)
+        node_focus = cls._infer_node_focus_from_prompt(
+            lowered,
+            current_definition=current_definition,
+        )
+        workflow_context_requested = "workflow" in lowered or "this flow" in lowered
+
+        if wants_implementation_guide and node_focus != "http_request":
+            return cls._clip_assistant_message(
+                cls._build_routing_implementation_response(
+                    definition=current_definition,
+                    include_brief=wants_brief,
+                )
+            )
+        if node_focus:
+            return cls._clip_assistant_message(
+                cls._build_node_focus_response(
+                    node_type=node_focus,
+                    prompt=prompt,
+                    current_definition=current_definition,
+                )
+            )
+
+        lines: list[str] = []
+        if current_definition is not None and (wants_brief or (workflow_context_requested and not wants_steps)):
+            lines.append("Workflow Brief:")
+            for point in cls._render_workflow_brief_points(current_definition):
+                lines.append(f"- {point}")
+
+        if wants_upgrades or (current_definition is not None and workflow_context_requested and not wants_steps):
+            lines.append("Suggested Upgrades:")
+            for index, item in enumerate(
+                cls._suggest_workflow_upgrades(current_definition),
+                start=1,
+            ):
+                lines.append(f"{index}. {item}")
+
+        if not lines:
+            lines = [
+                "I can help in Ask mode with:",
+                "- Choosing the right trigger (manual/form/webhook/schedule/workflow trigger).",
+                "- Explaining any node parameter and what each field does.",
+                "- Recommending node combinations for your use case.",
+                "- Showing how to map dynamic values with {{...}} templates.",
+                "Share your goal or node name, and I will give direct Autoflow-specific guidance.",
+            ]
+
+        return cls._clip_assistant_message("\n".join(lines))
+
+    @classmethod
+    def _infer_node_focus_from_prompt(
+        cls,
+        lowered_prompt: str,
+        *,
+        current_definition: WorkflowDefinition | None = None,
+    ) -> str | None:
+        prompt = f" {lowered_prompt} "
+        if current_definition is not None:
+            for node in current_definition.nodes:
+                node_id = str(node.id or "").strip().lower()
+                node_label = str(node.label or "").strip().lower()
+                if node_id and f" {node_id} " in prompt:
+                    return node.type
+                if node_label and f" {node_label} " in prompt:
+                    return node.type
+
+        manual_aliases: dict[str, tuple[str, ...]] = {
+            "http_request": ("http node", "api node"),
+            "send_gmail_message": ("gmail node", "email node"),
+            "search_update_google_sheets": ("google sheets node", "sheets node", "sheet node"),
+            "webhook_trigger": ("webhook", "webhook trigger"),
+            "form_trigger": ("form trigger", "form submission node"),
+            "schedule_trigger": ("schedule trigger", "cron trigger"),
+            "manual_trigger": ("manual trigger", "run trigger"),
+            "if_else": ("if else",),
+            "ai_agent": ("ai node", "ai agent"),
+            "image_gen": ("image node", "image generation node"),
+        }
+
+        scored_matches: list[tuple[int, int, str]] = []
+        for node_type in NODE_CONFIG_DEFAULTS:
+            aliases: set[str] = set()
+            raw = str(node_type).strip().lower()
+            human = raw.replace("_", " ")
+            aliases.add(raw)
+            aliases.add(human)
+            aliases.add(f"{human} node")
+            if human.startswith("send "):
+                aliases.add(human.replace("send ", "", 1))
+            for extra in manual_aliases.get(node_type, ()):
+                aliases.add(str(extra).strip().lower())
+
+            best_for_type = 0
+            for alias in aliases:
+                normalized_alias = f" {alias.strip()} "
+                if len(normalized_alias.strip()) < 3:
+                    continue
+                if normalized_alias in prompt:
+                    score = len(normalized_alias.strip().split())
+                    best_for_type = max(best_for_type, score)
+            if best_for_type > 0:
+                scored_matches.append((best_for_type, len(raw), node_type))
+
+        if scored_matches:
+            scored_matches.sort(reverse=True)
+            return scored_matches[0][2]
+        return None
+
+    @classmethod
+    def _build_node_focus_response(
+        cls,
+        *,
+        node_type: str,
+        prompt: str,
+        current_definition: WorkflowDefinition | None,
+    ) -> str:
+        if node_type == "http_request":
+            return cls._build_http_node_response(current_definition=current_definition)
+
+        details = NODE_TYPE_DETAILS.get(node_type, {})
+        defaults = NODE_CONFIG_DEFAULTS.get(node_type, {})
+        description = str(details.get("description") or "").strip() or f"{node_type} node."
+        rules = [
+            str(rule).strip()
+            for rule in (details.get("rules") or [])
+            if str(rule).strip()
+        ]
+
+        lines = [
+            f"Node: {node_type}",
+            f"What it does: {description}",
+        ]
+        if isinstance(defaults, Mapping):
+            config_keys = ", ".join(sorted(defaults.keys()))
+            lines.append(f"Key parameters: {config_keys or 'No config keys'}")
+        if rules:
+            lines.append("How to use:")
+            for index, rule in enumerate(rules[:4], start=1):
+                lines.append(f"{index}. {rule}")
+
+        if current_definition is not None:
+            matching_nodes = [node for node in current_definition.nodes if node.type == node_type]
+            if matching_nodes:
+                lines.append("In your current workflow:")
+                for node in matching_nodes[:3]:
+                    lines.append(f"- {node.label} ({node.id}) is present.")
+            else:
+                lines.append("In your current workflow: this node is not present yet.")
+        return "\n".join(lines)
+
+    @classmethod
+    def _build_http_node_response(
+        cls,
+        *,
+        current_definition: WorkflowDefinition | None,
+    ) -> str:
+        lines = [
+            "HTTP Node Overview:",
+            "- `http_request` sends an outbound API call from your workflow to an external endpoint.",
+            "- It is not the incoming endpoint. Incoming requests should hit `webhook_trigger`.",
+            "What you have to send:",
+            "1. Set `method` (GET/POST/PUT/PATCH/DELETE).",
+            "2. Set `url` to the target API endpoint where data must be sent.",
+            "3. Choose `body_type` for methods like POST/PUT/PATCH:",
+            "   - `json`: send payload in `body_json` (common case).",
+            "   - `form`: send payload in `body_form_json`.",
+            "   - `raw`: send payload in `body_raw`.",
+            "4. If auth is needed, set `auth_mode` and corresponding auth fields.",
+            "Where to send:",
+            "- Send to the external service URL in `config.url` (for example your CRM/support API endpoint).",
+            "- Use Autoflow templates in payload, for example `{\"ticket_id\":\"{{ticket_id}}\",\"summary\":\"{{output.summary}}\"}`.",
+        ]
+
+        if current_definition is not None:
+            http_nodes = [node for node in current_definition.nodes if node.type == "http_request"]
+            if http_nodes:
+                lines.append("HTTP nodes found in this workflow:")
+                for node in http_nodes[:3]:
+                    config = node.config if isinstance(node.config, Mapping) else {}
+                    method = str(config.get("method") or "GET").upper()
+                    url = str(config.get("url") or "").strip() or "[URL not set]"
+                    auth_mode = str(config.get("auth_mode") or "none").strip()
+                    body_type = str(config.get("body_type") or "none").strip()
+                    lines.append(
+                        f"- {node.label} ({node.id}): method={method}, url={url}, auth_mode={auth_mode}, body_type={body_type}"
+                    )
+            else:
+                lines.append("In this workflow, no `http_request` node is present yet.")
+                lines.append("Placement tip: add it after data preparation/classification and before final notification nodes.")
+
+            webhook_nodes = [node for node in current_definition.nodes if node.type == "webhook_trigger"]
+            if webhook_nodes:
+                lines.append("Because your flow starts with webhook_trigger:")
+                lines.append("- External client sends data to your webhook URL.")
+                lines.append("- Then workflow can forward transformed data to external API via `http_request`.")
+
+        return "\n".join(lines)
+
+    @classmethod
+    def _build_routing_implementation_response(
+        cls,
+        *,
+        definition: WorkflowDefinition | None,
+        include_brief: bool,
+    ) -> str:
+        lines: list[str] = []
+        if definition is not None and include_brief:
+            lines.append("Workflow Brief:")
+            for point in cls._render_workflow_brief_points(definition):
+                lines.append(f"- {point}")
+
+        placement_text = cls._resolve_routing_insertion_point(definition)
+        lines.append("Where to place it:")
+        lines.append(f"- {placement_text}")
+
+        lines.append("Implementation Steps:")
+        lines.append("1. Add an `if_else` node right after AI output is available (before final delivery nodes).")
+        lines.append("2. Configure condition on a routing field, for example `output.sentiment` or `priority`.")
+        lines.append("3. Wire `true` branch to urgent/high-priority path and `false` branch to normal path.")
+        lines.append("4. If you need 3+ categories, replace `if_else` with `switch` and create one case per route.")
+        lines.append("5. Ensure every branch ends in required actions (save/log/notify), then optionally merge branches.")
+
+        lines.append("if_else parameters (example):")
+        lines.append('```json\n{"field":"output.sentiment","operator":"equals","value":"negative","value_mode":"literal","value_field":"","case_sensitive":false}\n```')
+
+        lines.append("switch parameters (example):")
+        lines.append('```json\n{"field":"output.category","cases":[{"id":"billing_case","label":"Billing","operator":"equals","value":"billing"},{"id":"technical_case","label":"Technical","operator":"equals","value":"technical"}],"default_case":"general_case"}\n```')
+
+        lines.append("Branch wiring:")
+        lines.append("- `if_else`: outgoing edges must use `branch: \"true\"` and `branch: \"false\"`.")
+        lines.append("- `switch`: outgoing edges must use `branch` equal to each case `id` (or `default_case`).")
+        return "\n".join(lines)
+
+    @classmethod
+    def _resolve_routing_insertion_point(
+        cls,
+        definition: WorkflowDefinition | None,
+    ) -> str:
+        if definition is None:
+            return "After the step that produces routing data (for example ai_agent), before your channel delivery nodes."
+
+        nodes_by_id = {node.id: node for node in definition.nodes}
+        ai_nodes = [node for node in definition.nodes if node.type == "ai_agent"]
+        non_model_target_types = {
+            node_id
+            for node_id, node in nodes_by_id.items()
+            if node.type not in AI_CHAT_MODEL_NODE_TYPES
+        }
+
+        for ai_node in ai_nodes:
+            outgoing = [
+                edge for edge in definition.edges
+                if edge.source == ai_node.id and edge.target in non_model_target_types
+            ]
+            if outgoing:
+                target_node = nodes_by_id.get(outgoing[0].target)
+                target_label = target_node.label if target_node else outgoing[0].target
+                return (
+                    f"Insert routing between `{ai_node.label}` ({ai_node.id}) and `{target_label}` "
+                    f"({outgoing[0].target})."
+                )
+
+        trigger_ids = {node.id for node in definition.nodes if node.type in TRIGGER_NODE_TYPES}
+        for edge in definition.edges:
+            if edge.source in trigger_ids and edge.target in nodes_by_id:
+                target = nodes_by_id[edge.target]
+                return (
+                    f"Insert routing after trigger `{edge.source}` and before `{target.label}` "
+                    f"({target.id}) once route fields are prepared."
+                )
+
+        return "Place routing right before outbound actions (Telegram/WhatsApp/Gmail/LinkedIn) after classification data is available."
+
+    @classmethod
+    def _render_workflow_brief_points(
+        cls,
+        definition: WorkflowDefinition,
+    ) -> list[str]:
+        node_count = len(definition.nodes)
+        edge_count = len(definition.edges)
+        trigger_type = next(
+            (node.type for node in definition.nodes if node.type in TRIGGER_NODE_TYPES),
+            "manual_trigger",
+        )
+        main_steps = [
+            cls._humanize_node_type(node.type)
+            for node in definition.nodes
+            if node.type not in TRIGGER_NODE_TYPES and node.type not in AI_CHAT_MODEL_NODE_TYPES
+        ]
+        rendered_steps = ", ".join(main_steps[:5]) if main_steps else "No downstream action nodes yet"
+
+        points = [
+            f"This workflow has {node_count} nodes and {edge_count} edges.",
+            f"Start trigger is `{trigger_type}`.",
+            f"Main path: {rendered_steps}.",
+        ]
+        node_types = {node.type for node in definition.nodes}
+        if "ai_agent" in node_types:
+            points.append("It includes AI analysis using an ai_agent with structured output under `output.*`.")
+        if {"telegram", "whatsapp", "send_gmail_message", "slack_send_message"} & node_types:
+            points.append("It sends notifications through at least one messaging/email channel.")
+        return points
+
+    @classmethod
+    def _suggest_workflow_upgrades(
+        cls,
+        definition: WorkflowDefinition | None,
+    ) -> list[str]:
+        if definition is None:
+            return [
+                "Choose trigger first from user intent (avoid manual trigger unless explicitly requested).",
+                "Add early validation/cleanup before external integrations.",
+                "Use condition nodes (if_else/switch) for routing instead of long linear chains.",
+                "Use {{output.field}} for ai_agent structured output mappings.",
+                "Add retries/error strategy on critical delivery nodes.",
+            ]
+
+        node_types = {node.type for node in definition.nodes}
+        suggestions: list[str] = []
+        trigger_type = next(
+            (node.type for node in definition.nodes if node.type in TRIGGER_NODE_TYPES),
+            None,
+        )
+        if trigger_type == "webhook_trigger":
+            suggestions.append(
+                "Harden webhook entry with request auth verification and idempotency key handling to avoid duplicate tickets."
+            )
+        if "ai_agent" in node_types:
+            suggestions.append(
+                "Stabilize AI outputs by enforcing strict JSON keys and lowering temperature for consistent triage decisions."
+            )
+        if "if_else" not in node_types and "switch" not in node_types:
+            suggestions.append(
+                "Add explicit routing logic (if_else/switch) so priority, sentiment, or category paths are handled clearly."
+            )
+        if node_types & {"telegram", "whatsapp", "send_gmail_message", "slack_send_message", "linkedin", "http_request"}:
+            suggestions.append(
+                "Add delivery resilience: retry policy, fallback channel, and alert if any outbound integration fails."
+            )
+        if "merge" in node_types:
+            suggestions.append(
+                "Review merge mode and input counts so the save path never waits for an input branch that will not execute."
+            )
+        suggestions.append(
+            "Add operational observability (execution logs + status fields) so failures are easy to trace per ticket/work item."
+        )
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in suggestions:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped[:6]
+
     @staticmethod
     def _modify_prompt_allows_full_rebuild(prompt: str) -> bool:
         lowered = prompt.lower()
@@ -1154,6 +1948,36 @@ class LLMService:
             for value in raw_values
             if " ".join(str(value).split()).strip()
         ]
+
+    @staticmethod
+    def _sanitize_recent_messages(raw_values: Any) -> list[dict[str, str]]:
+        if not isinstance(raw_values, list):
+            return []
+        sanitized: list[dict[str, str]] = []
+        for item in raw_values[-8:]:
+            if not isinstance(item, Mapping):
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = " ".join(str(item.get("content") or "").split()).strip()
+            if not content:
+                continue
+            sanitized.append({"role": role, "content": content[:220]})
+        return sanitized
+
+    @staticmethod
+    def _append_recent_chat_context_to_prompt(
+        prompt: str,
+        *,
+        recent_messages: list[dict[str, str]],
+    ) -> str:
+        if not recent_messages:
+            return prompt
+        lines = [f"- {item['role']}: {item['content']}" for item in recent_messages if item.get("content")]
+        if not lines:
+            return prompt
+        return f"{prompt}\n\nRecent chat context:\n" + "\n".join(lines)
 
     @staticmethod
     def _dedupe_non_empty_strings(values: list[Any]) -> list[str]:
@@ -1367,7 +2191,7 @@ class LLMService:
             {prompt}
 
             Generation checklist:
-            1. Pick the best trigger from the request intent.
+            1. Pick the best trigger from the request intent (avoid manual_trigger unless the user explicitly asks for manual/on-demand runs).
             2. Include all necessary nodes to complete the business flow end-to-end.
             3. Fill node configs using the schema keys and realistic defaults/placeholders.
             4. Wire edges correctly, including branch labels for if_else/switch.
@@ -1376,8 +2200,10 @@ class LLMService:
             7. If the request specifies a multi-day sequence (for example 14-day), ensure cadence/timing truly matches that duration.
             8. For multi-channel nurture flows, branch channels in parallel rather than chaining all channels serially.
             9. If the request asks for generated images or AI-created visuals, include an image_gen node with model, prompt, size, quality, and style config.
-            10. Do not return trigger-only output for actionable prompts; include the needed downstream steps.
-            11. Return only one JSON object; no explanation text.
+            10. Keep workflow complexity proportional: use the minimum nodes needed for simple requests, and add logic nodes only when they are clearly required.
+            11. For ai_agent structured outputs, reference downstream fields using {{output.field_name}} (for example {{output.summary}}).
+            12. Do not return trigger-only output for actionable prompts; include the needed downstream steps.
+            13. Return only one JSON object; no explanation text.
             {validation_suffix}
             """
         ).strip()
@@ -1424,6 +2250,7 @@ class LLMService:
         cls._validate_minimum_workflow_usefulness(definition, user_prompt=user_prompt)
         cls._validate_sequence_duration_expectation(definition, user_prompt=user_prompt)
         cls._validate_multi_channel_branching_expectation(definition, user_prompt=user_prompt)
+        cls._validate_complexity_alignment(definition, user_prompt=user_prompt)
         cls._validate_image_generation_expectation(definition, user_prompt=user_prompt)
         return definition, cls._extract_workflow_name(payload)
 
@@ -1483,6 +2310,8 @@ class LLMService:
                 sanitized_edges.append(edge)
             sanitized["edges"] = sanitized_edges
 
+        sanitized = cls._normalize_ai_agent_placeholder_paths(sanitized)
+
         return sanitized
 
     @classmethod
@@ -1510,6 +2339,127 @@ class LLMService:
         return value
 
     @classmethod
+    def _normalize_ai_agent_placeholder_paths(
+        cls,
+        definition_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw_nodes = definition_payload.get("nodes")
+        if not isinstance(raw_nodes, list):
+            return definition_payload
+
+        ai_agent_node_ids = {
+            str(node.get("id") or "").strip()
+            for node in raw_nodes
+            if isinstance(node, Mapping)
+            and str(node.get("type") or "").strip() == "ai_agent"
+            and str(node.get("id") or "").strip()
+        }
+        if not ai_agent_node_ids:
+            return definition_payload
+
+        normalized_nodes: list[Any] = []
+        for raw_node in raw_nodes:
+            if not isinstance(raw_node, Mapping):
+                normalized_nodes.append(raw_node)
+                continue
+
+            node = deepcopy(dict(raw_node))
+            config = node.get("config")
+            if isinstance(config, dict):
+                node["config"] = cls._normalize_ai_agent_placeholder_in_value(
+                    config,
+                    ai_agent_node_ids=ai_agent_node_ids,
+                )
+            normalized_nodes.append(node)
+
+        return {
+            **definition_payload,
+            "nodes": normalized_nodes,
+        }
+
+    @classmethod
+    def _normalize_ai_agent_placeholder_in_value(
+        cls,
+        value: Any,
+        *,
+        ai_agent_node_ids: set[str],
+    ) -> Any:
+        if isinstance(value, str):
+            def _replacer(match: re.Match[str]) -> str:
+                expression = str(match.group(1) or "").strip()
+                normalized_expression = cls._normalize_ai_agent_expression(
+                    expression,
+                    ai_agent_node_ids=ai_agent_node_ids,
+                )
+                if normalized_expression == expression:
+                    return match.group(0)
+                return f"{{{{{normalized_expression}}}}}"
+
+            return TEMPLATE_DOUBLE_BRACE_PATTERN.sub(_replacer, value)
+        if isinstance(value, list):
+            return [
+                cls._normalize_ai_agent_placeholder_in_value(
+                    item,
+                    ai_agent_node_ids=ai_agent_node_ids,
+                )
+                for item in value
+            ]
+        if isinstance(value, dict):
+            return {
+                key: cls._normalize_ai_agent_placeholder_in_value(
+                    item,
+                    ai_agent_node_ids=ai_agent_node_ids,
+                )
+                for key, item in value.items()
+            }
+        return value
+
+    @classmethod
+    def _normalize_ai_agent_expression(
+        cls,
+        expression: str,
+        *,
+        ai_agent_node_ids: set[str],
+    ) -> str:
+        normalized = expression.strip()
+        for node_id in sorted(ai_agent_node_ids):
+            direct_prefix = f"{node_id}."
+            if normalized.startswith(direct_prefix):
+                suffix = normalized[len(direct_prefix):]
+                if suffix.startswith("output."):
+                    return suffix
+                if cls._should_route_to_ai_output(suffix):
+                    return f"output.{suffix}"
+
+            for quote in ('"', "'"):
+                node_prefix = f"$node[{quote}{node_id}{quote}].json."
+                if normalized.startswith(node_prefix):
+                    suffix = normalized[len(node_prefix):]
+                    if suffix.startswith("output."):
+                        return suffix
+                    if cls._should_route_to_ai_output(suffix):
+                        return f"output.{suffix}"
+        return normalized
+
+    @staticmethod
+    def _should_route_to_ai_output(suffix: str) -> bool:
+        normalized_suffix = str(suffix or "").strip()
+        if not normalized_suffix:
+            return False
+        if normalized_suffix.startswith(
+            (
+                "output.",
+                "ai_metadata.",
+                "chat_model.",
+                "memory.",
+                "tool.",
+            )
+        ):
+            return False
+        first_segment = normalized_suffix.split(".", 1)[0].strip()
+        return first_segment in AI_AGENT_STRUCTURED_OUTPUT_KEYS
+
+    @classmethod
     def _apply_prompt_hints_to_definition_payload(
         cls,
         definition_payload: Mapping[str, Any],
@@ -1532,6 +2482,17 @@ class LLMService:
         preferred_trigger_type = cls._infer_trigger_type_from_prompt(prompt_text)
         start_trigger_index = cls._find_start_trigger_node_index(raw_nodes, raw_edges)
         if (
+            not preferred_trigger_type
+            and start_trigger_index is not None
+            and isinstance(raw_nodes[start_trigger_index], Mapping)
+        ):
+            start_type = str(raw_nodes[start_trigger_index].get("type") or "").strip()
+            if start_type == "manual_trigger":
+                preferred_trigger_type = cls._infer_default_trigger_from_prompt(
+                    prompt=prompt_text,
+                    inferred_trigger=None,
+                )
+        if (
             preferred_trigger_type
             and start_trigger_index is not None
             and isinstance(raw_nodes[start_trigger_index], Mapping)
@@ -1547,6 +2508,10 @@ class LLMService:
                             defaults[key] = value
                 if preferred_trigger_type == "schedule_trigger":
                     defaults = cls._hydrate_schedule_config_from_prompt(defaults, prompt_text)
+                elif preferred_trigger_type == "form_trigger":
+                    defaults = cls._hydrate_form_config_from_prompt(defaults, prompt_text)
+                elif preferred_trigger_type == "webhook_trigger":
+                    defaults = cls._hydrate_webhook_config_from_prompt(defaults, prompt_text)
                 start_node["type"] = preferred_trigger_type
                 start_node["config"] = defaults
                 if not str(start_node.get("label") or "").strip():
@@ -1558,6 +2523,20 @@ class LLMService:
                     prompt_text,
                 )
                 start_node["config"] = schedule_config
+                raw_nodes[start_trigger_index] = start_node
+            elif preferred_trigger_type == "form_trigger":
+                form_config = cls._hydrate_form_config_from_prompt(
+                    start_node.get("config"),
+                    prompt_text,
+                )
+                start_node["config"] = form_config
+                raw_nodes[start_trigger_index] = start_node
+            elif preferred_trigger_type == "webhook_trigger":
+                webhook_config = cls._hydrate_webhook_config_from_prompt(
+                    start_node.get("config"),
+                    prompt_text,
+                )
+                start_node["config"] = webhook_config
                 raw_nodes[start_trigger_index] = start_node
 
         preferred_chat_model_type = cls._infer_chat_model_type_from_prompt(prompt_text)
@@ -1583,10 +2562,37 @@ class LLMService:
 
     @staticmethod
     def _infer_trigger_type_from_prompt(prompt: str) -> str | None:
-        lowered = prompt.lower()
-        for trigger_type, keywords in TRIGGER_KEYWORD_HINTS:
+        lowered = f" {prompt.lower()} "
+
+        # Highest-confidence direct intent first.
+        for trigger_type in ("workflow_trigger", "schedule_trigger", "form_trigger", "webhook_trigger"):
+            keywords = next(
+                (tokens for candidate, tokens in TRIGGER_KEYWORD_HINTS if candidate == trigger_type),
+                (),
+            )
             if any(keyword in lowered for keyword in keywords):
                 return trigger_type
+
+        if LLMService._extract_schedule_rule_from_prompt(prompt) is not None:
+            return "schedule_trigger"
+
+        manual_keywords = next(
+            (tokens for candidate, tokens in TRIGGER_KEYWORD_HINTS if candidate == "manual_trigger"),
+            (),
+        )
+        explicit_manual = any(keyword in lowered for keyword in manual_keywords)
+        has_event_language = any(token in lowered for token in EVENT_LANGUAGE_HINTS)
+        has_form_intent = any(token in lowered for token in FORM_INTENT_HINTS)
+        has_webhook_source = any(token in lowered for token in WEBHOOK_SOURCE_HINTS)
+
+        # If user explicitly requested manual execution, preserve that choice.
+        if explicit_manual:
+            return "manual_trigger"
+
+        if has_event_language and has_form_intent:
+            return "form_trigger"
+        if has_event_language and has_webhook_source:
+            return "webhook_trigger"
         return None
 
     @staticmethod
@@ -1665,6 +2671,150 @@ class LLMService:
             "enabled": bool(enabled),
             "rules": rules,
         }
+
+    @classmethod
+    def _hydrate_form_config_from_prompt(
+        cls,
+        existing_config: Any,
+        prompt: str,
+    ) -> dict[str, Any]:
+        defaults = deepcopy(NODE_CONFIG_DEFAULTS["form_trigger"])
+        config: dict[str, Any] = {}
+        if isinstance(existing_config, Mapping):
+            config = {
+                key: value
+                for key, value in existing_config.items()
+                if key in defaults
+            }
+
+        lowered = prompt.lower()
+        field_catalog: list[tuple[str, str, str]] = [
+            ("name", "Full Name", "text"),
+            ("email", "Email", "email"),
+            ("phone", "Phone", "text"),
+            ("company", "Company", "text"),
+            ("message", "Message", "textarea"),
+            ("title", "Title", "text"),
+        ]
+        keyword_aliases: dict[str, tuple[str, ...]] = {
+            "name": ("name", "full name"),
+            "email": ("email", "e-mail"),
+            "phone": ("phone", "mobile", "contact number", "whatsapp number"),
+            "company": ("company", "organization"),
+            "message": ("message", "feedback", "comment", "query", "question"),
+            "title": ("title", "subject"),
+        }
+
+        inferred_fields: list[dict[str, Any]] = []
+        for field_name, field_label, field_type in field_catalog:
+            aliases = keyword_aliases.get(field_name, (field_name,))
+            if any(alias in lowered for alias in aliases):
+                inferred_fields.append(
+                    {
+                        "name": field_name,
+                        "label": field_label,
+                        "type": field_type,
+                        "required": field_name in {"name", "email"},
+                    }
+                )
+
+        existing_fields = config.get("fields")
+        normalized_existing_fields: list[dict[str, Any]] = []
+        if isinstance(existing_fields, list):
+            for item in existing_fields:
+                if isinstance(item, Mapping):
+                    normalized_existing_fields.append(dict(item))
+
+        merged_fields_by_name: dict[str, dict[str, Any]] = {}
+        for item in normalized_existing_fields + inferred_fields:
+            field_name = str(item.get("name") or "").strip()
+            if not field_name:
+                continue
+            merged_fields_by_name[field_name] = item
+
+        merged_fields = list(merged_fields_by_name.values())
+        if not merged_fields:
+            merged_fields = deepcopy(defaults.get("fields", []))
+
+        form_title = str(config.get("form_title") or "").strip()
+        if not form_title:
+            if "feedback" in lowered:
+                form_title = "Feedback Form"
+            elif "lead" in lowered:
+                form_title = "Lead Capture Form"
+            elif "signup" in lowered or "register" in lowered:
+                form_title = "Signup Form"
+            else:
+                form_title = str(defaults.get("form_title") or "Form Submission")
+
+        form_description = str(config.get("form_description") or "").strip()
+        if not form_description:
+            if "feedback" in lowered:
+                form_description = "Collect customer feedback."
+            elif "lead" in lowered:
+                form_description = "Collect lead information for follow-up."
+            elif "signup" in lowered or "register" in lowered:
+                form_description = "Capture new signup details."
+            else:
+                form_description = str(defaults.get("form_description") or "")
+
+        return {
+            **defaults,
+            **config,
+            "form_title": form_title,
+            "form_description": form_description,
+            "fields": merged_fields,
+        }
+
+    @classmethod
+    def _hydrate_webhook_config_from_prompt(
+        cls,
+        existing_config: Any,
+        prompt: str,
+    ) -> dict[str, Any]:
+        defaults = deepcopy(NODE_CONFIG_DEFAULTS["webhook_trigger"])
+        config: dict[str, Any] = {}
+        if isinstance(existing_config, Mapping):
+            config = {
+                key: value
+                for key, value in existing_config.items()
+                if key in defaults
+            }
+
+        lowered = prompt.lower()
+        path = str(config.get("path") or "").strip()
+        method = str(config.get("method") or "").strip().upper()
+
+        extracted_path = re.search(r"/[a-z0-9/_-]{2,}", lowered)
+        if not path:
+            if extracted_path:
+                path = extracted_path.group(0).lstrip("/")
+            elif "lead" in lowered:
+                path = "leads/new"
+            elif "order" in lowered:
+                path = "orders/new"
+            elif "ticket" in lowered:
+                path = "tickets/new"
+            else:
+                path = "events/incoming"
+
+        if not method:
+            method = cls._extract_webhook_method_from_prompt(prompt) or "POST"
+
+        return {
+            **defaults,
+            **config,
+            "path": path,
+            "method": method,
+        }
+
+    @staticmethod
+    def _extract_webhook_method_from_prompt(prompt: str) -> str | None:
+        lowered = prompt.lower()
+        for method in ("POST", "PUT", "PATCH", "DELETE", "GET", "OPTIONS", "HEAD"):
+            if f" {method.lower()} " in f" {lowered} ":
+                return method
+        return None
 
     @staticmethod
     def _extract_schedule_rule_from_prompt(prompt: str) -> dict[str, Any] | None:
@@ -2158,6 +3308,63 @@ class LLMService:
                 "Prompt requests multi-channel branching, but workflow does not fan out enough "
                 f"branches from start trigger '{start_trigger_id}'. Expected at least "
                 f"{len(requested_channels)} branches."
+            )
+
+    @classmethod
+    def _validate_complexity_alignment(
+        cls,
+        definition: WorkflowDefinition,
+        *,
+        user_prompt: str | None,
+    ) -> None:
+        if not user_prompt:
+            return
+
+        analysis = cls._analyze_prompt_for_assistant(user_prompt)
+        signals = analysis.get("signals") if isinstance(analysis, Mapping) else {}
+        if not isinstance(signals, Mapping):
+            return
+
+        complexity_level = str(signals.get("complexity_level") or "").strip()
+        if complexity_level != "simple":
+            return
+
+        non_sub_nodes = [
+            node
+            for node in definition.nodes
+            if node.type not in AI_CHAT_MODEL_NODE_TYPES
+        ]
+        if len(non_sub_nodes) <= 6:
+            return
+
+        logic_heavy_types = {
+            "if_else",
+            "switch",
+            "filter",
+            "merge",
+            "split_in",
+            "split_out",
+            "aggregate",
+            "delay",
+        }
+        logic_node_count = sum(
+            1
+            for node in non_sub_nodes
+            if node.type in logic_heavy_types
+        )
+        has_split_loop = any(node.type in {"split_in", "split_out"} for node in non_sub_nodes)
+        requested_channels = {
+            str(item).strip()
+            for item in (signals.get("requested_channels") or [])
+            if str(item).strip()
+        }
+        if len(requested_channels) >= 2:
+            return
+
+        if has_split_loop or (len(non_sub_nodes) >= 8 and logic_node_count >= 3):
+            raise WorkflowGenerationError(
+                "Generated workflow appears unnecessarily complex for a straightforward request. "
+                "Prefer a concise structure with only essential steps."
             )
 
     @staticmethod

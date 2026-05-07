@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Send, Sparkles, User, Bot, Loader2, Check, Eye, CheckCircle2, XCircle, Trash2 } from 'lucide-react';
-import { Message } from '../../services/aiService';
+import { AssistantInteractionMode, Message } from '../../services/aiService';
 
 interface AIWorkflowChatPanelProps {
   isOpen: boolean;
   onClose: () => void;
   messages: Message[];
   onSendMessage: (content: string) => void;
+  interactionMode: AssistantInteractionMode;
+  onInteractionModeChange: (mode: AssistantInteractionMode) => void;
   onClearHistory: () => void;
   onReviewWorkflow: (workflow: any) => void;
   onAcceptReviewedWorkflow: (workflow: any) => void;
@@ -18,10 +20,16 @@ interface AIWorkflowChatPanelProps {
   style?: React.CSSProperties;
 }
 
-const EXAMPLE_PROMPTS = [
+const BUILD_EXAMPLE_PROMPTS = [
   'Create a workflow that classifies support ticket sentiment and routes negative ones to Telegram.',
   'Generate a form trigger flow that summarizes feedback with AI and logs the result.',
   'Create a workflow that generates the linkedIn post that takes form trigger and takes values post title, tone, type of post and generates post and sent it to linkedIn post',
+];
+
+const ASK_EXAMPLE_PROMPTS = [
+  'I want to create customer support automation. Which trigger should I choose and why?',
+  'In ai_agent node, what is the difference between system_prompt and command?',
+  'How should I map Telegram message parameters using {{output.summary}} and other fields?',
 ];
 
 const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
@@ -29,6 +37,8 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
   onClose,
   messages,
   onSendMessage,
+  interactionMode,
+  onInteractionModeChange,
   onClearHistory,
   onReviewWorkflow,
   onAcceptReviewedWorkflow,
@@ -42,6 +52,10 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const examplePrompts = interactionMode === 'ask' ? ASK_EXAMPLE_PROMPTS : BUILD_EXAMPLE_PROMPTS;
+  const inputPlaceholder = interactionMode === 'ask'
+    ? 'Ask anything about Autoflow nodes, triggers, and parameters...'
+    : 'Describe the workflow you want to build...';
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -83,7 +97,7 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
           </div>
           <div>
             <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wider">AI</h2>
-            <p className="text-[10px] text-slate-500 dark:text-slate-500 font-bold uppercase tracking-widest">Generator</p>
+            <p className="text-[10px] text-slate-500 dark:text-slate-500 font-bold uppercase tracking-widest">Ask & Build</p>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -104,6 +118,33 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
         </div>
       </div>
 
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+        <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 p-1 bg-slate-100 dark:bg-slate-800">
+          <button
+            onClick={() => onInteractionModeChange('ask')}
+            disabled={isLoading}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-colors ${
+              interactionMode === 'ask'
+                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
+                : 'text-slate-500 dark:text-slate-300 hover:text-slate-700 dark:hover:text-slate-100'
+            } disabled:opacity-60`}
+          >
+            Ask
+          </button>
+          <button
+            onClick={() => onInteractionModeChange('build')}
+            disabled={isLoading}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-colors ${
+              interactionMode === 'build'
+                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
+                : 'text-slate-500 dark:text-slate-300 hover:text-slate-700 dark:hover:text-slate-100'
+            } disabled:opacity-60`}
+          >
+            Build
+          </button>
+        </div>
+      </div>
+
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
         {messages.length === 0 && (
@@ -112,10 +153,12 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
               <Bot size={32} className="text-slate-400" />
             </div>
             <p className="text-sm text-slate-600 dark:text-slate-400">
-              "Create a workflow that sends a Slack message when a new user signs up."
+              {interactionMode === 'ask'
+                ? '"Ask: Which nodes should I use for webhook input and Telegram output?"'
+                : '"Build: Create a workflow that sends a Slack message when a new user signs up."'}
             </p>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
-              {EXAMPLE_PROMPTS.map((prompt) => (
+              {examplePrompts.map((prompt) => (
                 <button
                   key={prompt}
                   onClick={() => handleExamplePromptClick(prompt)}
@@ -260,7 +303,7 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            placeholder="How can I help you today?"
+            placeholder={inputPlaceholder}
             className="w-full bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-2xl py-3 pl-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
           />
           <button
@@ -276,7 +319,9 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
           </button>
         </div>
         <p className="text-[10px] text-center mt-3 text-slate-400">
-          AI generated workflows may need manual refinement.
+          {interactionMode === 'ask'
+            ? 'Ask mode gives Autoflow guidance and node/parameter help.'
+            : 'Build mode generates workflows that may still need manual refinement.'}
         </p>
       </div>
     </div>

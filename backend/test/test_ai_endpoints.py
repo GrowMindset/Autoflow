@@ -50,9 +50,20 @@ class _SuccessfulLLMService:
         self,
         *,
         prompt: str,
+        interaction_mode: str = "build",
         current_definition: WorkflowDefinition | None = None,
         conversation_state: dict | None = None,
     ) -> dict:
+        if interaction_mode == "ask":
+            return {
+                "mode": "ask",
+                "assistant_message": "Use webhook_trigger for incoming API events and map fields with {{...}} templates.",
+                "questions": [],
+                "assumptions": [],
+                "definition": None,
+                "name": None,
+                "change_summary": None,
+            }
         generated = await self.generate_workflow_definition(prompt)
         return {
             "mode": "generate",
@@ -75,6 +86,7 @@ class _FailingLLMService:
         self,
         *,
         prompt: str,
+        interaction_mode: str = "build",
         current_definition: WorkflowDefinition | None = None,
         conversation_state: dict | None = None,
     ) -> dict:
@@ -247,6 +259,33 @@ class AIEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["mode"], "generate")
         self.assertIn("definition", payload)
         self.assertEqual(payload["definition"]["nodes"][0]["type"], "manual_trigger")
+
+    async def test_workflow_assistant_supports_ask_interaction_mode(self) -> None:
+        from app.core.auth import get_current_user
+
+        async def override_llm_service() -> _SuccessfulLLMService:
+            return _SuccessfulLLMService()
+
+        app.dependency_overrides[get_current_user] = _override_current_user
+        app.dependency_overrides[get_llm_service] = override_llm_service
+
+        status_code, payload = await self.client.post(
+            "/ai/workflow-assistant",
+            json_body={
+                "prompt": "Which trigger should I use for incoming support ticket API payloads?",
+                "interaction_mode": "ask",
+                "conversation_state": {
+                    "confirmed_choices": {},
+                    "assumptions": [],
+                },
+            },
+            headers={"authorization": "Bearer fake-token"},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["mode"], "ask")
+        self.assertIsNone(payload["definition"])
+        self.assertIn("webhook_trigger", payload["assistant_message"])
 
     async def test_workflow_assistant_returns_422_error_shape(self) -> None:
         from app.core.auth import get_current_user

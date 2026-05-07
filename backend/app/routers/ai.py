@@ -154,6 +154,7 @@ async def workflow_assistant(
     try:
         result = await llm_service.assist_workflow(
             prompt=payload.prompt,
+            interaction_mode=payload.interaction_mode,
             current_definition=payload.current_definition,
             conversation_state=payload.conversation_state.model_dump(),
         )

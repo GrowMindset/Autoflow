@@ -9,7 +9,7 @@ import WorkflowCanvas from '../canvas/WorkflowCanvas';
 import { workflowService } from '../../services/workflowService';
 import { ExecutionDetail } from '../../services/executionService';
 import AIWorkflowChatPanel from '../chat/AIWorkflowChatPanel';
-import { aiService, ConversationState, Message } from '../../services/aiService';
+import { aiService, AssistantInteractionMode, ConversationState, Message } from '../../services/aiService';
 
 interface Workflow {
   id: string;
@@ -30,6 +30,7 @@ const AI_HISTORY_SAVE_DEBOUNCE_MS = 500;
 const createEmptyConversationState = (): ConversationState => ({
   confirmedChoices: {},
   assumptions: [],
+  recentMessages: [],
   lastMode: undefined,
 });
 const EMPTY_CONVERSATION_STATE: ConversationState = createEmptyConversationState();
@@ -46,6 +47,7 @@ const MainLayout: React.FC = () => {
   // AI Chat & Resize State
   const [chatMessagesByWorkflow, setChatMessagesByWorkflow] = useState<ChatHistoryByWorkflow>({});
   const [aiConversationStateByWorkflow, setAiConversationStateByWorkflow] = useState<ConversationStateByWorkflow>({});
+  const [assistantInteractionMode, setAssistantInteractionMode] = useState<AssistantInteractionMode>('build');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [reviewedWorkflowSignature, setReviewedWorkflowSignature] = useState<string | null>(null);
   const [chatPanelWidth, setChatPanelWidth] = useState(400);
@@ -291,6 +293,7 @@ const MainLayout: React.FC = () => {
     const hasMessages = chatMessages.length > 0;
     const hasState = Object.keys(activeConversationState.confirmedChoices || {}).length > 0
       || activeConversationState.assumptions.length > 0
+      || (activeConversationState.recentMessages || []).length > 0
       || Boolean(activeConversationState.lastMode);
     if (!hasMessages && !hasState && !aiHistoryLoadedScopesRef.current.has(scopeId)) {
       return;
@@ -754,7 +757,7 @@ const MainLayout: React.FC = () => {
     const scopeId = currentWorkflowId || 'new';
     const pendingRefinement = pendingDiscardRefinementRef.current;
     const shouldRefineReviewedWorkflow =
-      Boolean(pendingRefinement) && pendingRefinement?.scopeId === scopeId;
+      assistantInteractionMode === 'build' && Boolean(pendingRefinement) && pendingRefinement?.scopeId === scopeId;
     const userMsg: Message = {
       id: Date.now().toString(),
       role: 'user',
@@ -796,6 +799,13 @@ const MainLayout: React.FC = () => {
           inferredConfirmedChoices[primaryQuestion.id] = content.trim();
         }
       }
+      const recentMessagesForContext = [...previousMessages, userMsg]
+        .slice(-12)
+        .map((message) => ({
+          role: message.role,
+          content: String(message.content || '').trim().slice(0, 500),
+        }))
+        .filter((message) => Boolean(message.content));
 
       const response = await aiService.assistWorkflow(
         promptToSend,
@@ -803,7 +813,9 @@ const MainLayout: React.FC = () => {
         {
           ...baseConversationState,
           confirmedChoices: inferredConfirmedChoices,
+          recentMessages: recentMessagesForContext,
         },
+        assistantInteractionMode,
       );
 
       setAiConversationStateByWorkflow((prev) => ({
@@ -812,11 +824,13 @@ const MainLayout: React.FC = () => {
           ...(response.conversationState || {
             confirmedChoices: {} as Record<string, string>,
             assumptions: [] as string[],
+            recentMessages: [] as Array<{ role: 'user' | 'assistant'; content: string }>,
           }),
           confirmedChoices: {
             ...inferredConfirmedChoices,
             ...(response.conversationState?.confirmedChoices || {}),
           },
+          recentMessages: recentMessagesForContext,
         },
       }));
 
@@ -850,7 +864,14 @@ const MainLayout: React.FC = () => {
     } finally {
       setIsAiLoading(false);
     }
-  }, [aiConversationStateByWorkflow, chatMessagesByWorkflow, clearAiReviewState, currentWorkflow.name, currentWorkflowId]);
+  }, [aiConversationStateByWorkflow, assistantInteractionMode, chatMessagesByWorkflow, clearAiReviewState, currentWorkflow.name, currentWorkflowId]);
+
+  const handleInteractionModeChange = useCallback((mode: AssistantInteractionMode) => {
+    setAssistantInteractionMode(mode);
+    if (mode === 'ask') {
+      pendingDiscardRefinementRef.current = null;
+    }
+  }, []);
 
   const handleClearAiHistory = useCallback(async () => {
     const scopeId = currentWorkflowId || 'new';
@@ -1114,6 +1135,8 @@ const MainLayout: React.FC = () => {
             onClose={() => setIsAiAssistantOpen(false)}
             messages={chatMessages}
             onSendMessage={handleSendMessage}
+            interactionMode={assistantInteractionMode}
+            onInteractionModeChange={handleInteractionModeChange}
             onClearHistory={handleClearAiHistory}
             onReviewWorkflow={handleReviewAiWorkflow}
             onAcceptReviewedWorkflow={handleAcceptReviewedWorkflow}

@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Search } from 'lucide-react';
 import { formatSidebarDateTimeInAppTimezone } from '../../utils/dateTime';
 
 interface Workflow {
@@ -99,8 +100,19 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
 }) => {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
 
   const pendingWorkflow = workflows.find(w => w.id === pendingDeleteId);
+  const filteredWorkflows = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    if (!normalizedSearch) return workflows;
+
+    return workflows.filter((workflow) => {
+      const name = String(workflow.name || '').toLowerCase();
+      const id = String(workflow.id || '').toLowerCase();
+      return name.includes(normalizedSearch) || id.includes(normalizedSearch);
+    });
+  }, [searchTerm, workflows]);
 
   const handleConfirmDelete = async () => {
     if (!pendingDeleteId) return;
@@ -163,8 +175,21 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
               </div>
             )}
 
+            {!isCollapsed && (
+              <div className="relative mb-2">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                  placeholder="Search workflows..."
+                  className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 text-xs text-slate-700 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 transition-all"
+                />
+              </div>
+            )}
+
             <div className="flex flex-col gap-1">
-              {workflows.map((flow) => {
+              {filteredWorkflows.map((flow) => {
                 const isWorkflowActive = flow.is_active !== false;
                 const dotClass = isWorkflowActive
                   ? (currentWorkflowId === flow.id
@@ -223,6 +248,22 @@ const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
                   )}
                 </div>
               )})}
+
+              {!isCollapsed && filteredWorkflows.length === 0 && (
+                <div className="px-3 py-6 rounded-xl border border-dashed border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/30 text-center">
+                  <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                    No workflows found
+                  </p>
+                  {searchTerm.trim().length > 0 && (
+                    <button
+                      onClick={() => setSearchTerm('')}
+                      className="mt-2 text-[11px] font-bold uppercase tracking-wide text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                    >
+                      Clear search
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
