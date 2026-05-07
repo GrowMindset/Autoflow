@@ -145,6 +145,145 @@ const SWITCH_CASE_OPERATORS = [
   'not_contains',
 ];
 
+const FILTER_DATA_TYPE_OPTIONS = [
+  { value: 'string', label: 'String' },
+  { value: 'number', label: 'Number' },
+  { value: 'boolean', label: 'Boolean' },
+  { value: 'date', label: 'Date & Time' },
+  { value: 'array', label: 'Array' },
+  { value: 'object', label: 'Object' },
+] as const;
+
+const FILTER_OPERATORS_BY_DATA_TYPE: Record<string, string[]> = {
+  string: [
+    'exists',
+    'does_not_exist',
+    'is_empty',
+    'is_not_empty',
+    'equals',
+    'not_equals',
+    'contains',
+    'not_contains',
+    'starts_with',
+    'does_not_start_with',
+    'ends_with',
+    'does_not_end_with',
+    'matches_regex',
+    'does_not_match_regex',
+  ],
+  number: [
+    'exists',
+    'does_not_exist',
+    'is_empty',
+    'is_not_empty',
+    'equals',
+    'not_equals',
+    'greater_than',
+    'less_than',
+    'greater_than_or_equals',
+    'less_than_or_equals',
+  ],
+  boolean: [
+    'exists',
+    'does_not_exist',
+    'is_empty',
+    'is_not_empty',
+    'is_true',
+    'is_false',
+    'equals',
+    'not_equals',
+  ],
+  date: [
+    'exists',
+    'does_not_exist',
+    'is_empty',
+    'is_not_empty',
+    'equals',
+    'not_equals',
+    'after',
+    'before',
+    'after_or_equal',
+    'before_or_equal',
+  ],
+  array: [
+    'exists',
+    'does_not_exist',
+    'is_empty',
+    'is_not_empty',
+    'contains',
+    'not_contains',
+    'length_equals',
+    'length_not_equals',
+    'length_greater_than',
+    'length_less_than',
+    'length_greater_than_or_equals',
+    'length_less_than_or_equals',
+  ],
+  object: [
+    'exists',
+    'does_not_exist',
+    'is_empty',
+    'is_not_empty',
+    'equals',
+    'not_equals',
+  ],
+};
+
+const FILTER_OPERATOR_LABELS: Record<string, string> = {
+  exists: 'exists',
+  does_not_exist: 'does not exist',
+  is_empty: 'is empty',
+  is_not_empty: 'is not empty',
+  equals: 'equals',
+  not_equals: 'not equals',
+  contains: 'contains',
+  not_contains: 'does not contain',
+  starts_with: 'starts with',
+  does_not_start_with: 'does not start with',
+  ends_with: 'ends with',
+  does_not_end_with: 'does not end with',
+  matches_regex: 'matches regex',
+  does_not_match_regex: 'does not match regex',
+  greater_than: 'greater than',
+  less_than: 'less than',
+  greater_than_or_equals: 'greater than or equals',
+  less_than_or_equals: 'less than or equals',
+  is_true: 'is true',
+  is_false: 'is false',
+  after: 'is after',
+  before: 'is before',
+  after_or_equal: 'is after or equal',
+  before_or_equal: 'is before or equal',
+  length_equals: 'length equals',
+  length_not_equals: 'length not equals',
+  length_greater_than: 'length greater than',
+  length_less_than: 'length less than',
+  length_greater_than_or_equals: 'length greater than or equals',
+  length_less_than_or_equals: 'length less than or equals',
+};
+
+const FILTER_OPERATORS_WITHOUT_COMPARE_INPUT = new Set([
+  'exists',
+  'does_not_exist',
+  'is_empty',
+  'is_not_empty',
+  'is_true',
+  'is_false',
+]);
+
+const FILTER_STRING_OPERATORS = new Set([
+  'equals',
+  'not_equals',
+  'contains',
+  'not_contains',
+  'starts_with',
+  'does_not_start_with',
+  'ends_with',
+  'does_not_end_with',
+  'matches_regex',
+  'does_not_match_regex',
+]);
+
 const getDroppedPathValue = (path: string, fieldKey: string): string =>
   PATH_STYLE_FIELD_KEYS.has(fieldKey) ? path : `{{${path}}}`;
 
@@ -154,6 +293,62 @@ const normalizeSwitchCaseId = (rawCase: any, index: number): string => {
   const labelBased = String(rawCase?.label || '').trim();
   if (labelBased) return labelBased;
   return `case_${index + 1}`;
+};
+
+const normalizeFilterConditionId = (rawCondition: any, index: number): string => {
+  const explicitId = String(rawCondition?.id || '').trim();
+  if (explicitId) return explicitId;
+  return `condition_${index + 1}`;
+};
+
+const normalizeFilterCondition = (
+  rawCondition: any,
+  index: number,
+  fallbackJoin: 'and' | 'or' = 'and',
+) => {
+  const rawObject = rawCondition && typeof rawCondition === 'object' ? rawCondition : {};
+  const dataTypeRaw = String(rawObject.data_type || '').trim().toLowerCase();
+  const dataType = FILTER_DATA_TYPE_OPTIONS.some((option) => option.value === dataTypeRaw)
+    ? dataTypeRaw
+    : 'string';
+  const allowedOperators = FILTER_OPERATORS_BY_DATA_TYPE[dataType] || FILTER_OPERATORS_BY_DATA_TYPE.string;
+  const valueModeRaw = String(rawObject.value_mode || 'literal').trim().toLowerCase();
+  const valueMode = valueModeRaw === 'field' ? 'field' : 'literal';
+  const caseSensitiveRaw = rawObject.case_sensitive;
+
+  let caseSensitive = true;
+  if (typeof caseSensitiveRaw === 'boolean') {
+    caseSensitive = caseSensitiveRaw;
+  } else if (typeof caseSensitiveRaw === 'number') {
+    caseSensitive = caseSensitiveRaw !== 0;
+  } else if (typeof caseSensitiveRaw === 'string') {
+    const normalized = caseSensitiveRaw.trim().toLowerCase();
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+      caseSensitive = false;
+    }
+  }
+
+  const operatorRaw = String(rawObject.operator || 'equals').trim().toLowerCase();
+  const operator = allowedOperators.includes(operatorRaw) ? operatorRaw : (allowedOperators[0] || 'equals');
+  const joinRaw = String(
+    rawObject.join_with_previous
+    || rawObject.condition
+    || rawObject.logic
+    || fallbackJoin,
+  ).trim().toLowerCase();
+  const joinWithPrevious = joinRaw === 'or' ? 'or' : 'and';
+
+  return {
+    id: normalizeFilterConditionId(rawObject, index),
+    field: String(rawObject.field || ''),
+    operator,
+    data_type: dataType,
+    value_mode: valueMode,
+    value_field: String(rawObject.value_field || ''),
+    value: valueMode === 'field' ? '' : String(rawObject.value ?? ''),
+    case_sensitive: caseSensitive,
+    join_with_previous: index === 0 ? 'and' : joinWithPrevious,
+  };
 };
 
 const normalizeScheduleRule = (rawRule: any, fallbackId?: string): ScheduleRule => {
@@ -184,14 +379,12 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
   ],
   filter: [
     { key: 'input_key', label: 'Input Array Key', type: 'text', placeholder: 'e.g. items' },
-    { key: 'field', label: 'Filter by field', type: 'text', placeholder: 'e.g. amount' },
     {
-      key: 'operator',
-      label: 'Operator',
-      type: 'select',
-      options: ['equals', 'not_equals', 'greater_than', 'less_than', 'contains', 'not_contains']
+      key: 'conditions',
+      label: 'Conditions',
+      type: 'filter_conditions',
+      helperText: 'Add one or more condition rows. Supports field-to-field comparisons.',
     },
-    { key: 'value', label: 'Value', type: 'text', placeholder: 'e.g. 500' }
   ],
   aggregate: [
     { key: 'input_key', label: 'Input Array Key', type: 'text', placeholder: 'e.g. orders' },
@@ -1390,6 +1583,323 @@ const ConfigForm: React.FC<ConfigFormProps> = ({
                 </select>
               </div>
             )}
+          </div>
+        );
+      }
+
+      case 'filter_conditions': {
+        const fallbackJoin: 'and' | 'or' = String(config.logic || '').trim().toLowerCase() === 'or'
+          ? 'or'
+          : 'and';
+        const rawConditions = Array.isArray(value) ? value : [];
+        const normalizedConditions = (rawConditions.length > 0 ? rawConditions : [{}]).map(
+          (condition: any, idx: number) => normalizeFilterCondition(condition, idx, fallbackJoin),
+        );
+
+        if (JSON.stringify(rawConditions) !== JSON.stringify(normalizedConditions)) {
+          onChange(field.key, normalizedConditions);
+        }
+
+        const updateCondition = (index: number, patch: Record<string, any>) => {
+          const next = [...normalizedConditions];
+          const existing = next[index] || normalizeFilterCondition({}, index, fallbackJoin);
+          const updated = { ...existing, ...patch };
+          if (typeof patch.data_type === 'string') {
+            const nextDataType = String(patch.data_type).trim().toLowerCase();
+            const nextOperators = FILTER_OPERATORS_BY_DATA_TYPE[nextDataType] || FILTER_OPERATORS_BY_DATA_TYPE.string;
+            if (!nextOperators.includes(String(updated.operator || ''))) {
+              updated.operator = nextOperators[0] || 'equals';
+            }
+          }
+          const operatorForUpdated = String(updated.operator || '').trim().toLowerCase();
+          if (FILTER_OPERATORS_WITHOUT_COMPARE_INPUT.has(operatorForUpdated)) {
+            updated.value_mode = 'literal';
+            updated.value = '';
+            updated.value_field = '';
+          }
+          if (updated.value_mode === 'field') {
+            updated.value = '';
+          }
+          next[index] = normalizeFilterCondition(updated, index, fallbackJoin);
+          onChange(field.key, next);
+        };
+
+        const removeCondition = (index: number) => {
+          const next = [...normalizedConditions];
+          next.splice(index, 1);
+          onChange(field.key, next.length > 0 ? next : [normalizeFilterCondition({}, 0, fallbackJoin)]);
+        };
+
+        const addCondition = () => {
+          const nextIndex = normalizedConditions.length;
+          const defaultJoin = nextIndex === 0
+            ? 'and'
+            : String(normalizedConditions[nextIndex - 1]?.join_with_previous || fallbackJoin) === 'or'
+              ? 'or'
+              : 'and';
+          const next = [
+            ...normalizedConditions,
+            normalizeFilterCondition(
+              {
+                id: `condition_${Math.random().toString(36).slice(2, 9)}`,
+                operator: 'equals',
+                value_mode: 'literal',
+                case_sensitive: true,
+                join_with_previous: defaultJoin,
+              },
+              nextIndex,
+              fallbackJoin,
+            ),
+          ];
+          onChange(field.key, next);
+        };
+
+        const handleFilterConditionDrop = (
+          event: React.DragEvent<HTMLInputElement>,
+          index: number,
+          conditionKey: string,
+          dropFieldKey: string,
+        ) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setDragOverField(null);
+
+          const textToInsert = resolveDropInsertText({
+            fieldKey: dropFieldKey,
+            dataTransfer: event.dataTransfer,
+          });
+          if (!textToInsert) return;
+
+          const el = event.currentTarget;
+          const current = String(normalizedConditions[index]?.[conditionKey] ?? '');
+          const start = el.selectionStart ?? current.length;
+          const end = el.selectionEnd ?? start;
+          const nextValue = current.slice(0, start) + textToInsert + current.slice(end);
+          updateCondition(index, { [conditionKey]: nextValue });
+        };
+
+        return (
+          <div className="space-y-3">
+            {normalizedConditions.map((condition: any, idx: number) => {
+              const dataType = String(condition.data_type || 'string').toLowerCase();
+              const availableOperators = FILTER_OPERATORS_BY_DATA_TYPE[dataType] || FILTER_OPERATORS_BY_DATA_TYPE.string;
+              const operator = String(condition.operator || 'equals');
+              const valueMode = String(condition.value_mode || 'literal') === 'field'
+                ? 'field'
+                : 'literal';
+              const requiresCompareValue = !FILTER_OPERATORS_WITHOUT_COMPARE_INPUT.has(operator);
+              const joinWithPrevious = String(condition.join_with_previous || 'and') === 'or' ? 'or' : 'and';
+              const caseSensitive = Boolean(condition.case_sensitive ?? true);
+              const usesStringComparison = dataType === 'string' && FILTER_STRING_OPERATORS.has(operator);
+              const fieldDropKey = `filter_condition_field_${idx}`;
+              const valueFieldDropKey = `filter_condition_value_field_${idx}`;
+              const valueDropKey = `filter_condition_value_${idx}`;
+
+              return (
+                <div key={condition.id || idx} className="space-y-2.5">
+                  {idx > 0 && normalizedConditions.length > 1 && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        Join with previous
+                      </span>
+                      <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900">
+                        {(['and', 'or'] as const).map((joinOption) => (
+                          <button
+                            key={joinOption}
+                            type="button"
+                            onClick={() => updateCondition(idx, { join_with_previous: joinOption })}
+                            className={`rounded-md px-2.5 py-1 text-[10px] font-black uppercase tracking-wider transition-colors ${
+                              joinWithPrevious === joinOption
+                                ? 'bg-blue-600 text-white'
+                                : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+                            }`}
+                          >
+                            {joinOption}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="relative space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/40">
+                    <button
+                      type="button"
+                      onClick={() => removeCondition(idx)}
+                      className="absolute right-2 top-2 text-slate-300 transition-colors hover:text-red-500 dark:text-slate-700 dark:hover:text-red-400"
+                      title="Remove condition"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                    </button>
+
+                    <div className="pr-8 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                      Condition {idx + 1}
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        Left Field Path
+                      </label>
+                      <input
+                        type="text"
+                        value={String(condition.field || '')}
+                        placeholder={dragOverField === fieldDropKey ? 'Drop to insert path…' : 'e.g. amount or user.status'}
+                        onChange={(event) => updateCondition(idx, { field: event.target.value })}
+                        onDragOver={(event) => handleDragOver(event, fieldDropKey)}
+                        onDragLeave={(event) => handleDragLeave(event)}
+                        onDrop={(event) => handleFilterConditionDrop(event, idx, 'field', 'field')}
+                        className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all placeholder:text-slate-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === fieldDropKey
+                          ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                          : 'border-slate-200 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+                          }`}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Data Type
+                        </label>
+                        <select
+                          value={dataType}
+                          onChange={(event) => updateCondition(idx, { data_type: event.target.value })}
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:focus:border-blue-400"
+                        >
+                          {FILTER_DATA_TYPE_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Operator
+                        </label>
+                        <select
+                          value={operator}
+                          onChange={(event) => updateCondition(idx, { operator: event.target.value })}
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:focus:border-blue-400"
+                        >
+                          {availableOperators.map((op) => (
+                            <option key={op} value={op}>{FILTER_OPERATOR_LABELS[op] || op}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {requiresCompareValue ? (
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                            Compare With
+                          </label>
+                          <select
+                            value={valueMode}
+                            onChange={(event) => updateCondition(idx, { value_mode: event.target.value })}
+                            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:focus:border-blue-400"
+                          >
+                            <option value="literal">Literal Value</option>
+                            <option value="field">Another Field</option>
+                          </select>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                            Compare With
+                          </label>
+                          <div className="w-full rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+                            Not required
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {requiresCompareValue && valueMode === 'field' ? (
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Right Field Path
+                        </label>
+                        <input
+                          type="text"
+                          value={String(condition.value_field || '')}
+                          placeholder={dragOverField === valueFieldDropKey ? 'Drop to insert path…' : 'e.g. expected_amount'}
+                          onChange={(event) => updateCondition(idx, { value_field: event.target.value })}
+                          onDragOver={(event) => handleDragOver(event, valueFieldDropKey)}
+                          onDragLeave={(event) => handleDragLeave(event)}
+                          onDrop={(event) => handleFilterConditionDrop(event, idx, 'value_field', 'value_field')}
+                          className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all placeholder:text-slate-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === valueFieldDropKey
+                            ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                            : 'border-slate-200 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+                            }`}
+                        />
+                      </div>
+                    ) : requiresCompareValue ? (
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Right Value
+                        </label>
+                        {dataType === 'boolean' ? (
+                          <select
+                            value={String(condition.value ?? 'true')}
+                            onChange={(event) => updateCondition(idx, { value: event.target.value })}
+                            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:focus:border-blue-400"
+                          >
+                            <option value="true">true</option>
+                            <option value="false">false</option>
+                          </select>
+                        ) : (
+                          <input
+                            type={dataType === 'date' ? 'datetime-local' : (dataType === 'number' ? 'number' : 'text')}
+                            value={String(condition.value ?? '')}
+                            placeholder={dragOverField === valueDropKey
+                              ? 'Drop to insert {{path}}…'
+                              : dataType === 'number'
+                                ? 'e.g. 500'
+                                : dataType === 'date'
+                                  ? 'e.g. 2026-05-07T13:45'
+                                  : dataType === 'array'
+                                    ? 'e.g. value or 2'
+                                    : dataType === 'object'
+                                      ? 'JSON object literal'
+                                      : 'e.g. paid'}
+                            onChange={(event) => updateCondition(idx, { value: event.target.value })}
+                            onDragOver={(event) => handleDragOver(event, valueDropKey)}
+                            onDragLeave={(event) => handleDragLeave(event)}
+                            onDrop={(event) => handleFilterConditionDrop(event, idx, 'value', 'value')}
+                            className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all placeholder:text-slate-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === valueDropKey
+                              ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                              : 'border-slate-200 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+                              }`}
+                          />
+                        )}
+                      </div>
+                    ) : null}
+
+                    {usesStringComparison && (
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Case Sensitive
+                        </label>
+                        <select
+                          value={String(caseSensitive)}
+                          onChange={(event) => updateCondition(idx, { case_sensitive: event.target.value === 'true' })}
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:focus:border-blue-400"
+                        >
+                          <option value="true">true</option>
+                          <option value="false">false</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            <button
+              type="button"
+              onClick={addCondition}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-200 py-2 text-xs font-bold text-slate-400 transition-all hover:border-blue-300 hover:text-blue-500 dark:border-slate-800 dark:text-slate-600 dark:hover:border-blue-900 dark:hover:text-blue-400"
+            >
+              <Plus size={12} strokeWidth={3} />
+              Add Condition
+            </button>
           </div>
         );
       }

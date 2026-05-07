@@ -55,6 +55,11 @@ class ConversationState(BaseModel):
     confirmed_choices: dict[str, Any] = Field(default_factory=dict)
     assumptions: list[str] = Field(default_factory=list)
     recent_messages: list[ConversationMessage] = Field(default_factory=list, max_length=20)
+    workflow_context_origin: Literal["accepted_canvas", "preview", "unknown"] = "accepted_canvas"
+    preview_active: bool = False
+    last_accepted_workflow_signature: str | None = Field(default=None, max_length=240)
+    last_referenced_nodes: list[str] = Field(default_factory=list, max_length=12)
+    last_unresolved_question: str | None = Field(default=None, max_length=400)
     last_mode: AssistantMode | None = None
 
 

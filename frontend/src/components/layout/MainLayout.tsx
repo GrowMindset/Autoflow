@@ -31,6 +31,11 @@ const createEmptyConversationState = (): ConversationState => ({
   confirmedChoices: {},
   assumptions: [],
   recentMessages: [],
+  workflowContextOrigin: 'accepted_canvas',
+  previewActive: false,
+  lastAcceptedWorkflowSignature: undefined,
+  lastReferencedNodes: [],
+  lastUnresolvedQuestion: undefined,
   lastMode: undefined,
 });
 const EMPTY_CONVERSATION_STATE: ConversationState = createEmptyConversationState();
@@ -57,6 +62,7 @@ const MainLayout: React.FC = () => {
   const aiHistoryLoadedScopesRef = useRef<Set<string>>(new Set());
   const aiHistoryHydratingScopesRef = useRef<Set<string>>(new Set());
   const aiHistoryPersistTimeoutRef = useRef<number | null>(null);
+  const aiRequestAbortControllerRef = useRef<AbortController | null>(null);
   const pendingDiscardRefinementRef = useRef<{
     scopeId: string;
     workflowDefinition: any;
@@ -753,6 +759,9 @@ const MainLayout: React.FC = () => {
   }, [workflows]);
 
   const handleSendMessage = useCallback(async (content: string, conversationStateOverride?: ConversationState) => {
+    if (isAiLoading) return;
+    const wasPreviewActive = Boolean((window as any).isAiWorkflowPreviewActive?.());
+    const asksPreviewContext = /\b(preview|reviewed workflow|reviewed flow|draft workflow|preview workflow)\b/i.test(content);
     clearAiReviewState();
     const scopeId = currentWorkflowId || 'new';
     const pendingRefinement = pendingDiscardRefinementRef.current;
@@ -770,16 +779,27 @@ const MainLayout: React.FC = () => {
       [scopeId]: [...(prev[scopeId] || []), userMsg].slice(-40),
     }));
     setIsAiLoading(true);
+    const aiRequestController = new AbortController();
+    aiRequestAbortControllerRef.current = aiRequestController;
 
     try {
       // Get current workflow state to provide context to the AI
       const currentWorkflowData = (window as any).getCanvasWorkflowData?.(currentWorkflow.name);
-      let workflowContext = currentWorkflowData?.definition;
+      const acceptedWorkflowContext = currentWorkflowData?.definition;
+      let workflowContext = acceptedWorkflowContext;
       let promptToSend = content;
+      const usePreviewContext =
+        Boolean(pendingRefinement?.workflowDefinition)
+        && (
+          shouldRefineReviewedWorkflow
+          || (assistantInteractionMode === 'ask' && asksPreviewContext)
+        );
 
-      if (shouldRefineReviewedWorkflow && pendingRefinement?.workflowDefinition) {
+      if (usePreviewContext && pendingRefinement?.workflowDefinition) {
         workflowContext = pendingRefinement.workflowDefinition;
-        promptToSend = `Refine the reviewed workflow with these requested changes:\n${content}\nKeep the original business goal, modify only what the user requested, and return full updated workflow JSON.`;
+        if (shouldRefineReviewedWorkflow) {
+          promptToSend = `Refine the reviewed workflow with these requested changes:\n${content}\nKeep the original business goal, modify only what the user requested, and return full updated workflow JSON.`;
+        }
       }
 
       const previousMessages = chatMessagesByWorkflow[scopeId] || [];
@@ -791,6 +811,7 @@ const MainLayout: React.FC = () => {
         conversationStateOverride
         || aiConversationStateByWorkflow[scopeId]
         || createEmptyConversationState();
+      const acceptedWorkflowSignature = getWorkflowSignature(acceptedWorkflowContext);
 
       const inferredConfirmedChoices = { ...baseConversationState.confirmedChoices };
       if (latestClarifyMessage?.questions?.length) {
@@ -814,8 +835,12 @@ const MainLayout: React.FC = () => {
           ...baseConversationState,
           confirmedChoices: inferredConfirmedChoices,
           recentMessages: recentMessagesForContext,
+          workflowContextOrigin: usePreviewContext ? 'preview' : 'accepted_canvas',
+          previewActive: wasPreviewActive,
+          lastAcceptedWorkflowSignature: acceptedWorkflowSignature || baseConversationState.lastAcceptedWorkflowSignature,
         },
         assistantInteractionMode,
+        { signal: aiRequestController.signal },
       );
 
       setAiConversationStateByWorkflow((prev) => ({
@@ -831,6 +856,14 @@ const MainLayout: React.FC = () => {
             ...(response.conversationState?.confirmedChoices || {}),
           },
           recentMessages: recentMessagesForContext,
+          workflowContextOrigin: response.conversationState?.workflowContextOrigin || (usePreviewContext ? 'preview' : 'accepted_canvas'),
+          previewActive: Boolean(response.conversationState?.previewActive),
+          lastAcceptedWorkflowSignature:
+            response.conversationState?.lastAcceptedWorkflowSignature
+            || acceptedWorkflowSignature
+            || baseConversationState.lastAcceptedWorkflowSignature,
+          lastReferencedNodes: response.conversationState?.lastReferencedNodes || baseConversationState.lastReferencedNodes || [],
+          lastUnresolvedQuestion: response.conversationState?.lastUnresolvedQuestion,
         },
       }));
 
@@ -854,6 +887,13 @@ const MainLayout: React.FC = () => {
         [scopeId]: [...(prev[scopeId] || []), assistantMsg].slice(-40),
       }));
     } catch (error: any) {
+      const isCanceledRequest =
+        error?.name === 'CanceledError'
+        || error?.code === 'ERR_CANCELED'
+        || error?.message === 'canceled';
+      if (isCanceledRequest) {
+        return;
+      }
       const fallback = 'AI workflow generation failed. Please try again.';
       const detail = error?.response?.data?.detail;
       const errorMessage =
@@ -862,9 +902,20 @@ const MainLayout: React.FC = () => {
           : detail?.message || error?.message || fallback;
       toast.error(errorMessage);
     } finally {
+      if (aiRequestAbortControllerRef.current === aiRequestController) {
+        aiRequestAbortControllerRef.current = null;
+      }
       setIsAiLoading(false);
     }
-  }, [aiConversationStateByWorkflow, assistantInteractionMode, chatMessagesByWorkflow, clearAiReviewState, currentWorkflow.name, currentWorkflowId]);
+  }, [aiConversationStateByWorkflow, assistantInteractionMode, chatMessagesByWorkflow, clearAiReviewState, currentWorkflow.name, currentWorkflowId, getWorkflowSignature, isAiLoading]);
+
+  const handleStopAiGeneration = useCallback(() => {
+    if (!aiRequestAbortControllerRef.current) return;
+    aiRequestAbortControllerRef.current.abort();
+    aiRequestAbortControllerRef.current = null;
+    setIsAiLoading(false);
+    toast('Stopped AI generation.', { icon: 'ℹ️' });
+  }, []);
 
   const handleInteractionModeChange = useCallback((mode: AssistantInteractionMode) => {
     setAssistantInteractionMode(mode);
@@ -992,12 +1043,23 @@ const MainLayout: React.FC = () => {
 
     applyWorkflowName(suggestedName);
     setReviewedWorkflowSignature(null);
+    const scopeId = currentWorkflowId || 'new';
+    setAiConversationStateByWorkflow((prev) => ({
+      ...prev,
+      [scopeId]: {
+        ...(prev[scopeId] || createEmptyConversationState()),
+        workflowContextOrigin: 'accepted_canvas',
+        previewActive: false,
+        lastAcceptedWorkflowSignature: signature,
+        lastUnresolvedQuestion: undefined,
+      },
+    }));
     toast.success(
       suggestedName
         ? `Workflow accepted as "${suggestedName}". Review and save your changes.`
         : 'Workflow accepted. Review and save your changes.'
     );
-  }, [normalizeAiWorkflowPayload, reviewedWorkflowSignature, handleApplyAiWorkflow, applyWorkflowName]);
+  }, [normalizeAiWorkflowPayload, reviewedWorkflowSignature, handleApplyAiWorkflow, applyWorkflowName, currentWorkflowId]);
 
   const handleDiscardReviewedWorkflow = useCallback((workflowPayload?: any) => {
     (window as any).discardAiWorkflowPreview?.();
@@ -1014,6 +1076,14 @@ const MainLayout: React.FC = () => {
         workflowDefinition,
         suggestedName,
       };
+      setAiConversationStateByWorkflow((prev) => ({
+        ...prev,
+        [scopeId]: {
+          ...(prev[scopeId] || createEmptyConversationState()),
+          workflowContextOrigin: 'preview',
+          previewActive: true,
+        },
+      }));
     }
 
     const assistantFollowup: Message = {
@@ -1135,6 +1205,7 @@ const MainLayout: React.FC = () => {
             onClose={() => setIsAiAssistantOpen(false)}
             messages={chatMessages}
             onSendMessage={handleSendMessage}
+            onStopGeneration={handleStopAiGeneration}
             interactionMode={assistantInteractionMode}
             onInteractionModeChange={handleInteractionModeChange}
             onClearHistory={handleClearAiHistory}

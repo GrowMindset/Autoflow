@@ -183,6 +183,7 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
     "if_else": {
         "field": "",
         "operator": "equals",
+        "data_type": "string",
         "value": "",
         "value_mode": "literal",
         "value_field": "",
@@ -206,9 +207,15 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "filter": {
         "input_key": "",
+        "logic": "and",
+        "conditions": [],
+        # Legacy single-condition keys (kept for backward compatibility).
         "field": "",
         "operator": "equals",
         "value": "",
+        "value_mode": "literal",
+        "value_field": "",
+        "case_sensitive": True,
     },
     "delay": {
         "amount": "1",
@@ -372,6 +379,247 @@ def _normalize_and_prune_merge_config(config: dict[str, Any]) -> dict[str, Any]:
     return pruned
 
 
+FILTER_LOGIC_VALUES = {"and", "or"}
+FILTER_DATA_TYPES = {"string", "number", "boolean", "date", "array", "object"}
+FILTER_OPERATORS_BY_DATA_TYPE: dict[str, tuple[str, ...]] = {
+    "string": (
+        "exists",
+        "does_not_exist",
+        "is_empty",
+        "is_not_empty",
+        "equals",
+        "not_equals",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "does_not_start_with",
+        "ends_with",
+        "does_not_end_with",
+        "matches_regex",
+        "does_not_match_regex",
+    ),
+    "number": (
+        "exists",
+        "does_not_exist",
+        "is_empty",
+        "is_not_empty",
+        "equals",
+        "not_equals",
+        "greater_than",
+        "less_than",
+        "greater_than_or_equals",
+        "less_than_or_equals",
+    ),
+    "boolean": (
+        "exists",
+        "does_not_exist",
+        "is_empty",
+        "is_not_empty",
+        "is_true",
+        "is_false",
+        "equals",
+        "not_equals",
+    ),
+    "date": (
+        "exists",
+        "does_not_exist",
+        "is_empty",
+        "is_not_empty",
+        "equals",
+        "not_equals",
+        "after",
+        "before",
+        "after_or_equal",
+        "before_or_equal",
+    ),
+    "array": (
+        "exists",
+        "does_not_exist",
+        "is_empty",
+        "is_not_empty",
+        "contains",
+        "not_contains",
+        "length_equals",
+        "length_not_equals",
+        "length_greater_than",
+        "length_less_than",
+        "length_greater_than_or_equals",
+        "length_less_than_or_equals",
+    ),
+    "object": (
+        "exists",
+        "does_not_exist",
+        "is_empty",
+        "is_not_empty",
+        "equals",
+        "not_equals",
+    ),
+}
+FILTER_OPERATOR_ALIASES = {
+    "not_exists": "does_not_exist",
+    "greater_than_or_equal": "greater_than_or_equals",
+    "less_than_or_equal": "less_than_or_equals",
+}
+FILTER_VALUE_MODES = {"literal", "field"}
+FILTER_KNOWN_KEYS = {
+    "input_key",
+    "logic",
+    "condition_logic",
+    "conditions",
+    "field",
+    "operator",
+    "data_type",
+    "value",
+    "value_mode",
+    "value_field",
+    "case_sensitive",
+}
+
+
+def _normalize_filter_condition(raw_condition: Any, *, index: int) -> dict[str, Any] | None:
+    if not isinstance(raw_condition, dict):
+        return None
+
+    field = str(raw_condition.get("field") or "").strip()
+    operator_raw = str(raw_condition.get("operator") or "equals").strip().lower()
+    operator_normalized = FILTER_OPERATOR_ALIASES.get(operator_raw, operator_raw)
+    raw_data_type = str(raw_condition.get("data_type") or "").strip().lower()
+    if raw_data_type in FILTER_DATA_TYPES:
+        data_type = raw_data_type
+    elif operator_normalized in {
+        "greater_than",
+        "less_than",
+        "greater_than_or_equals",
+        "less_than_or_equals",
+    }:
+        data_type = "number"
+    elif operator_normalized in {
+        "after",
+        "before",
+        "after_or_equal",
+        "before_or_equal",
+        "is_after",
+        "is_before",
+        "is_after_or_equal",
+        "is_before_or_equal",
+    }:
+        data_type = "date"
+    elif operator_normalized in {
+        "length_equals",
+        "length_not_equals",
+        "length_greater_than",
+        "length_less_than",
+        "length_greater_than_or_equals",
+        "length_less_than_or_equals",
+    }:
+        data_type = "array"
+    elif operator_normalized in {"is_true", "is_false"}:
+        data_type = "boolean"
+    else:
+        data_type = "string"
+    allowed_operators = FILTER_OPERATORS_BY_DATA_TYPE.get(data_type, FILTER_OPERATORS_BY_DATA_TYPE["string"])
+    operator = operator_normalized if operator_normalized in allowed_operators else "equals"
+    value_mode_raw = str(raw_condition.get("value_mode") or "literal").strip().lower()
+    value_mode = value_mode_raw if value_mode_raw in FILTER_VALUE_MODES else "literal"
+    value_field = str(raw_condition.get("value_field") or "").strip()
+    join_with_previous_raw = str(
+        raw_condition.get("join_with_previous")
+        or raw_condition.get("condition")
+        or raw_condition.get("logic")
+        or "and"
+    ).strip().lower()
+    join_with_previous = "or" if join_with_previous_raw == "or" else "and"
+
+    normalized: dict[str, Any] = {
+        "id": str(raw_condition.get("id") or f"condition_{index}").strip() or f"condition_{index}",
+        "field": field,
+        "operator": operator,
+        "data_type": data_type,
+        "value_mode": value_mode,
+        "value_field": value_field,
+        "case_sensitive": _as_bool(raw_condition.get("case_sensitive"), default=True),
+        "join_with_previous": "and" if index <= 1 else join_with_previous,
+    }
+    if value_mode == "field":
+        normalized["value"] = ""
+    else:
+        normalized["value"] = raw_condition.get("value", "")
+    return normalized
+
+
+def _normalize_filter_config(config: dict[str, Any]) -> dict[str, Any]:
+    safe_config = dict(config or {})
+    input_key = str(safe_config.get("input_key") or "").strip()
+    logic_raw = str(
+        safe_config.get("logic")
+        or safe_config.get("condition_logic")
+        or "and"
+    ).strip().lower()
+    logic = logic_raw if logic_raw in FILTER_LOGIC_VALUES else "and"
+
+    normalized_conditions: list[dict[str, Any]] = []
+    raw_conditions = safe_config.get("conditions")
+    if isinstance(raw_conditions, list):
+        for idx, raw_condition in enumerate(raw_conditions, start=1):
+            condition_data = raw_condition if isinstance(raw_condition, dict) else {}
+            if idx > 1 and "join_with_previous" not in condition_data:
+                condition_data = {
+                    **condition_data,
+                    "join_with_previous": logic,
+                }
+            normalized = _normalize_filter_condition(condition_data, index=idx)
+            if normalized is not None:
+                normalized_conditions.append(normalized)
+
+    if not normalized_conditions:
+        legacy_condition = _normalize_filter_condition(
+            {
+                "field": safe_config.get("field"),
+                "operator": safe_config.get("operator"),
+                "value": safe_config.get("value", ""),
+                "value_mode": safe_config.get("value_mode"),
+                "value_field": safe_config.get("value_field"),
+                "case_sensitive": safe_config.get("case_sensitive", True),
+                "join_with_previous": logic,
+            },
+            index=1,
+        )
+        has_legacy_signal = any(
+            [
+                str(safe_config.get("field") or "").strip(),
+                str(safe_config.get("value_field") or "").strip(),
+                "value" in safe_config,
+            ]
+        )
+        if legacy_condition is not None and has_legacy_signal:
+            normalized_conditions.append(legacy_condition)
+
+    if not normalized_conditions:
+        normalized_conditions.append(
+            {
+                "id": "condition_1",
+                "field": "",
+                "operator": "equals",
+                "value_mode": "literal",
+                "value_field": "",
+                "value": "",
+                "case_sensitive": True,
+                "data_type": "string",
+                "join_with_previous": "and",
+            }
+        )
+
+    pruned: dict[str, Any] = {
+        key: value
+        for key, value in safe_config.items()
+        if key not in FILTER_KNOWN_KEYS
+    }
+    pruned["input_key"] = input_key
+    pruned["logic"] = logic
+    pruned["conditions"] = normalized_conditions
+    return pruned
+
+
 IMAGE_GEN_SIZES_BY_MODEL: dict[str, set[str]] = {
     "dall-e-3": {"1024x1024", "1792x1024", "1024x1792"},
     "dall-e-2": {"256x256", "512x512", "1024x1024"},
@@ -450,6 +698,9 @@ class WorkflowNodeDefinition(BaseModel):
 
         if self.type == "merge":
             self.config = _normalize_and_prune_merge_config(self.config)
+
+        if self.type == "filter":
+            self.config = _normalize_filter_config(self.config)
 
         return self
 

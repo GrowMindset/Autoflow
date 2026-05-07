@@ -253,6 +253,81 @@ class WorkflowSchemaTests(unittest.TestCase):
         self.assertTrue(enabled_config.get("allow_missing_branch_fallback"))
         self.assertNotIn("allow_missing_branch_fallback", disabled_config)
 
+    def test_filter_config_normalizes_conditions_and_logic(self):
+        definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "f1",
+                        "type": "filter",
+                        "label": "Filter",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "input_key": "items",
+                            "logic": "OR",
+                            "conditions": [
+                                {
+                                    "field": "amount",
+                                    "operator": "greater_than",
+                                    "value": "500",
+                                },
+                                {
+                                    "field": "status",
+                                    "operator": "contains",
+                                    "value_mode": "field",
+                                    "value_field": "expected_status",
+                                    "case_sensitive": "false",
+                                },
+                            ],
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        config = definition.nodes[0].config
+        self.assertEqual(config["input_key"], "items")
+        self.assertEqual(config["logic"], "or")
+        self.assertEqual(len(config["conditions"]), 2)
+        self.assertEqual(config["conditions"][0]["join_with_previous"], "and")
+        self.assertEqual(config["conditions"][1]["join_with_previous"], "or")
+        self.assertEqual(config["conditions"][0]["operator"], "greater_than")
+        self.assertEqual(config["conditions"][0]["data_type"], "number")
+        self.assertEqual(config["conditions"][1]["value_mode"], "field")
+        self.assertEqual(config["conditions"][1]["data_type"], "string")
+        self.assertFalse(config["conditions"][1]["case_sensitive"])
+
+    def test_filter_config_migrates_legacy_single_condition(self):
+        definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "f1",
+                        "type": "filter",
+                        "label": "Filter",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "input_key": "items",
+                            "field": "status",
+                            "operator": "equals",
+                            "value": "paid",
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        config = definition.nodes[0].config
+        self.assertEqual(config["logic"], "and")
+        self.assertEqual(len(config["conditions"]), 1)
+        self.assertEqual(config["conditions"][0]["join_with_previous"], "and")
+        self.assertEqual(config["conditions"][0]["field"], "status")
+        self.assertEqual(config["conditions"][0]["operator"], "equals")
+        self.assertEqual(config["conditions"][0]["data_type"], "string")
+        self.assertEqual(config["conditions"][0]["value"], "paid")
+
 
 if __name__ == "__main__":
     unittest.main()

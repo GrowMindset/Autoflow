@@ -389,9 +389,20 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       description: 'Remove items from the data stream.',
       default_config: {
         input_key: '',
-        field: '',
-        operator: 'equals',
-        value: '',
+        logic: 'and',
+        conditions: [
+          {
+            id: 'condition_1',
+            field: '',
+            operator: 'equals',
+            data_type: 'string',
+            value_mode: 'literal',
+            value_field: '',
+            value: '',
+            case_sensitive: true,
+            join_with_previous: 'and',
+          },
+        ],
       },
       is_dummy: false,
     },

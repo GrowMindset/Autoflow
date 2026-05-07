@@ -694,6 +694,232 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result["items"], [{"amount": 700}])
         self.assertEqual(result["user"], "A")
 
+    def test_filter_runner_supports_multiple_conditions_with_and_logic(self):
+        runner = FilterRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "logic": "and",
+                "conditions": [
+                    {"field": "amount", "operator": "greater_than", "value": "500"},
+                    {"field": "status", "operator": "equals", "value": "paid"},
+                ],
+            },
+            input_data={
+                "items": [
+                    {"amount": 700, "status": "paid"},
+                    {"amount": 700, "status": "pending"},
+                    {"amount": 250, "status": "paid"},
+                ]
+            },
+        )
+        self.assertEqual(result["items"], [{"amount": 700, "status": "paid"}])
+
+    def test_filter_runner_supports_multiple_conditions_with_or_logic(self):
+        runner = FilterRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "logic": "or",
+                "conditions": [
+                    {"field": "amount", "operator": "greater_than", "value": "500"},
+                    {"field": "status", "operator": "equals", "value": "urgent"},
+                ],
+            },
+            input_data={
+                "items": [
+                    {"amount": 700, "status": "paid"},
+                    {"amount": 250, "status": "urgent"},
+                    {"amount": 250, "status": "pending"},
+                ]
+            },
+        )
+        self.assertEqual(
+            result["items"],
+            [{"amount": 700, "status": "paid"}, {"amount": 250, "status": "urgent"}],
+        )
+
+    def test_filter_runner_supports_mixed_condition_chaining(self):
+        runner = FilterRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "conditions": [
+                    {"field": "status", "operator": "equals", "value": "vip"},
+                    {
+                        "field": "amount",
+                        "operator": "greater_than",
+                        "value": "500",
+                        "join_with_previous": "or",
+                    },
+                    {
+                        "field": "country",
+                        "operator": "equals",
+                        "value": "IN",
+                        "join_with_previous": "and",
+                    },
+                ],
+            },
+            input_data={
+                "items": [
+                    {"status": "vip", "amount": 100, "country": "US"},
+                    {"status": "regular", "amount": 700, "country": "IN"},
+                    {"status": "regular", "amount": 700, "country": "US"},
+                    {"status": "regular", "amount": 300, "country": "IN"},
+                ]
+            },
+        )
+        self.assertEqual(
+            result["items"],
+            [
+                {"status": "regular", "amount": 700, "country": "IN"},
+            ],
+        )
+
+    def test_filter_runner_supports_number_data_type_precision(self):
+        runner = FilterRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "conditions": [
+                    {
+                        "field": "amount",
+                        "data_type": "number",
+                        "operator": "greater_than_or_equals",
+                        "value": "500",
+                    }
+                ],
+            },
+            input_data={"items": [{"amount": 499.99}, {"amount": 500}, {"amount": 700}]},
+        )
+        self.assertEqual(result["items"], [{"amount": 500}, {"amount": 700}])
+
+    def test_filter_runner_supports_boolean_and_date_and_array_operators(self):
+        runner = FilterRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "conditions": [
+                    {
+                        "field": "active",
+                        "data_type": "boolean",
+                        "operator": "is_true",
+                    },
+                    {
+                        "field": "created_at",
+                        "data_type": "date",
+                        "operator": "after",
+                        "value": "2026-05-01T00:00:00",
+                        "join_with_previous": "and",
+                    },
+                    {
+                        "field": "tags",
+                        "data_type": "array",
+                        "operator": "length_greater_than_or_equals",
+                        "value": "2",
+                        "join_with_previous": "and",
+                    },
+                ],
+            },
+            input_data={
+                "items": [
+                    {"active": True, "created_at": "2026-05-06T10:00:00", "tags": ["a", "b"]},
+                    {"active": True, "created_at": "2026-04-01T10:00:00", "tags": ["a", "b"]},
+                    {"active": False, "created_at": "2026-05-06T10:00:00", "tags": ["a", "b"]},
+                    {"active": True, "created_at": "2026-05-06T10:00:00", "tags": ["a"]},
+                ]
+            },
+        )
+        self.assertEqual(
+            result["items"],
+            [{"active": True, "created_at": "2026-05-06T10:00:00", "tags": ["a", "b"]}],
+        )
+
+    def test_filter_runner_supports_exists_and_object_equals(self):
+        runner = FilterRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "conditions": [
+                    {
+                        "field": "meta",
+                        "data_type": "object",
+                        "operator": "exists",
+                    },
+                    {
+                        "field": "meta",
+                        "data_type": "object",
+                        "operator": "equals",
+                        "value": '{"tier":"pro"}',
+                        "join_with_previous": "and",
+                    },
+                    {
+                        "field": "missing",
+                        "data_type": "string",
+                        "operator": "does_not_exist",
+                        "join_with_previous": "and",
+                    },
+                ],
+            },
+            input_data={
+                "items": [
+                    {"meta": {"tier": "pro"}, "name": "A"},
+                    {"meta": {"tier": "free"}, "name": "B"},
+                    {"name": "C"},
+                ]
+            },
+        )
+        self.assertEqual(result["items"], [{"meta": {"tier": "pro"}, "name": "A"}])
+
+    def test_filter_runner_supports_field_to_field_condition(self):
+        runner = FilterRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "conditions": [
+                    {
+                        "field": "status",
+                        "operator": "equals",
+                        "value_mode": "field",
+                        "value_field": "expected_status",
+                    }
+                ],
+            },
+            input_data={
+                "items": [
+                    {"status": "PAID", "expected_status": "PAID"},
+                    {"status": "PENDING", "expected_status": "PAID"},
+                ]
+            },
+        )
+        self.assertEqual(
+            result["items"],
+            [{"status": "PAID", "expected_status": "PAID"}],
+        )
+
+    def test_filter_runner_supports_case_insensitive_contains(self):
+        runner = FilterRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "conditions": [
+                    {
+                        "field": "status",
+                        "operator": "contains",
+                        "value": "paid",
+                        "case_sensitive": False,
+                    }
+                ],
+            },
+            input_data={
+                "items": [
+                    {"status": "PAID_SUCCESS"},
+                    {"status": "failed"},
+                ]
+            },
+        )
+        self.assertEqual(result["items"], [{"status": "PAID_SUCCESS"}])
+
     def test_filter_runner_returns_empty_for_no_matches(self):
         runner = FilterRunner()
         result = runner.run(
@@ -714,7 +940,21 @@ class RunnerTests(unittest.TestCase):
         runner = FilterRunner()
         with self.assertRaises(ValueError):
             runner.run(
-                config={"input_key": "items", "field": "amount", "operator": "greater_than_or_equals", "value": "10"},
+                config={"input_key": "items", "field": "amount", "operator": "between", "value": "10"},
+                input_data={"items": [{"amount": 10}]},
+            )
+
+    def test_filter_runner_rejects_invalid_logic(self):
+        runner = FilterRunner()
+        with self.assertRaises(ValueError):
+            runner.run(
+                config={
+                    "input_key": "items",
+                    "logic": "xor",
+                    "conditions": [
+                        {"field": "amount", "operator": "greater_than", "value": "10"},
+                    ],
+                },
                 input_data={"items": [{"amount": 10}]},
             )
 

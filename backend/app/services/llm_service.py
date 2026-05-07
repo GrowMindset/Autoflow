@@ -311,6 +311,20 @@ CHANNEL_DISPLAY_NAMES: dict[str, str] = {
     "create_google_docs": "Google Docs",
 }
 
+ASK_NODE_MANUAL_ALIASES: dict[str, tuple[str, ...]] = {
+    "http_request": ("http node", "api node", "http request node"),
+    "send_gmail_message": ("gmail node", "email node", "mail node"),
+    "search_update_google_sheets": ("google sheets node", "sheets node", "sheet node"),
+    "create_google_sheets": ("google sheets create", "create sheet"),
+    "webhook_trigger": ("webhook", "webhook trigger"),
+    "form_trigger": ("form trigger", "form submission node"),
+    "schedule_trigger": ("schedule trigger", "cron trigger"),
+    "manual_trigger": ("manual trigger", "run trigger"),
+    "if_else": ("if else", "if/else"),
+    "ai_agent": ("ai node", "ai agent"),
+    "image_gen": ("image node", "image generation node"),
+}
+
 AI_AGENT_STRUCTURED_OUTPUT_KEYS = {
     "summary",
     "sentiment",
@@ -727,6 +741,23 @@ class LLMService:
         existing_assumptions = self._sanitize_string_list(state.get("assumptions"))
         recent_messages = self._sanitize_recent_messages(state.get("recent_messages"))
         last_mode = str(state.get("last_mode") or "").strip().lower() or None
+        workflow_context_origin = str(
+            state.get("workflow_context_origin") or "accepted_canvas"
+        ).strip().lower()
+        if workflow_context_origin not in {"accepted_canvas", "preview", "unknown"}:
+            workflow_context_origin = "unknown"
+        preview_active = bool(state.get("preview_active", False))
+        last_referenced_nodes = self._sanitize_node_reference_list(
+            state.get("last_referenced_nodes")
+        )
+        last_unresolved_question = self._sanitize_single_line(
+            state.get("last_unresolved_question"),
+            max_chars=320,
+        )
+        last_accepted_workflow_signature = self._sanitize_single_line(
+            state.get("last_accepted_workflow_signature"),
+            max_chars=220,
+        )
 
         prompt_with_choices = self._merge_confirmed_choices_into_prompt(
             cleaned_prompt,
@@ -737,11 +768,23 @@ class LLMService:
             prompt_with_choices,
             recent_messages=recent_messages,
         )
+        prompt_with_choices = self._append_memory_anchors_to_prompt(
+            prompt_with_choices,
+            last_referenced_nodes=last_referenced_nodes,
+            last_unresolved_question=last_unresolved_question,
+            last_accepted_workflow_signature=last_accepted_workflow_signature,
+        )
         if normalized_interaction_mode == "ask":
             assistant_message = await self._answer_autoflow_question(
                 prompt_with_choices,
                 current_definition=current_definition,
                 question_text=direct_question_prompt,
+                recent_messages=recent_messages,
+                workflow_context_origin=workflow_context_origin,
+                preview_active=preview_active,
+                last_referenced_nodes=last_referenced_nodes,
+                last_unresolved_question=last_unresolved_question,
+                last_accepted_workflow_signature=last_accepted_workflow_signature,
             )
             return {
                 "mode": "ask",
@@ -1405,13 +1448,20 @@ class LLMService:
         cls,
         *,
         prompt: str,
-        current_definition: WorkflowDefinition,
+        current_definition: WorkflowDefinition | None,
+        context_pack: str,
     ) -> str:
-        summary = cls._build_definition_summary(current_definition)
+        workflow_summary = (
+            cls._build_definition_summary(current_definition)
+            if current_definition is not None
+            else "No workflow JSON is currently attached."
+        )
         return (
             f"User question:\n{prompt}\n\n"
-            f"Current workflow context:\n{summary}\n\n"
-            "Answer specifically in context of this current workflow where relevant."
+            f"Current workflow summary:\n{workflow_summary}\n\n"
+            f"Context pack:\n{context_pack}\n\n"
+            "Answer specifically in context of this current workflow where relevant. "
+            "If context is insufficient, say exactly what is missing in 1-2 bullets."
         )
 
     async def _answer_autoflow_question(
@@ -1420,27 +1470,45 @@ class LLMService:
         *,
         current_definition: WorkflowDefinition | None = None,
         question_text: str | None = None,
+        recent_messages: list[dict[str, str]] | None = None,
+        workflow_context_origin: str = "accepted_canvas",
+        preview_active: bool = False,
+        last_referenced_nodes: list[str] | None = None,
+        last_unresolved_question: str | None = None,
+        last_accepted_workflow_signature: str | None = None,
     ) -> str:
         cleaned_prompt = str(prompt or "").strip()
         if not cleaned_prompt:
             return "Please share your Autoflow question, and I can guide you step-by-step."
-        latest_question = " ".join(str(question_text or cleaned_prompt).split()).strip()
+        latest_question = self._extract_latest_user_question(
+            str(question_text or cleaned_prompt)
+        )
+        ask_context_pack = self._build_ask_context_pack(
+            question=latest_question,
+            current_definition=current_definition,
+            recent_messages=recent_messages or [],
+            workflow_context_origin=workflow_context_origin,
+            preview_active=preview_active,
+            last_referenced_nodes=last_referenced_nodes or [],
+            last_unresolved_question=last_unresolved_question or "",
+            last_accepted_workflow_signature=last_accepted_workflow_signature or "",
+        )
 
         local_fallback = self._build_local_ask_response(
             prompt=latest_question,
             current_definition=current_definition,
+            context_pack=ask_context_pack,
         )
 
         try:
             client = self._get_client()
             system_prompt = self._build_ask_system_prompt()
             ask_temperature = self._default_temperature_for_model(self.model)
-            user_prompt = cleaned_prompt
-            if current_definition is not None:
-                user_prompt = self._build_ask_user_prompt(
-                    prompt=cleaned_prompt,
-                    current_definition=current_definition,
-                )
+            user_prompt = self._build_ask_user_prompt(
+                prompt=latest_question,
+                current_definition=current_definition,
+                context_pack=ask_context_pack,
+            )
 
             if isinstance(client, BaseLLMProvider):
                 answer = await client.complete(
@@ -1452,9 +1520,14 @@ class LLMService:
                 )
                 normalized_answer = str(answer or "").strip()
                 if normalized_answer:
-                    return self._clip_assistant_message(
-                        self._sanitize_ask_response_format(normalized_answer)
-                    )
+                    sanitized_answer = self._sanitize_ask_response_format(normalized_answer)
+                    if self._is_low_quality_ask_response(
+                        answer=sanitized_answer,
+                        question=latest_question,
+                        current_definition=current_definition,
+                    ):
+                        return local_fallback
+                    return self._clip_assistant_message(sanitized_answer)
                 return local_fallback
 
             chat_kwargs: dict[str, Any] = {
@@ -1471,12 +1544,234 @@ class LLMService:
             response = await client.chat.completions.create(**chat_kwargs)
             normalized_answer = self._extract_response_text(response).strip()
             if normalized_answer:
-                return self._clip_assistant_message(
-                    self._sanitize_ask_response_format(normalized_answer)
-                )
+                sanitized_answer = self._sanitize_ask_response_format(normalized_answer)
+                if self._is_low_quality_ask_response(
+                    answer=sanitized_answer,
+                    question=latest_question,
+                    current_definition=current_definition,
+                ):
+                    return local_fallback
+                return self._clip_assistant_message(sanitized_answer)
         except Exception:
             return local_fallback
         return local_fallback
+
+    @staticmethod
+    def _extract_latest_user_question(raw_text: str) -> str:
+        text = " ".join(str(raw_text or "").split()).strip()
+        if not text:
+            return ""
+        # Fast path: regular single-turn prompts.
+        if "\n" not in str(raw_text or ""):
+            return text
+
+        lines = [line.strip() for line in str(raw_text or "").splitlines() if line.strip()]
+        if not lines:
+            return text
+
+        ignored_prefixes = (
+            "workflow brief:",
+            "suggested upgrades:",
+            "assumptions applied",
+            "direct answer:",
+            "implementation steps:",
+            "branch wiring:",
+            "where to place it:",
+            "http node overview:",
+            "what you have to send:",
+            "where to send:",
+            "node:",
+            "copy",
+        )
+        intent_tokens = (
+            "how",
+            "what",
+            "why",
+            "give",
+            "suggest",
+            "improve",
+            "create",
+            "build",
+            "steps",
+            "sequence",
+            "format",
+            "prompt",
+            "node",
+        )
+
+        def _is_timestamp(value: str) -> bool:
+            return bool(re.match(r"^\d{1,2}:\d{2}\s*(am|pm)$", value.strip(), flags=re.IGNORECASE))
+
+        candidate: str | None = None
+        for line in reversed(lines):
+            lowered = line.lower()
+            if not lowered:
+                continue
+            if _is_timestamp(lowered):
+                continue
+            if any(lowered.startswith(prefix) for prefix in ignored_prefixes):
+                continue
+            if lowered.startswith("- ") and "?" not in lowered:
+                continue
+            if re.match(r"^\d+\.\s+", lowered):
+                continue
+            if any(token in lowered for token in intent_tokens) or "?" in lowered:
+                candidate = line
+                break
+            if candidate is None:
+                candidate = line
+
+        final_question = candidate or lines[-1]
+        return " ".join(final_question.split()).strip()[:800]
+
+    @staticmethod
+    def _compact_json(value: Any, *, max_chars: int = 260) -> str:
+        try:
+            rendered = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+        except Exception:
+            rendered = str(value)
+        rendered = " ".join(str(rendered).split())
+        if len(rendered) <= max_chars:
+            return rendered
+        return rendered[: max_chars - 3].rstrip() + "..."
+
+    @classmethod
+    def _build_ask_context_pack(
+        cls,
+        *,
+        question: str,
+        current_definition: WorkflowDefinition | None,
+        recent_messages: list[dict[str, str]],
+        workflow_context_origin: str = "accepted_canvas",
+        preview_active: bool = False,
+        last_referenced_nodes: list[str] | None = None,
+        last_unresolved_question: str = "",
+        last_accepted_workflow_signature: str = "",
+    ) -> str:
+        ask_intent = cls._classify_ask_intent(question)
+        lines: list[str] = [
+            "Question intent:",
+            f"- {question}",
+            f"- inferred_intent={ask_intent}",
+            f"- workflow_context_origin={workflow_context_origin}",
+            f"- preview_active={'true' if preview_active else 'false'}",
+            "- context_policy=prefer accepted canvas unless user explicitly asks preview details.",
+        ]
+
+        if last_referenced_nodes:
+            lines.append(
+                f"- memory_last_referenced_nodes={', '.join(last_referenced_nodes[:5])}"
+            )
+        if last_unresolved_question:
+            lines.append(f"- memory_last_unresolved_question={last_unresolved_question}")
+        if last_accepted_workflow_signature:
+            lines.append(
+                f"- memory_last_accepted_workflow_signature={last_accepted_workflow_signature[:120]}"
+            )
+
+        if recent_messages:
+            lines.append("Recent chat memory:")
+            for item in recent_messages[-4:]:
+                role = str(item.get("role") or "").strip().lower() or "user"
+                content = " ".join(str(item.get("content") or "").split()).strip()
+                if not content:
+                    continue
+                lines.append(f"- {role}: {content[:220]}")
+
+        if current_definition is None:
+            lines.append("Workflow context: unavailable in this request.")
+            return "\n".join(lines)
+
+        nodes_by_id = {node.id: node for node in current_definition.nodes}
+        trigger_nodes = [
+            f"{node.label} ({node.id})"
+            for node in current_definition.nodes
+            if node.type in TRIGGER_NODE_TYPES
+        ]
+        lines.append("Workflow snapshot:")
+        lines.append(
+            f"- nodes={len(current_definition.nodes)}, edges={len(current_definition.edges)}"
+        )
+        lines.append(
+            f"- triggers={', '.join(trigger_nodes) if trigger_nodes else 'none'}"
+        )
+
+        lowered_question = question.lower()
+        node_focuses = cls._resolve_node_focuses_from_prompt(
+            lowered_question,
+            current_definition=current_definition,
+        )
+        node_focus = node_focuses[0] if node_focuses else None
+        if node_focuses:
+            lines.append(
+                f"- inferred_focus_node_types={', '.join(node_focuses[:3])}"
+            )
+
+        matched_nodes: list[Any] = []
+        if node_focuses:
+            matched_nodes = [
+                node for node in current_definition.nodes if node.type in set(node_focuses[:3])
+            ][:4]
+        if not matched_nodes:
+            for node in current_definition.nodes:
+                node_id = str(node.id or "").strip().lower()
+                node_label = str(node.label or "").strip().lower()
+                if node_id and f" {node_id} " in f" {lowered_question} ":
+                    matched_nodes.append(node)
+                elif node_label and f" {node_label} " in f" {lowered_question} ":
+                    matched_nodes.append(node)
+                if len(matched_nodes) >= 3:
+                    break
+
+        if matched_nodes:
+            lines.append("Focused node context:")
+            for node in matched_nodes:
+                config = node.config if isinstance(node.config, Mapping) else {}
+                non_empty_config = {
+                    key: value
+                    for key, value in config.items()
+                    if value not in ("", None, [], {}, False)
+                }
+                if not non_empty_config and isinstance(config, Mapping):
+                    non_empty_config = dict(list(config.items())[:4])
+
+                incoming_edges = [
+                    edge for edge in current_definition.edges if edge.target == node.id
+                ][:3]
+                outgoing_edges = [
+                    edge for edge in current_definition.edges if edge.source == node.id
+                ][:3]
+
+                lines.append(f"- {node.label} ({node.id}) type={node.type}")
+                lines.append(
+                    f"  config={cls._compact_json(non_empty_config or {})}"
+                )
+                if incoming_edges:
+                    incoming_refs = []
+                    for edge in incoming_edges:
+                        source = nodes_by_id.get(edge.source)
+                        source_label = source.label if source is not None else edge.source
+                        incoming_refs.append(f"{source_label}->{node.id}")
+                    lines.append(f"  incoming={', '.join(incoming_refs)}")
+                if outgoing_edges:
+                    outgoing_refs = []
+                    for edge in outgoing_edges:
+                        target = nodes_by_id.get(edge.target)
+                        target_label = target.label if target is not None else edge.target
+                        outgoing_refs.append(f"{node.id}->{target_label}")
+                    lines.append(f"  outgoing={', '.join(outgoing_refs)}")
+        else:
+            primary_nodes = [
+                node
+                for node in current_definition.nodes
+                if node.type not in TRIGGER_NODE_TYPES and node.type not in AI_CHAT_MODEL_NODE_TYPES
+            ][:6]
+            if primary_nodes:
+                lines.append("Primary flow nodes:")
+                for node in primary_nodes:
+                    lines.append(f"- {node.label} ({node.id}) type={node.type}")
+
+        return "\n".join(lines)
 
     @staticmethod
     def _clip_assistant_message(message: str, *, max_chars: int = 3900) -> str:
@@ -1497,13 +1792,156 @@ class LLMService:
         return normalized
 
     @classmethod
+    def _is_low_quality_ask_response(
+        cls,
+        *,
+        answer: str,
+        question: str,
+        current_definition: WorkflowDefinition | None,
+    ) -> bool:
+        normalized_answer = " ".join(str(answer or "").split()).strip().lower()
+        if not normalized_answer:
+            return True
+
+        low_quality_markers = (
+            "i could not generate a useful answer",
+            "please rephrase your question",
+            "please rephrase",
+            "cannot answer that",
+            "i'm not sure",
+            "i can help in ask mode with",
+        )
+        if any(marker in normalized_answer for marker in low_quality_markers):
+            return True
+
+        node_focuses = cls._resolve_node_focuses_from_prompt(
+            question.lower(),
+            current_definition=current_definition,
+            max_matches=3,
+        )
+        if node_focuses:
+            mentions_focus = False
+            for node_type in node_focuses:
+                aliases = {
+                    node_type,
+                    node_type.replace("_", " "),
+                    f"{node_type.replace('_', ' ')} node",
+                }
+                for alias in ASK_NODE_MANUAL_ALIASES.get(node_type, ()):
+                    aliases.add(str(alias).strip().lower())
+                if any(alias and alias in normalized_answer for alias in aliases):
+                    mentions_focus = True
+                    break
+            if not mentions_focus and len(normalized_answer) < 220:
+                return True
+
+        too_generic_tokens = (
+            "choose the right trigger",
+            "share your goal",
+            "best practices",
+            "node combinations",
+        )
+        if len(normalized_answer) < 180 and any(
+            token in normalized_answer for token in too_generic_tokens
+        ):
+            return True
+
+        checklist = cls._evaluate_ask_quality_checklist(
+            answer=normalized_answer,
+            question=question,
+            current_definition=current_definition,
+        )
+        checklist_score = sum(1 for passed in checklist.values() if passed)
+        if checklist_score <= 2:
+            return True
+        if not checklist.get("correctness", False):
+            return True
+
+        return False
+
+    @classmethod
+    def _evaluate_ask_quality_checklist(
+        cls,
+        *,
+        answer: str,
+        question: str,
+        current_definition: WorkflowDefinition | None,
+    ) -> dict[str, bool]:
+        normalized_answer = " ".join(str(answer or "").split()).strip().lower()
+        lowered_question = " ".join(str(question or "").split()).strip().lower()
+
+        node_focuses = cls._resolve_node_focuses_from_prompt(
+            lowered_question,
+            current_definition=current_definition,
+            max_matches=3,
+        )
+        mention_aliases: set[str] = set()
+        for node_type in node_focuses:
+            mention_aliases.add(node_type)
+            mention_aliases.add(node_type.replace("_", " "))
+            for alias in ASK_NODE_MANUAL_ALIASES.get(node_type, ()):
+                mention_aliases.add(str(alias).strip().lower())
+        mentions_focus = any(
+            alias and alias in normalized_answer for alias in mention_aliases
+        ) if mention_aliases else False
+
+        specificity = (
+            len(normalized_answer) >= 160
+            or mentions_focus
+            or "in your current workflow" in normalized_answer
+        )
+        correctness = (
+            not any(
+                marker in normalized_answer
+                for marker in (
+                    "i could not generate a useful answer",
+                    "please rephrase your question",
+                    "cannot answer that",
+                    "i'm not sure",
+                )
+            )
+            and (mentions_focus or not node_focuses)
+        )
+        actionability = any(
+            token in normalized_answer
+            for token in (
+                "where to place",
+                "implementation steps",
+                "parameter examples",
+                "parameters",
+                "next action",
+                "1.",
+                "2.",
+            )
+        )
+        if current_definition is not None:
+            workflow_tokens = {"workflow", "node", "edge"}
+            workflow_tokens.update(
+                str(node.id or "").strip().lower()
+                for node in current_definition.nodes[:12]
+                if str(node.id or "").strip()
+            )
+            context_use = any(token and token in normalized_answer for token in workflow_tokens)
+        else:
+            context_use = True
+
+        return {
+            "specificity": bool(specificity),
+            "correctness": bool(correctness),
+            "actionability": bool(actionability),
+            "context_use": bool(context_use),
+        }
+
+    @classmethod
     def _build_local_ask_response(
         cls,
         *,
         prompt: str,
         current_definition: WorkflowDefinition | None,
+        context_pack: str | None = None,
     ) -> str:
         lowered = prompt.lower()
+        ask_intent = cls._classify_ask_intent(prompt)
         wants_brief = any(token in lowered for token in ("brief", "summary", "overview"))
         wants_upgrades = any(
             token in lowered
@@ -1526,20 +1964,94 @@ class LLMService:
             for token in ("if_else", "if else", "switch", "routing", "branch", "branching", "priority", "sentiment", "category path")
         )
         wants_implementation_guide = routing_topic and (wants_steps or wants_place or wants_parameters)
-        node_focus = cls._infer_node_focus_from_prompt(
+        node_focus_types = cls._resolve_node_focuses_from_prompt(
             lowered,
             current_definition=current_definition,
         )
+        node_focus = node_focus_types[0] if node_focus_types else None
         workflow_context_requested = "workflow" in lowered or "this flow" in lowered
+        wants_sequence_plan = any(
+            token in lowered
+            for token in (
+                "which nodes",
+                "node sequence",
+                "in sequence",
+                "connect in sequence",
+                "steps",
+                "step by step",
+                "how to build",
+                "create workflow",
+                "build workflow",
+                "i want to create",
+            )
+        )
+        requested_channel_types = cls._infer_requested_channel_node_types(lowered)
+        asks_workflow_blueprint = (
+            ("workflow" in lowered or "flow" in lowered)
+            and (
+                wants_sequence_plan
+                or "logical connection" in lowered
+                or "connect" in lowered
+                or len(requested_channel_types) >= 2
+                or "lead generation" in lowered
+                or "nurtur" in lowered
+                or bool(re.search(r"\b\d+\s*day", lowered))
+            )
+        )
+        asks_mail_format_improvement = (
+            any(token in lowered for token in ("mail", "email", "gmail"))
+            and any(token in lowered for token in ("format", "template", "improve", "improvement", "changes"))
+        )
+        asks_prompt_improvement = any(
+            token in lowered
+            for token in (
+                "system prompt",
+                "prompt is not good",
+                "suggest good prompt",
+                "suggest prompts",
+                "improve prompt",
+                "better prompt",
+            )
+        )
 
-        if wants_implementation_guide and node_focus != "http_request":
+        if (ask_intent == "routing" or wants_implementation_guide) and node_focus != "http_request":
             return cls._clip_assistant_message(
                 cls._build_routing_implementation_response(
                     definition=current_definition,
                     include_brief=wants_brief,
                 )
             )
-        if node_focus:
+        if asks_prompt_improvement:
+            return cls._clip_assistant_message(
+                cls._build_prompt_improvement_response(
+                    prompt=prompt,
+                    current_definition=current_definition,
+                )
+            )
+        if asks_mail_format_improvement:
+            return cls._clip_assistant_message(
+                cls._build_email_format_improvement_response(
+                    current_definition=current_definition,
+                )
+            )
+        if asks_workflow_blueprint or (
+            wants_sequence_plan and ask_intent in {"how_to", "general", "parameter_help"}
+        ):
+            return cls._clip_assistant_message(
+                cls._build_workflow_sequence_response(
+                    prompt=prompt,
+                    current_definition=current_definition,
+                )
+            )
+        if node_focus_types:
+            if len(node_focus_types) > 1:
+                return cls._clip_assistant_message(
+                    cls._build_multi_node_focus_response(
+                        node_types=node_focus_types,
+                        prompt=prompt,
+                        current_definition=current_definition,
+                    )
+                )
             return cls._clip_assistant_message(
                 cls._build_node_focus_response(
                     node_type=node_focus,
@@ -1563,16 +2075,217 @@ class LLMService:
                 lines.append(f"{index}. {item}")
 
         if not lines:
-            lines = [
-                "I can help in Ask mode with:",
-                "- Choosing the right trigger (manual/form/webhook/schedule/workflow trigger).",
-                "- Explaining any node parameter and what each field does.",
-                "- Recommending node combinations for your use case.",
-                "- Showing how to map dynamic values with {{...}} templates.",
-                "Share your goal or node name, and I will give direct Autoflow-specific guidance.",
-            ]
+            lines.append("Best-effort answer from available context:")
+            if current_definition is not None:
+                brief_points = cls._render_workflow_brief_points(current_definition)
+                for point in brief_points[:2]:
+                    lines.append(f"- {point}")
+            else:
+                lines.append("- No workflow JSON is attached, so I can only give platform-level guidance.")
+
+            missing_items: list[str] = []
+            if node_focus is None:
+                missing_items.append("Which exact node should I explain (node id, label, or node type).")
+            if ask_intent == "debug":
+                missing_items.append("Latest failing node id and error message from execution logs.")
+            if any(token in lowered for token in ("where", "place", "implement", "steps")):
+                missing_items.append("Which source and target node ids you want this change between.")
+            if not missing_items:
+                missing_items.append("Your exact target outcome in one line (what should happen end-to-end).")
+            missing_items = missing_items[:2]
+
+            lines.append("What I still need to be exact:")
+            for item in missing_items:
+                lines.append(f"- {item}")
+
+            next_action = (
+                "Share: node id/label + your expected output. I will return exact placement and parameters."
+                if current_definition is not None
+                else "Share your workflow goal and start trigger; I will provide an exact node-by-node plan."
+            )
+            lines.append("Next action:")
+            lines.append(f"- {next_action}")
+
+            if context_pack:
+                lines.append("Context used:")
+                lines.append(f"- {cls._compact_json(context_pack, max_chars=220)}")
 
         return cls._clip_assistant_message("\n".join(lines))
+
+    @classmethod
+    def _build_workflow_sequence_response(
+        cls,
+        *,
+        prompt: str,
+        current_definition: WorkflowDefinition | None,
+    ) -> str:
+        lowered = str(prompt or "").lower()
+        inferred_trigger = cls._infer_trigger_type_from_prompt(prompt) or cls._infer_default_trigger_from_prompt(
+            prompt=prompt,
+            inferred_trigger=None,
+        ) or "manual_trigger"
+        schedule_language_present = any(
+            token in lowered
+            for token in (
+                "every day",
+                "everyday",
+                "daily",
+                "each day",
+                "every morning",
+                "morning",
+                "weekday",
+                "every week",
+            )
+        ) or bool(re.search(r"\b\d+\s*day(?:s)?\b", lowered))
+        if schedule_language_present:
+            inferred_trigger = "schedule_trigger"
+
+        sequence: list[str] = [inferred_trigger]
+
+        if any(token in lowered for token in ("api", "newsapi", "fetch", "website", "http")):
+            sequence.append("http_request")
+        if any(token in lowered for token in ("filter", "related", "keyword")):
+            sequence.append("filter")
+        if bool(re.search(r"\btop\s*\d+\b", lowered)):
+            sequence.append("code")
+        if any(token in lowered for token in ("summary", "summarize", "summarise", "digest")):
+            sequence.append("ai_agent")
+
+        explicit_channels: list[str] = []
+        if "telegram" in lowered:
+            explicit_channels.append("telegram")
+        if any(token in lowered for token in ("whatsapp", "watsapp", "whats app")):
+            explicit_channels.append("whatsapp")
+        if any(token in lowered for token in ("gmail", "email", "mail")):
+            explicit_channels.append("send_gmail_message")
+        if "slack" in lowered:
+            explicit_channels.append("slack_send_message")
+        if any(token in lowered for token in ("linkedin", "likendin", "linkedin post")):
+            explicit_channels.append("linkedin")
+
+        inferred_focus_channels = [
+            node_type
+            for node_type in cls._resolve_node_focuses_from_prompt(
+                lowered,
+                current_definition=current_definition,
+                max_matches=8,
+            )
+            if node_type in {"telegram", "whatsapp", "send_gmail_message", "slack_send_message", "linkedin"}
+        ]
+        requested_channels: list[str] = []
+        for channel in [*explicit_channels, *inferred_focus_channels]:
+            if channel not in requested_channels:
+                requested_channels.append(channel)
+
+        if len(requested_channels) >= 2 and "ai_agent" not in sequence:
+            # Multi-channel nurture flows usually need centralized AI personalization before fanout.
+            sequence.append("ai_agent")
+        for channel_type in requested_channels:
+            sequence.append(channel_type)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for node_type in sequence:
+            if node_type in seen:
+                continue
+            seen.add(node_type)
+            deduped.append(node_type)
+
+        lines: list[str] = [
+            "Direct answer:",
+            "- Yes, this workflow is valid and this is the recommended sequence.",
+            "Implementation Steps:",
+        ]
+        for index, node_type in enumerate(deduped, start=1):
+            lines.append(f"{index}. Add `{node_type}`.")
+
+        rendered_sequence = " -> ".join(f"`{node}`" for node in deduped)
+        lines.append("Nodes in sequence:")
+        lines.append(f"- {rendered_sequence}")
+        lines.append("Connection notes:")
+        lines.append("- Main edges should follow the sequence above from left to right.")
+        if "ai_agent" in deduped:
+            lines.append("- Add one `chat_model_openai` (or `chat_model_groq`) node and connect it to `ai_agent` with targetHandle `chat_model`.")
+        if "telegram" in deduped:
+            lines.append("- Use `{{output.summary}}` from ai_agent in Telegram message.")
+        if inferred_trigger == "schedule_trigger":
+            lines.append("Key schedule parameters:")
+            lines.append("- `rules[0].interval`: `days`")
+            lines.append("- `rules[0].hour`: e.g. `8` for morning run")
+            lines.append("- `rules[0].minute`: e.g. `0`")
+        if "http_request" in deduped and "newsapi" in lowered:
+            lines.append("Key HTTP parameters for News API:")
+            lines.append("- `method`: `GET`")
+            lines.append("- `url`: `https://newsapi.org/v2/everything?q=AI OR ML OR Technology OR Space&sortBy=publishedAt&pageSize=50`")
+            lines.append("- `auth_mode`: use API key (header) as required by your NewsAPI plan")
+        if "code" in deduped:
+            lines.append("Top-N preparation:")
+            lines.append("- In `code` node, sort news by publish time/relevance and keep first 10 items.")
+
+        if current_definition is not None:
+            lines.append("In your current workflow:")
+            lines.append(f"- Existing nodes: {len(current_definition.nodes)}, edges: {len(current_definition.edges)}")
+            lines.append("- Add this sequence as a new branch or replace the current main path if this is a new requirement.")
+
+        return "\n".join(lines)
+
+    @classmethod
+    def _build_email_format_improvement_response(
+        cls,
+        *,
+        current_definition: WorkflowDefinition | None,
+    ) -> str:
+        lines: list[str] = [
+            "Direct answer:",
+            "- Improve email quality by using a fixed structure, shorter sections, and clearer subject/body formatting.",
+            "Email formatting improvements:",
+            "1. Use subject pattern: `[{{priority}}] Ticket {{ticket_id}} - {{short_topic}}`",
+            "2. Keep body in sections: Summary, Impact, Action Taken, Next Step.",
+            "3. Use 3-6 bullet points for readability.",
+            "4. Add one CTA line: `Reply with logs/screenshots for faster resolution.`",
+            "5. Keep max 120-160 words for alert emails.",
+            "Template (plain text):",
+            "- Subject: [{{priority}}] Ticket {{ticket_id}} - {{short_topic}}",
+            "- Body: `Hi {{name}},\\n\\nSummary: {{output.summary}}\\nImpact: {{impact}}\\nNext Step: {{output.recommended_action}}\\n\\nThanks,\\nSupport Team`",
+        ]
+
+        if current_definition is not None:
+            mail_nodes = [
+                node for node in current_definition.nodes if node.type == "send_gmail_message"
+            ]
+            if mail_nodes:
+                lines.append("In your current workflow:")
+                for node in mail_nodes[:3]:
+                    lines.append(f"- `{node.label}` ({node.id}) is your email node. Update `subject` and `body` there.")
+        return "\n".join(lines)
+
+    @classmethod
+    def _build_prompt_improvement_response(
+        cls,
+        *,
+        prompt: str,
+        current_definition: WorkflowDefinition | None,
+    ) -> str:
+        lines: list[str] = [
+            "Direct answer:",
+            "- Your prompt can be improved by making output format, constraints, and tone explicit.",
+            "Good prompt structure:",
+            "1. Role: what assistant should act as.",
+            "2. Task: exact objective in one line.",
+            "3. Constraints: max length, style, must/avoid.",
+            "4. Output schema: exact keys or sections required.",
+            "Prompt examples:",
+            "- `You are a support email assistant. Summarize ticket in <=80 words, professional tone, and return plain text with sections: Summary, Priority, Next Step.`",
+            "- `Analyze the input ticket and return JSON only with keys: summary, priority, recommended_action, confidence_score.`",
+        ]
+
+        if current_definition is not None:
+            ai_nodes = [node for node in current_definition.nodes if node.type == "ai_agent"]
+            if ai_nodes:
+                lines.append("In your current workflow:")
+                for node in ai_nodes[:2]:
+                    lines.append(f"- Update `system_prompt` and `command` in `{node.label}` ({node.id}) with the structure above.")
+        return "\n".join(lines)
 
     @classmethod
     def _infer_node_focus_from_prompt(
@@ -1581,28 +2294,40 @@ class LLMService:
         *,
         current_definition: WorkflowDefinition | None = None,
     ) -> str | None:
+        focuses = cls._resolve_node_focuses_from_prompt(
+            lowered_prompt,
+            current_definition=current_definition,
+            max_matches=1,
+        )
+        return focuses[0] if focuses else None
+
+    @classmethod
+    def _resolve_node_focuses_from_prompt(
+        cls,
+        lowered_prompt: str,
+        *,
+        current_definition: WorkflowDefinition | None = None,
+        max_matches: int = 3,
+    ) -> list[str]:
         prompt = f" {lowered_prompt} "
+        ordered_hits: list[str] = []
+
+        def _append_unique(node_type: str) -> None:
+            normalized = str(node_type or "").strip()
+            if not normalized:
+                return
+            if normalized in ordered_hits:
+                return
+            ordered_hits.append(normalized)
+
         if current_definition is not None:
             for node in current_definition.nodes:
                 node_id = str(node.id or "").strip().lower()
                 node_label = str(node.label or "").strip().lower()
                 if node_id and f" {node_id} " in prompt:
-                    return node.type
+                    _append_unique(node.type)
                 if node_label and f" {node_label} " in prompt:
-                    return node.type
-
-        manual_aliases: dict[str, tuple[str, ...]] = {
-            "http_request": ("http node", "api node"),
-            "send_gmail_message": ("gmail node", "email node"),
-            "search_update_google_sheets": ("google sheets node", "sheets node", "sheet node"),
-            "webhook_trigger": ("webhook", "webhook trigger"),
-            "form_trigger": ("form trigger", "form submission node"),
-            "schedule_trigger": ("schedule trigger", "cron trigger"),
-            "manual_trigger": ("manual trigger", "run trigger"),
-            "if_else": ("if else",),
-            "ai_agent": ("ai node", "ai agent"),
-            "image_gen": ("image node", "image generation node"),
-        }
+                    _append_unique(node.type)
 
         scored_matches: list[tuple[int, int, str]] = []
         for node_type in NODE_CONFIG_DEFAULTS:
@@ -1614,7 +2339,7 @@ class LLMService:
             aliases.add(f"{human} node")
             if human.startswith("send "):
                 aliases.add(human.replace("send ", "", 1))
-            for extra in manual_aliases.get(node_type, ()):
+            for extra in ASK_NODE_MANUAL_ALIASES.get(node_type, ()):
                 aliases.add(str(extra).strip().lower())
 
             best_for_type = 0
@@ -1630,8 +2355,112 @@ class LLMService:
 
         if scored_matches:
             scored_matches.sort(reverse=True)
-            return scored_matches[0][2]
-        return None
+            for _score, _len_raw, node_type in scored_matches:
+                _append_unique(node_type)
+
+        return ordered_hits[: max(1, max_matches)]
+
+    @staticmethod
+    def _classify_ask_intent(prompt: str) -> str:
+        lowered = f" {str(prompt or '').lower()} "
+
+        has_routing = any(
+            token in lowered
+            for token in (
+                "if_else",
+                "if else",
+                "switch",
+                "routing",
+                "branch",
+                "branching",
+                "priority path",
+                "sentiment path",
+                "category path",
+            )
+        )
+        has_steps = any(
+            token in lowered
+            for token in ("steps", "step by step", "how to implement", "implementation", "where to place", "which place")
+        )
+        has_brief_request = any(
+            token in lowered
+            for token in (
+                " workflow brief ",
+                " give brief ",
+                " brief of this workflow ",
+                " brief this workflow ",
+                " workflow summary ",
+                " summary of this workflow ",
+                " overview of this workflow ",
+                " give overview ",
+            )
+        )
+        has_upgrade = any(
+            token in lowered
+            for token in ("upgrade", "improve", "optimization", "optimize", "enhance", "better")
+        )
+        has_debug = any(
+            token in lowered
+            for token in (
+                "not work",
+                "not working",
+                "error",
+                "failed",
+                "waiting",
+                "stuck",
+                "bad gateway",
+                "502",
+                "why false",
+            )
+        )
+        has_parameter_help = any(
+            token in lowered
+            for token in ("parameter", "parameters", "config", "configuration", "what should i send", "payload")
+        )
+
+        if has_routing and (has_steps or has_parameter_help):
+            return "routing"
+        if has_debug:
+            return "debug"
+        if has_steps:
+            return "how_to"
+        if has_parameter_help:
+            return "parameter_help"
+        if has_brief_request and has_upgrade:
+            return "upgrade"
+        if has_brief_request:
+            return "brief"
+        if has_upgrade:
+            return "upgrade"
+        if any(token in lowered for token in ("node", "what is", "what does", "explain")):
+            return "node_explain"
+        return "general"
+
+    @classmethod
+    def _build_multi_node_focus_response(
+        cls,
+        *,
+        node_types: list[str],
+        prompt: str,
+        current_definition: WorkflowDefinition | None,
+    ) -> str:
+        trimmed_types = node_types[:3]
+        sections: list[str] = [
+            "Direct answer:",
+            f"- Your question touches {len(trimmed_types)} nodes, so here is the exact guidance for each in your current flow.",
+            "I found multiple node targets in your question:",
+            "- " + ", ".join(trimmed_types),
+        ]
+        for node_type in trimmed_types:
+            sections.append("")
+            sections.append(
+                cls._build_node_focus_response(
+                    node_type=node_type,
+                    prompt=prompt,
+                    current_definition=current_definition,
+                )
+            )
+        return "\n".join(sections)
 
     @classmethod
     def _build_node_focus_response(
@@ -1654,26 +2483,211 @@ class LLMService:
         ]
 
         lines = [
+            "Direct answer:",
+            f"- `{node_type}` {description}",
             f"Node: {node_type}",
-            f"What it does: {description}",
         ]
         if isinstance(defaults, Mapping):
             config_keys = ", ".join(sorted(defaults.keys()))
             lines.append(f"Key parameters: {config_keys or 'No config keys'}")
+            if config_keys:
+                example_keys = cls._select_parameter_example_keys(
+                    node_type=node_type,
+                    defaults=defaults,
+                    prompt=prompt,
+                )
+                sample_items: list[str] = []
+                for key in example_keys:
+                    value = defaults.get(key)
+                    sample_items.append(f"\"{key}\": {json.dumps(value, ensure_ascii=True)}")
+                lines.append("Parameter examples:")
+                lines.append(f"- {{{', '.join(sample_items)}}}")
+                concrete_payload = {
+                    key: defaults.get(key)
+                    for key in example_keys
+                }
+                lines.append("Concrete parameter example from schema:")
+                lines.append(f"- {cls._compact_json(concrete_payload, max_chars=340)}")
         if rules:
             lines.append("How to use:")
             for index, rule in enumerate(rules[:4], start=1):
                 lines.append(f"{index}. {rule}")
 
         if current_definition is not None:
+            nodes_by_id = {node.id: node for node in current_definition.nodes}
             matching_nodes = [node for node in current_definition.nodes if node.type == node_type]
             if matching_nodes:
                 lines.append("In your current workflow:")
                 for node in matching_nodes[:3]:
                     lines.append(f"- {node.label} ({node.id}) is present.")
+                    config = node.config if isinstance(node.config, Mapping) else {}
+                    non_empty_config = {
+                        key: value
+                        for key, value in config.items()
+                        if value not in ("", None, [], {}, False)
+                    }
+                    if non_empty_config:
+                        lines.append(f"  config preview: {cls._compact_json(non_empty_config)}")
+                    incoming = [
+                        edge for edge in current_definition.edges if edge.target == node.id
+                    ][:2]
+                    outgoing = [
+                        edge for edge in current_definition.edges if edge.source == node.id
+                    ][:2]
+                    if incoming:
+                        refs = []
+                        for edge in incoming:
+                            source = nodes_by_id.get(edge.source)
+                            refs.append(f"{source.label if source else edge.source}->{node.id}")
+                        lines.append(f"  incoming: {', '.join(refs)}")
+                    if outgoing:
+                        refs = []
+                        for edge in outgoing:
+                            target = nodes_by_id.get(edge.target)
+                            refs.append(f"{node.id}->{target.label if target else edge.target}")
+                        lines.append(f"  outgoing: {', '.join(refs)}")
+                    anchor = cls._build_node_anchor_line(
+                        node_id=node.id,
+                        incoming_edges=incoming,
+                        outgoing_edges=outgoing,
+                        nodes_by_id=nodes_by_id,
+                    )
+                    if anchor:
+                        lines.append(f"  placement anchor: {anchor}")
+                first_node = matching_nodes[0]
+                lines.append("Where to place/use it:")
+                lines.append(
+                    f"- Reuse `{first_node.label}` ({first_node.id}) at its current position in the flow."
+                )
             else:
                 lines.append("In your current workflow: this node is not present yet.")
+                placement_hint = cls._resolve_node_placement_hint(
+                    node_type=node_type,
+                    definition=current_definition,
+                )
+                lines.append("Where to place/use it:")
+                lines.append(f"- {placement_hint}")
+        else:
+            lines.append("Where to place/use it:")
+            lines.append("- Add this after data preparation and before final outbound delivery nodes.")
         return "\n".join(lines)
+
+    @classmethod
+    def _select_parameter_example_keys(
+        cls,
+        *,
+        node_type: str,
+        defaults: Mapping[str, Any],
+        prompt: str,
+        max_keys: int = 4,
+    ) -> list[str]:
+        priority_map: dict[str, tuple[str, ...]] = {
+            "if_else": ("field", "operator", "value", "case_sensitive"),
+            "switch": ("field", "cases", "default_case"),
+            "webhook_trigger": ("path", "method"),
+            "http_request": ("method", "url", "body_type", "body_json"),
+            "merge": ("mode", "input_count"),
+            "ai_agent": ("system_prompt", "command", "response_enhancement"),
+            "chat_model_openai": ("model", "temperature", "max_tokens"),
+            "chat_model_groq": ("model", "temperature", "max_tokens"),
+            "search_update_google_sheets": (
+                "operation",
+                "sheet_name",
+                "update_mappings",
+                "key_column",
+            ),
+            "send_gmail_message": ("to", "subject", "body", "is_html"),
+            "telegram": ("message", "parse_mode", "credential_id"),
+            "whatsapp": ("to_number", "template_name", "template_params", "language_code"),
+        }
+        selected: list[str] = []
+        for key in priority_map.get(node_type, ()):
+            if key in defaults and key not in selected:
+                selected.append(key)
+
+        lowered_prompt = str(prompt or "").lower()
+        for key in defaults:
+            if key in selected:
+                continue
+            key_human = key.replace("_", " ")
+            if key in lowered_prompt or key_human in lowered_prompt:
+                selected.append(key)
+                if len(selected) >= max_keys:
+                    break
+
+        for key in sorted(defaults.keys()):
+            if key in selected:
+                continue
+            selected.append(key)
+            if len(selected) >= max_keys:
+                break
+        return selected[:max_keys]
+
+    @classmethod
+    def _build_node_anchor_line(
+        cls,
+        *,
+        node_id: str,
+        incoming_edges: list[Any],
+        outgoing_edges: list[Any],
+        nodes_by_id: Mapping[str, Any],
+    ) -> str:
+        incoming_edge = incoming_edges[0] if incoming_edges else None
+        outgoing_edge = outgoing_edges[0] if outgoing_edges else None
+        source_id = incoming_edge.source if incoming_edge is not None else None
+        target_id = outgoing_edge.target if outgoing_edge is not None else None
+        source_label = (
+            (nodes_by_id.get(source_id).label if nodes_by_id.get(source_id) else source_id)
+            if source_id
+            else None
+        )
+        target_label = (
+            (nodes_by_id.get(target_id).label if nodes_by_id.get(target_id) else target_id)
+            if target_id
+            else None
+        )
+
+        if source_id and target_id:
+            return (
+                f"source=`{source_id}` ({source_label}) -> `{node_id}` -> "
+                f"target=`{target_id}` ({target_label})"
+            )
+        if source_id:
+            return f"source=`{source_id}` ({source_label}) -> `{node_id}`"
+        if target_id:
+            return f"`{node_id}` -> target=`{target_id}` ({target_label})"
+        return ""
+
+    @classmethod
+    def _resolve_node_placement_hint(
+        cls,
+        *,
+        node_type: str,
+        definition: WorkflowDefinition,
+    ) -> str:
+        nodes_by_id = {node.id: node for node in definition.nodes}
+        if node_type in {"if_else", "switch"}:
+            return cls._resolve_routing_insertion_point(definition)
+        if node_type in {"telegram", "whatsapp", "send_gmail_message", "slack_send_message", "linkedin"}:
+            for edge in definition.edges:
+                source = nodes_by_id.get(edge.source)
+                if source and source.type in {"ai_agent", "code", "merge", "if_else", "switch"}:
+                    return (
+                        f"Place `{node_type}` after `{source.label}` ({source.id}) on the branch where notification is required."
+                    )
+        if node_type in {"http_request", "file_write", "search_update_google_sheets", "create_google_docs"}:
+            for edge in definition.edges:
+                source = nodes_by_id.get(edge.source)
+                if source and source.type in {"code", "merge", "ai_agent"}:
+                    return (
+                        f"Place `{node_type}` after `{source.label}` ({source.id}) once payload fields are ready."
+                    )
+        trigger_nodes = [node for node in definition.nodes if node.type in TRIGGER_NODE_TYPES]
+        if trigger_nodes:
+            return (
+                f"Place `{node_type}` after `{trigger_nodes[0].label}` ({trigger_nodes[0].id}) and before final delivery nodes."
+            )
+        return f"Place `{node_type}` after the step that prepares its required input fields."
 
     @classmethod
     def _build_http_node_response(
@@ -1682,6 +2696,8 @@ class LLMService:
         current_definition: WorkflowDefinition | None,
     ) -> str:
         lines = [
+            "Direct answer:",
+            "- HTTP node sends data from this workflow to an external API URL.",
             "HTTP Node Overview:",
             "- `http_request` sends an outbound API call from your workflow to an external endpoint.",
             "- It is not the incoming endpoint. Incoming requests should hit `webhook_trigger`.",
@@ -1699,8 +2715,10 @@ class LLMService:
         ]
 
         if current_definition is not None:
+            nodes_by_id = {node.id: node for node in current_definition.nodes}
             http_nodes = [node for node in current_definition.nodes if node.type == "http_request"]
             if http_nodes:
+                lines.append("In your current workflow:")
                 lines.append("HTTP nodes found in this workflow:")
                 for node in http_nodes[:3]:
                     config = node.config if isinstance(node.config, Mapping) else {}
@@ -1711,6 +2729,20 @@ class LLMService:
                     lines.append(
                         f"- {node.label} ({node.id}): method={method}, url={url}, auth_mode={auth_mode}, body_type={body_type}"
                     )
+                    incoming = [
+                        edge for edge in current_definition.edges if edge.target == node.id
+                    ][:2]
+                    outgoing = [
+                        edge for edge in current_definition.edges if edge.source == node.id
+                    ][:2]
+                    anchor = cls._build_node_anchor_line(
+                        node_id=node.id,
+                        incoming_edges=incoming,
+                        outgoing_edges=outgoing,
+                        nodes_by_id=nodes_by_id,
+                    )
+                    if anchor:
+                        lines.append(f"  placement anchor: {anchor}")
             else:
                 lines.append("In this workflow, no `http_request` node is present yet.")
                 lines.append("Placement tip: add it after data preparation/classification and before final notification nodes.")
@@ -1720,6 +2752,10 @@ class LLMService:
                 lines.append("Because your flow starts with webhook_trigger:")
                 lines.append("- External client sends data to your webhook URL.")
                 lines.append("- Then workflow can forward transformed data to external API via `http_request`.")
+            lines.append("Where to place/use it:")
+            lines.append(
+                f"- {cls._resolve_node_placement_hint(node_type='http_request', definition=current_definition)}"
+            )
 
         return "\n".join(lines)
 
@@ -1950,6 +2986,29 @@ class LLMService:
         ]
 
     @staticmethod
+    def _sanitize_single_line(raw_value: Any, *, max_chars: int = 260) -> str:
+        normalized = " ".join(str(raw_value or "").split()).strip()
+        if not normalized:
+            return ""
+        return normalized[:max_chars]
+
+    @classmethod
+    def _sanitize_node_reference_list(cls, raw_values: Any) -> list[str]:
+        if not isinstance(raw_values, list):
+            return []
+        sanitized: list[str] = []
+        seen: set[str] = set()
+        for item in raw_values[:12]:
+            normalized = cls._sanitize_single_line(item, max_chars=120).lower()
+            if not normalized:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            sanitized.append(normalized)
+        return sanitized[:6]
+
+    @staticmethod
     def _sanitize_recent_messages(raw_values: Any) -> list[dict[str, str]]:
         if not isinstance(raw_values, list):
             return []
@@ -1978,6 +3037,29 @@ class LLMService:
         if not lines:
             return prompt
         return f"{prompt}\n\nRecent chat context:\n" + "\n".join(lines)
+
+    @staticmethod
+    def _append_memory_anchors_to_prompt(
+        prompt: str,
+        *,
+        last_referenced_nodes: list[str],
+        last_unresolved_question: str,
+        last_accepted_workflow_signature: str,
+    ) -> str:
+        lines: list[str] = []
+        if last_referenced_nodes:
+            lines.append(
+                f"- Last referenced nodes: {', '.join(last_referenced_nodes[:5])}"
+            )
+        if last_unresolved_question:
+            lines.append(f"- Last unresolved question: {last_unresolved_question}")
+        if last_accepted_workflow_signature:
+            lines.append(
+                f"- Last accepted workflow signature: {last_accepted_workflow_signature[:120]}"
+            )
+        if not lines:
+            return prompt
+        return f"{prompt}\n\nConversation memory anchors:\n" + "\n".join(lines)
 
     @staticmethod
     def _dedupe_non_empty_strings(values: list[Any]) -> list[str]:

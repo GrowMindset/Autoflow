@@ -595,12 +595,23 @@ async def _run_execution(
                         for parent_id in incoming_parent_ids
                         if parent_id in input_by_source
                     ]
-                    blocked_parents = [
-                        parent_id
-                        for parent_id in incoming_parent_ids
-                        if parent_id not in input_by_source
-                        and status_by_parent.get(parent_id) in {"SKIPPED", "BLOCKED"}
-                    ]
+                    blocked_parents = []
+                    for parent_id in incoming_parent_ids:
+                        if parent_id in input_by_source:
+                            continue
+                        parent_status = status_by_parent.get(parent_id)
+                        if parent_status in {"SKIPPED", "BLOCKED"}:
+                            blocked_parents.append(parent_id)
+                            continue
+                        if parent_status == "FAILED":
+                            parent_node = nodes_by_id.get(parent_id) or {}
+                            parent_config = (
+                                parent_node.get("config")
+                                if isinstance(parent_node.get("config"), dict)
+                                else {}
+                            )
+                            if str(parent_config.get("on_error") or "stop").strip().lower() == "continue":
+                                blocked_parents.append(parent_id)
 
                     received_inputs = len(received_parents)
                     blocked_inputs = len(blocked_parents)
@@ -840,7 +851,20 @@ async def _run_execution(
                         )
                         target_row.status = "WAITING" if deferred_is_time_wait else "QUEUED"
                         target_row.input_data = payload if isinstance(payload, dict) else {"_default": payload}
-                        target_row.output_data = None
+                        if str(target_node.get("type") or "") == "merge":
+                            # Keep in-flight merge runtime state intact when late branches
+                            # enqueue additional arrivals; otherwise prior arrivals can be lost.
+                            existing_output = target_row.output_data
+                            runtime_state = None
+                            if isinstance(existing_output, dict):
+                                runtime_state = existing_output.get("__runtime_merge_state")
+                            target_row.output_data = (
+                                {"__runtime_merge_state": runtime_state}
+                                if isinstance(runtime_state, dict)
+                                else None
+                            )
+                        else:
+                            target_row.output_data = None
                         target_row.error_message = None
                         now_for_row = _utcnow()
                         target_row.started_at = target_row.started_at or now_for_row

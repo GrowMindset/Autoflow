@@ -1087,7 +1087,413 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://api.example.com/tickets", result["assistant_message"])
         self.assertIn("What you have to send:", result["assistant_message"])
         self.assertIn("Where to send:", result["assistant_message"])
+        self.assertIn("In your current workflow:", result["assistant_message"])
+        self.assertIn("placement anchor:", result["assistant_message"])
         self.assertNotIn("if_else parameters", result["assistant_message"])
+
+    async def test_assist_workflow_ask_mode_includes_context_pack_for_model_answer(self) -> None:
+        fake_client = _FakeClient(responses=["Use this HTTP node to push ticket data to your CRM URL."])
+        service = LLMService(client=fake_client, model="test-model")
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "webhook_trigger",
+                        "label": "Receive Support Request",
+                        "position": {"x": 100, "y": 120},
+                        "config": {"path": "support/inbound", "method": "POST"},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "http_request",
+                        "label": "Send To CRM API",
+                        "position": {"x": 360, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["http_request"],
+                            "method": "POST",
+                            "url": "https://api.example.com/tickets",
+                            "auth_mode": "bearer",
+                            "body_type": "json",
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "n1", "target": "n2"},
+                ],
+            }
+        )
+
+        result = await service.assist_workflow(
+            prompt="Explain Send To CRM API node and what payload I should send",
+            interaction_mode="ask",
+            current_definition=current_definition,
+            conversation_state={
+                "recent_messages": [
+                    {"role": "user", "content": "We receive tickets by webhook"},
+                    {"role": "assistant", "content": "Okay, we can map payload into crm request"},
+                ]
+            },
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertEqual(result["assistant_message"], "Use this HTTP node to push ticket data to your CRM URL.")
+        self.assertGreater(len(fake_client.completions.calls), 0)
+        user_prompt = str(fake_client.completions.calls[-1]["messages"][1]["content"])
+        self.assertIn("Context pack:", user_prompt)
+        self.assertIn("Focused node context:", user_prompt)
+        self.assertIn("Send To CRM API (n2) type=http_request", user_prompt)
+        self.assertIn("Recent chat memory:", user_prompt)
+
+    async def test_assist_workflow_ask_mode_fallback_ladder_is_contextual(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        current_definition = WorkflowDefinition.model_validate(_valid_definition())
+
+        result = await service.assist_workflow(
+            prompt="help now",
+            interaction_mode="ask",
+            current_definition=current_definition,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIn("Best-effort answer from available context:", result["assistant_message"])
+        self.assertIn("What I still need to be exact:", result["assistant_message"])
+        self.assertIn("Next action:", result["assistant_message"])
+        self.assertNotIn("I can help in Ask mode with:", result["assistant_message"])
+
+    async def test_assist_workflow_ask_mode_handles_multi_node_questions(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "webhook_trigger",
+                        "label": "Receive Request",
+                        "position": {"x": 100, "y": 120},
+                        "config": {"path": "support/inbound", "method": "POST"},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "http_request",
+                        "label": "Sync CRM API",
+                        "position": {"x": 360, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["http_request"],
+                            "method": "POST",
+                            "url": "https://api.example.com/tickets",
+                            "body_type": "json",
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "n1", "target": "n2"},
+                ],
+            }
+        )
+
+        result = await service.assist_workflow(
+            prompt="Explain webhook trigger and http request node with parameters",
+            interaction_mode="ask",
+            current_definition=current_definition,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIn("I found multiple node targets in your question:", result["assistant_message"])
+        self.assertIn("Node: webhook_trigger", result["assistant_message"])
+        self.assertIn("HTTP Node Overview:", result["assistant_message"])
+
+    def test_resolve_node_focuses_from_prompt_uses_id_label_and_aliases(self) -> None:
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "support_webhook",
+                        "type": "webhook_trigger",
+                        "label": "Receive Support Request",
+                        "position": {"x": 100, "y": 120},
+                        "config": {"path": "support/inbound", "method": "POST"},
+                    },
+                    {
+                        "id": "merge_urgent_normal",
+                        "type": "merge",
+                        "label": "Join Urgent and Normal Save Path",
+                        "position": {"x": 360, "y": 120},
+                        "config": {"mode": "combine", "input_count": 2},
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "support_webhook", "target": "merge_urgent_normal"},
+                ],
+            }
+        )
+
+        focuses = LLMService._resolve_node_focuses_from_prompt(
+            "explain support_webhook and join urgent and normal save path with webhook details",
+            current_definition=current_definition,
+        )
+
+        self.assertGreaterEqual(len(focuses), 2)
+        self.assertEqual(focuses[0], "webhook_trigger")
+        self.assertIn("merge", focuses)
+
+    def test_build_ask_context_pack_contains_intent_and_multi_node_focuses(self) -> None:
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "webhook_in",
+                        "type": "webhook_trigger",
+                        "label": "Receive Request",
+                        "position": {"x": 100, "y": 120},
+                        "config": {"path": "support/inbound", "method": "POST"},
+                    },
+                    {
+                        "id": "http_sync",
+                        "type": "http_request",
+                        "label": "Sync Ticket API",
+                        "position": {"x": 360, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["http_request"],
+                            "method": "POST",
+                            "url": "https://api.example.com/tickets",
+                            "body_type": "json",
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "webhook_in", "target": "http_sync"},
+                ],
+            }
+        )
+
+        pack = LLMService._build_ask_context_pack(
+            question="How to configure webhook trigger and http request parameters?",
+            current_definition=current_definition,
+            recent_messages=[{"role": "user", "content": "we send ticket payload"}],
+        )
+
+        self.assertIn("inferred_intent=parameter_help", pack)
+        self.assertIn("inferred_focus_node_types=", pack)
+        self.assertIn("webhook_trigger", pack)
+        self.assertIn("http_request", pack)
+
+    def test_build_ask_context_pack_includes_context_origin_and_preview_state(self) -> None:
+        current_definition = WorkflowDefinition.model_validate(_valid_definition())
+        pack = LLMService._build_ask_context_pack(
+            question="give brief",
+            current_definition=current_definition,
+            recent_messages=[],
+            workflow_context_origin="accepted_canvas",
+            preview_active=True,
+            last_referenced_nodes=["merge_urgent_normal", "save_ticket_sheet"],
+            last_unresolved_question="Should merge wait for both branches?",
+            last_accepted_workflow_signature="sig-current-001",
+        )
+
+        self.assertIn("workflow_context_origin=accepted_canvas", pack)
+        self.assertIn("preview_active=true", pack)
+        self.assertIn("context_policy=prefer accepted canvas", pack)
+        self.assertIn("memory_last_referenced_nodes=merge_urgent_normal, save_ticket_sheet", pack)
+        self.assertIn("memory_last_unresolved_question=Should merge wait for both branches?", pack)
+        self.assertIn("memory_last_accepted_workflow_signature=sig-current-001", pack)
+
+    async def test_assist_workflow_ask_mode_quality_gate_rejects_generic_model_answer(self) -> None:
+        fake_client = _FakeClient(
+            responses=["I could not generate a useful answer yet. Please rephrase your question."]
+        )
+        service = LLMService(client=fake_client, model="test-model")
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "webhook_trigger",
+                        "label": "Receive Request",
+                        "position": {"x": 100, "y": 120},
+                        "config": {"path": "support/inbound", "method": "POST"},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "http_request",
+                        "label": "Sync Ticket API",
+                        "position": {"x": 360, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["http_request"],
+                            "method": "POST",
+                            "url": "https://api.example.com/tickets",
+                            "body_type": "json",
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+            }
+        )
+
+        result = await service.assist_workflow(
+            prompt="explain http request node",
+            interaction_mode="ask",
+            current_definition=current_definition,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIn("HTTP Node Overview:", result["assistant_message"])
+        self.assertNotIn("Please rephrase your question", result["assistant_message"])
+
+    def test_ask_quality_checklist_flags_generic_answer(self) -> None:
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "webhook_trigger",
+                        "label": "Receive Request",
+                        "position": {"x": 100, "y": 120},
+                        "config": {"path": "support/inbound", "method": "POST"},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "http_request",
+                        "label": "Sync Ticket API",
+                        "position": {"x": 360, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["http_request"],
+                            "method": "POST",
+                            "url": "https://api.example.com/tickets",
+                            "body_type": "json",
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+            }
+        )
+
+        checklist = LLMService._evaluate_ask_quality_checklist(
+            answer="you can choose best practices based on your goal",
+            question="explain http request node and payload",
+            current_definition=current_definition,
+        )
+
+        self.assertFalse(checklist["specificity"])
+        self.assertFalse(checklist["actionability"])
+        self.assertFalse(checklist["correctness"])
+
+    def test_is_low_quality_ask_response_uses_checklist_gate(self) -> None:
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "webhook_trigger",
+                        "label": "Receive Request",
+                        "position": {"x": 100, "y": 120},
+                        "config": {"path": "support/inbound", "method": "POST"},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "http_request",
+                        "label": "Sync Ticket API",
+                        "position": {"x": 360, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["http_request"],
+                            "method": "POST",
+                            "url": "https://api.example.com/tickets",
+                            "body_type": "json",
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+            }
+        )
+
+        is_low_quality = LLMService._is_low_quality_ask_response(
+            answer="consider good practices and choose the right setup",
+            question="explain http request node and payload",
+            current_definition=current_definition,
+        )
+
+        self.assertTrue(is_low_quality)
+
+    async def test_assist_workflow_ask_mode_brief_prefers_accepted_canvas_context(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        accepted_definition = WorkflowDefinition.model_validate(_valid_definition())
+
+        result = await service.assist_workflow(
+            prompt="give the brief of this workflow",
+            interaction_mode="ask",
+            current_definition=accepted_definition,
+            conversation_state={
+                "workflow_context_origin": "accepted_canvas",
+                "preview_active": True,
+                "recent_messages": [
+                    {"role": "assistant", "content": "Preview draft has 5 nodes and 6 edges"}
+                ],
+            },
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIn("Workflow Brief:", result["assistant_message"])
+        self.assertIn("This workflow has 2 nodes and 1 edges.", result["assistant_message"])
+        self.assertNotIn("5 nodes", result["assistant_message"])
+
+    async def test_assist_workflow_ask_mode_passes_memory_anchors_into_model_prompt(self) -> None:
+        fake_client = _FakeClient(
+            responses=[
+                (
+                    "Direct answer: use http_request with method POST and body_json. "
+                    "In your current workflow n2 handles API sync. "
+                    "Where to place it: after webhook trigger."
+                )
+            ]
+        )
+        service = LLMService(client=fake_client, model="test-model")
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "webhook_trigger",
+                        "label": "Receive Support Request",
+                        "position": {"x": 100, "y": 120},
+                        "config": {"path": "support/inbound", "method": "POST"},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "http_request",
+                        "label": "Send To CRM API",
+                        "position": {"x": 360, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["http_request"],
+                            "method": "POST",
+                            "url": "https://api.example.com/tickets",
+                            "auth_mode": "bearer",
+                            "body_type": "json",
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+            }
+        )
+
+        result = await service.assist_workflow(
+            prompt="Explain Send To CRM API node and payload",
+            interaction_mode="ask",
+            current_definition=current_definition,
+            conversation_state={
+                "last_referenced_nodes": ["n2", "n1"],
+                "last_unresolved_question": "Should we retry before routing?",
+                "last_accepted_workflow_signature": "sig-accepted-999",
+                "recent_messages": [
+                    {"role": "user", "content": "We sync from webhook to crm"},
+                ],
+            },
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        user_prompt = str(fake_client.completions.calls[-1]["messages"][1]["content"])
+        self.assertIn("memory_last_referenced_nodes=n2, n1", user_prompt)
+        self.assertIn("memory_last_unresolved_question=Should we retry before routing?", user_prompt)
+        self.assertIn("memory_last_accepted_workflow_signature=sig-accepted-999", user_prompt)
 
     async def test_assist_workflow_ask_mode_answers_merge_node_question(self) -> None:
         service = LLMService(client=object(), model="test-model")
@@ -1131,6 +1537,77 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Key parameters:", result["assistant_message"])
         self.assertIn("mode", result["assistant_message"])
         self.assertIn("input_count", result["assistant_message"])
+        self.assertIn("In your current workflow:", result["assistant_message"])
+        self.assertIn("Concrete parameter example from schema:", result["assistant_message"])
+        self.assertIn("placement anchor:", result["assistant_message"])
+
+    async def test_assist_workflow_ask_mode_returns_sequence_for_build_steps_request(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+
+        result = await service.assist_workflow(
+            prompt=(
+                "i want to create one workflow so basiaclly that workflow is trigger everyday in morning "
+                "and featch the news from the website newsapi and filter the news which are related to the "
+                "AI, ML, Tech and space related fetch top 10 news and then give that to the AI agent for "
+                "creating summary and now summarize all news are share to the telegram so what wil be a steps "
+                "and which nodes are conncect in sequence"
+            ),
+            interaction_mode="ask",
+            current_definition=None,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIn("Implementation Steps:", result["assistant_message"])
+        self.assertIn("Nodes in sequence:", result["assistant_message"])
+        self.assertIn("schedule_trigger", result["assistant_message"])
+        self.assertIn("http_request", result["assistant_message"])
+        self.assertIn("ai_agent", result["assistant_message"])
+        self.assertIn("telegram", result["assistant_message"])
+        self.assertNotIn("whatsapp", result["assistant_message"])
+        self.assertNotIn("I found multiple node targets", result["assistant_message"])
+
+    async def test_assist_workflow_ask_mode_returns_blueprint_for_multichannel_nurture_prompt(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+
+        result = await service.assist_workflow(
+            prompt=(
+                "create a nuturing workflow for 14 days lead geneartion from different apps "
+                "like watsapp , telegram , slack , gmail , likendin for this workflow which "
+                "nodes required and give the logical conncection"
+            ),
+            interaction_mode="ask",
+            current_definition=None,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIn("Implementation Steps:", result["assistant_message"])
+        self.assertIn("Nodes in sequence:", result["assistant_message"])
+        self.assertIn("schedule_trigger", result["assistant_message"])
+        self.assertIn("telegram", result["assistant_message"])
+        self.assertIn("whatsapp", result["assistant_message"])
+        self.assertIn("slack_send_message", result["assistant_message"])
+        self.assertIn("send_gmail_message", result["assistant_message"])
+        self.assertIn("linkedin", result["assistant_message"])
+        self.assertNotIn("I found multiple node targets", result["assistant_message"])
+
+    def test_extract_latest_user_question_skips_pasted_brief_blocks(self) -> None:
+        raw = (
+            "give some improvement for sending message to the mail for formate related what changes i can do\n"
+            "Copy\n"
+            "12:55 PM\n"
+            "Workflow Brief:\n"
+            "- This workflow has 5 nodes and 4 edges.\n"
+            "Copy\n"
+            "12:56 PM\n"
+            "Assumptions Applied\n"
+            "1. Single-path flow is used when branch conditions are not provided.\n"
+            "read the system prompt and if the prompt is not good then sudgest good promts"
+        )
+
+        extracted = LLMService._extract_latest_user_question(raw)
+
+        self.assertIn("read the system prompt", extracted.lower())
+        self.assertNotIn("workflow brief", extracted.lower())
 
     async def test_assist_workflow_generates_directly_for_clear_request(self) -> None:
         fake_client = _FakeClient(
@@ -1188,6 +1665,30 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         generated_prompt = service.generate_workflow_definition.await_args.args[0]
         self.assertIn("Recent chat context:", generated_prompt)
         self.assertIn("user: Use webhook trigger and validate payload", generated_prompt)
+
+    async def test_assist_workflow_includes_memory_anchors_in_generation_prompt(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        service.generate_workflow_definition = AsyncMock(
+            return_value=GeneratedWorkflowResult(
+                definition=WorkflowDefinition.model_validate(_valid_definition()),
+                name="Memory Anchored Flow",
+            )
+        )
+
+        await service.assist_workflow(
+            prompt="Add retry after HTTP request",
+            conversation_state={
+                "last_referenced_nodes": ["sync_ticket_http", "http_success_check"],
+                "last_unresolved_question": "Should retry happen before or after routing?",
+                "last_accepted_workflow_signature": "sig-accepted-123",
+            },
+        )
+
+        generated_prompt = service.generate_workflow_definition.await_args.args[0]
+        self.assertIn("Conversation memory anchors:", generated_prompt)
+        self.assertIn("Last referenced nodes: sync_ticket_http, http_success_check", generated_prompt)
+        self.assertIn("Last unresolved question: Should retry happen before or after routing?", generated_prompt)
+        self.assertIn("Last accepted workflow signature: sig-accepted-123", generated_prompt)
 
     def test_sanitize_ask_response_format_removes_markdown_bold_markers(self) -> None:
         raw = "**Workflow Brief**\n* First step\n**Parameters**: Use field."

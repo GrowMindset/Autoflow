@@ -18,6 +18,11 @@ export interface ConversationState {
   confirmedChoices: Record<string, string>;
   assumptions: string[];
   recentMessages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  workflowContextOrigin?: 'accepted_canvas' | 'preview' | 'unknown';
+  previewActive?: boolean;
+  lastAcceptedWorkflowSignature?: string;
+  lastReferencedNodes?: string[];
+  lastUnresolvedQuestion?: string;
   lastMode?: AssistantMode;
 }
 
@@ -43,6 +48,10 @@ export interface AIResponse {
   conversationState: ConversationState;
   workflow?: WorkflowDefinition;
   workflowName?: string;
+}
+
+interface AssistWorkflowOptions {
+  signal?: AbortSignal;
 }
 
 export interface AIChatHistoryPayload {
@@ -74,6 +83,11 @@ interface AssistantApiConversationState {
   confirmed_choices?: Record<string, string>;
   assumptions?: string[];
   recent_messages?: Array<{ role?: string; content?: string }>;
+  workflow_context_origin?: 'accepted_canvas' | 'preview' | 'unknown';
+  preview_active?: boolean;
+  last_accepted_workflow_signature?: string;
+  last_referenced_nodes?: string[];
+  last_unresolved_question?: string;
   last_mode?: AssistantMode;
 }
 
@@ -91,6 +105,11 @@ interface AIChatHistoryClearApiResponse {
 
 const MAX_PROMPT_LENGTH = 4000;
 const SAFETY_PROMPT_LENGTH = 3900;
+const MAX_SIGNATURE_LENGTH = 240;
+const MAX_UNRESOLVED_QUESTION_LENGTH = 400;
+
+const clampText = (value: unknown, maxLength: number): string =>
+  String(value || '').trim().slice(0, maxLength);
 
 class AIService {
   private buildPrompt(trimmedPrompt: string, currentWorkflow?: WorkflowDefinition): string {
@@ -147,12 +166,48 @@ class AIService {
     }
     return undefined;
   }
+
+  private collectReferencedNodes(prompt: string, currentWorkflow?: WorkflowDefinition): string[] {
+    const lowered = ` ${String(prompt || '').toLowerCase()} `;
+    if (!currentWorkflow?.nodes?.length) return [];
+
+    const matches: string[] = [];
+    const seen = new Set<string>();
+    for (const node of currentWorkflow.nodes.slice(0, 120)) {
+      const id = String(node?.id || '').trim();
+      const label = String(node?.label || '').trim().toLowerCase();
+      const type = String(node?.type || '').trim().toLowerCase();
+      const aliases = [id.toLowerCase(), label, type, type.replace(/_/g, ' ')].filter(Boolean);
+      const hit = aliases.some((alias) => alias && lowered.includes(` ${alias} `));
+      if (!hit) continue;
+      const key = id || type;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      matches.push(key);
+      if (matches.length >= 6) break;
+    }
+    return matches;
+  }
+
+  private mergeReferencedNodes(previous: string[] | undefined, current: string[]): string[] {
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    for (const item of [...(current || []), ...(previous || [])]) {
+      const normalized = String(item || '').trim();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      merged.push(normalized);
+      if (merged.length >= 6) break;
+    }
+    return merged;
+  }
   
   async assistWorkflow(
     prompt: string,
     currentWorkflow?: WorkflowDefinition,
     conversationState?: ConversationState,
     interactionMode: AssistantInteractionMode = 'build',
+    options?: AssistWorkflowOptions,
   ): Promise<AIResponse> {
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) {
@@ -160,6 +215,11 @@ class AIService {
     }
 
     const contextualPrompt = this.buildPrompt(trimmedPrompt, currentWorkflow);
+    const currentReferencedNodes = this.collectReferencedNodes(trimmedPrompt, currentWorkflow);
+    const mergedReferencedNodes = this.mergeReferencedNodes(
+      conversationState?.lastReferencedNodes,
+      currentReferencedNodes,
+    );
 
     const statePayload: AssistantApiConversationState = {
       confirmed_choices: conversationState?.confirmedChoices || {},
@@ -173,6 +233,13 @@ class AIService {
             }))
             .filter((item) => Boolean(item.content))
         : [],
+      workflow_context_origin: conversationState?.workflowContextOrigin || 'accepted_canvas',
+      preview_active: Boolean(conversationState?.previewActive),
+      last_accepted_workflow_signature:
+        clampText(conversationState?.lastAcceptedWorkflowSignature, MAX_SIGNATURE_LENGTH) || undefined,
+      last_referenced_nodes: mergedReferencedNodes,
+      last_unresolved_question:
+        clampText(conversationState?.lastUnresolvedQuestion, MAX_UNRESOLVED_QUESTION_LENGTH) || undefined,
       last_mode: conversationState?.lastMode,
     };
 
@@ -183,6 +250,9 @@ class AIService {
         interaction_mode: interactionMode,
         current_definition: currentWorkflow,
         conversation_state: statePayload,
+      },
+      {
+        signal: options?.signal,
       },
     );
 
@@ -215,12 +285,23 @@ class AIService {
         ? 'Here is Autoflow guidance based on your question.'
         : 'Workflow generated from backend AI service.';
 
+    const nextUnresolvedQuestion =
+      mode === 'clarify'
+        ? trimmedPrompt.slice(0, MAX_UNRESOLVED_QUESTION_LENGTH)
+        : '';
+
     const nextConversationState: ConversationState = {
       confirmedChoices: conversationState?.confirmedChoices || {},
       assumptions,
       recentMessages: Array.isArray(conversationState?.recentMessages)
         ? conversationState.recentMessages
         : [],
+      workflowContextOrigin: conversationState?.workflowContextOrigin || 'accepted_canvas',
+      previewActive: Boolean(conversationState?.previewActive),
+      lastAcceptedWorkflowSignature:
+        clampText(conversationState?.lastAcceptedWorkflowSignature, MAX_SIGNATURE_LENGTH) || undefined,
+      lastReferencedNodes: mergedReferencedNodes,
+      lastUnresolvedQuestion: nextUnresolvedQuestion || undefined,
       lastMode: mode,
     };
 
@@ -266,6 +347,35 @@ class AIService {
         }))
         .filter((item: any) => Boolean(item.content))
         .slice(-12),
+      workflowContextOrigin:
+        rawState.workflowContextOrigin === 'preview' || rawState.workflowContextOrigin === 'accepted_canvas' || rawState.workflowContextOrigin === 'unknown'
+          ? rawState.workflowContextOrigin
+          : rawState.workflow_context_origin === 'preview' || rawState.workflow_context_origin === 'accepted_canvas' || rawState.workflow_context_origin === 'unknown'
+            ? rawState.workflow_context_origin
+            : 'accepted_canvas',
+      previewActive: Boolean(rawState.previewActive ?? rawState.preview_active ?? false),
+      lastAcceptedWorkflowSignature: clampText(
+        rawState.lastAcceptedWorkflowSignature
+          ?? rawState.last_accepted_workflow_signature
+          ?? '',
+        MAX_SIGNATURE_LENGTH,
+      ) || undefined,
+      lastReferencedNodes: (
+        Array.isArray(rawState.lastReferencedNodes)
+          ? rawState.lastReferencedNodes
+          : Array.isArray(rawState.last_referenced_nodes)
+            ? rawState.last_referenced_nodes
+            : []
+      )
+        .map((item: unknown) => String(item || '').trim())
+        .filter(Boolean)
+        .slice(0, 12),
+      lastUnresolvedQuestion: clampText(
+        rawState.lastUnresolvedQuestion
+          ?? rawState.last_unresolved_question
+          ?? '',
+        MAX_UNRESOLVED_QUESTION_LENGTH,
+      ) || undefined,
       lastMode: (rawState.lastMode === 'clarify' || rawState.lastMode === 'generate' || rawState.lastMode === 'modify' || rawState.lastMode === 'ask')
         ? rawState.lastMode
         : undefined,
@@ -381,6 +491,19 @@ class AIService {
                 }))
                 .filter((item) => Boolean(item.content))
             : [],
+          workflowContextOrigin: conversationState?.workflowContextOrigin || 'accepted_canvas',
+          previewActive: Boolean(conversationState?.previewActive),
+          lastAcceptedWorkflowSignature: clampText(
+            conversationState?.lastAcceptedWorkflowSignature,
+            MAX_SIGNATURE_LENGTH,
+          ),
+          lastReferencedNodes: Array.isArray(conversationState?.lastReferencedNodes)
+            ? conversationState?.lastReferencedNodes.slice(0, 12)
+            : [],
+          lastUnresolvedQuestion: clampText(
+            conversationState?.lastUnresolvedQuestion,
+            MAX_UNRESOLVED_QUESTION_LENGTH,
+          ),
           lastMode: conversationState?.lastMode,
         },
       },

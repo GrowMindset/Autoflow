@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import api from '../../services/api';
 import { CredentialItem, credentialService } from '../../services/credentialService';
@@ -71,10 +71,140 @@ interface CodeConfigPanelProps {
 const normalizeLanguage = (language: any): 'python' | 'javascript' =>
   language === 'javascript' ? 'javascript' : 'python';
 
+const TOKEN_REGEX = /([^.[\]]+)|\[(\d*)\]/g;
+const JS_IDENTIFIER_REGEX = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const NUMBER_LITERAL_REGEX = /^-?(0|[1-9]\d*)(\.\d+)?$/;
+
+const normalizePathForCode = (rawPath: string): string => {
+  const trimmed = String(rawPath || '').trim();
+  if (!trimmed) return '';
+  if (trimmed === 'root') return '';
+  if (trimmed.startsWith('root.')) return trimmed.slice(5);
+  if (trimmed.startsWith('root[')) return trimmed.slice(4);
+  return trimmed;
+};
+
+type PathToken =
+  | { type: 'key'; value: string }
+  | { type: 'index'; value: number }
+  | { type: 'wildcard' };
+
+const tokenizePath = (path: string): PathToken[] => {
+  const normalizedPath = normalizePathForCode(path);
+  if (!normalizedPath) return [];
+
+  const tokens: PathToken[] = [];
+  TOKEN_REGEX.lastIndex = 0;
+  let match: RegExpExecArray | null = TOKEN_REGEX.exec(normalizedPath);
+
+  while (match) {
+    if (match[1]) {
+      tokens.push({ type: 'key', value: match[1] });
+    } else if (typeof match[2] === 'string') {
+      if (match[2] === '') {
+        tokens.push({ type: 'wildcard' });
+      } else {
+        tokens.push({ type: 'index', value: Number.parseInt(match[2], 10) });
+      }
+    }
+    match = TOKEN_REGEX.exec(normalizedPath);
+  }
+
+  return tokens;
+};
+
+const formatPathForLanguage = (path: string, language: 'python' | 'javascript'): string => {
+  const tokens = tokenizePath(path);
+  if (tokens.length === 0) return 'input_data';
+
+  if (language === 'python') {
+    return tokens.reduce((expression, token) => {
+      if (token.type === 'index') return `${expression}[${token.value}]`;
+      if (token.type === 'wildcard') return `${expression}[0]`;
+      return `${expression}[${JSON.stringify(token.value)}]`;
+    }, 'input_data');
+  }
+
+  return tokens.reduce((expression, token) => {
+    if (token.type === 'index') return `${expression}?.[${token.value}]`;
+    if (token.type === 'wildcard') return `${expression}?.[0]`;
+    if (JS_IDENTIFIER_REGEX.test(token.value)) return `${expression}?.${token.value}`;
+    return `${expression}?.[${JSON.stringify(token.value)}]`;
+  }, 'input_data');
+};
+
+const parseJsonLikeValue = (rawValue: string): unknown => {
+  const trimmed = rawValue.trim();
+  if (!trimmed) return '';
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  if (trimmed === 'null') return null;
+  if (NUMBER_LITERAL_REGEX.test(trimmed)) {
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  if (trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.startsWith('"')) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return rawValue;
+    }
+  }
+  return rawValue;
+};
+
+const toPythonLiteral = (value: unknown): string => {
+  if (value === null) return 'None';
+  if (value === undefined) return 'None';
+  if (typeof value === 'boolean') return value ? 'True' : 'False';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'None';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => toPythonLiteral(item)).join(', ')}]`;
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    return `{${entries
+      .map(([key, itemValue]) => `${JSON.stringify(key)}: ${toPythonLiteral(itemValue)}`)
+      .join(', ')}}`;
+  }
+  return JSON.stringify(String(value));
+};
+
+const toJavascriptLiteral = (value: unknown): string => {
+  if (value === undefined) return 'undefined';
+  if (typeof value === 'string') return JSON.stringify(value);
+  const serialized = JSON.stringify(value, null, Array.isArray(value) || typeof value === 'object' ? 2 : 0);
+  return typeof serialized === 'string' ? serialized : 'undefined';
+};
+
+const formatLiteralForLanguage = (rawValue: string, language: 'python' | 'javascript'): string => {
+  const parsedValue = parseJsonLikeValue(rawValue);
+  if (language === 'python') return toPythonLiteral(parsedValue);
+  return toJavascriptLiteral(parsedValue);
+};
+
+const hasDragType = (dataTransfer: DataTransfer, type: string): boolean =>
+  Array.from(dataTransfer.types || []).includes(type);
+
+const resolveDroppedCodeText = (
+  dataTransfer: DataTransfer,
+  language: 'python' | 'javascript',
+): string => {
+  const path = dataTransfer.getData('application/json-path');
+  if (path) return formatPathForLanguage(path, language);
+
+  const literal = dataTransfer.getData('application/json-value');
+  if (literal) return formatLiteralForLanguage(literal, language);
+
+  return dataTransfer.getData('text/plain') || '';
+};
+
 const CodeConfigPanel: React.FC<CodeConfigPanelProps> = ({ config, onChange }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
+  const fallbackTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [loadError, setLoadError] = useState('');
   const [showPrompt, setShowPrompt] = useState(false);
   const [credentials, setCredentials] = useState<CredentialItem[]>([]);
@@ -87,6 +217,7 @@ const CodeConfigPanel: React.FC<CodeConfigPanelProps> = ({ config, onChange }) =
   const [aiPrompt, setAiPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [isCodeDragOver, setIsCodeDragOver] = useState(false);
   const language = normalizeLanguage(config.language);
   const code = typeof config.code === 'string'
     ? config.code
@@ -183,6 +314,91 @@ const CodeConfigPanel: React.FC<CodeConfigPanelProps> = ({ config, onChange }) =
   useEffect(() => {
     void fetchCredentials();
   }, []);
+
+  const handleCodeDragOver = useCallback((event: React.DragEvent) => {
+    const supportsDrop = hasDragType(event.dataTransfer, 'application/json-path')
+      || hasDragType(event.dataTransfer, 'application/json-value')
+      || hasDragType(event.dataTransfer, 'text/plain');
+    if (!supportsDrop) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    if (!isCodeDragOver) setIsCodeDragOver(true);
+  }, [isCodeDragOver]);
+
+  const handleCodeDragLeave = useCallback((event: React.DragEvent) => {
+    const relatedTarget = event.relatedTarget as Node | null;
+    if (!relatedTarget || !event.currentTarget.contains(relatedTarget)) {
+      setIsCodeDragOver(false);
+    }
+  }, []);
+
+  const handleMonacoDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsCodeDragOver(false);
+
+    const insertText = resolveDroppedCodeText(event.dataTransfer, language);
+    if (!insertText) return;
+
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco) return;
+
+    const model = editor.getModel?.();
+    if (!model) return;
+
+    const target = editor.getTargetAtClientPoint?.(event.clientX, event.clientY);
+    if (target?.position && monaco.Selection) {
+      const positionSelection = new monaco.Selection(
+        target.position.lineNumber,
+        target.position.column,
+        target.position.lineNumber,
+        target.position.column,
+      );
+      editor.setSelection(positionSelection);
+    }
+
+    const currentSelection = editor.getSelection?.();
+    const fallbackPosition = editor.getPosition?.() || { lineNumber: 1, column: 1 };
+    const fallbackRange = new monaco.Range(
+      fallbackPosition.lineNumber,
+      fallbackPosition.column,
+      fallbackPosition.lineNumber,
+      fallbackPosition.column,
+    );
+
+    editor.executeEdits('autoflow-code-drop', [{
+      range: currentSelection || fallbackRange,
+      text: insertText,
+      forceMoveMarkers: true,
+    }]);
+    editor.focus();
+  }, [language]);
+
+  const handleTextareaDrop = useCallback((event: React.DragEvent<HTMLTextAreaElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsCodeDragOver(false);
+
+    const insertText = resolveDroppedCodeText(event.dataTransfer, language);
+    if (!insertText) return;
+
+    const textarea = event.currentTarget;
+    const current = String(code || '');
+    const start = textarea.selectionStart ?? current.length;
+    const end = textarea.selectionEnd ?? start;
+    const nextCode = current.slice(0, start) + insertText + current.slice(end);
+    onChange({ code: nextCode });
+
+    requestAnimationFrame(() => {
+      const node = fallbackTextareaRef.current;
+      if (!node) return;
+      const cursor = start + insertText.length;
+      node.focus();
+      node.setSelectionRange(cursor, cursor);
+    });
+  }, [code, language, onChange]);
 
   const handleLanguageChange = (nextLanguage: 'python' | 'javascript') => {
     if (nextLanguage === language) return;
@@ -449,18 +665,39 @@ const CodeConfigPanel: React.FC<CodeConfigPanelProps> = ({ config, onChange }) =
         <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500">
           Code
         </label>
-        <div className="min-h-[300px] overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950">
+        <div
+          onDragOver={handleCodeDragOver}
+          onDragLeave={handleCodeDragLeave}
+          className={`min-h-[300px] overflow-hidden rounded-2xl border bg-white dark:bg-slate-950 transition-colors ${
+            isCodeDragOver
+              ? 'border-blue-500 ring-2 ring-blue-500/25 dark:border-blue-400 dark:ring-blue-400/30'
+              : 'border-slate-200 dark:border-slate-700'
+          }`}
+        >
           {loadError ? (
             <textarea
+              ref={fallbackTextareaRef}
               value={code}
               onChange={(event) => onChange({ code: event.target.value })}
+              onDragOver={handleCodeDragOver}
+              onDragLeave={handleCodeDragLeave}
+              onDrop={handleTextareaDrop}
               className="min-h-[300px] w-full resize-y bg-white dark:bg-slate-950 p-4 font-mono text-xs leading-relaxed text-slate-700 dark:text-slate-200 outline-none"
               spellCheck={false}
             />
           ) : (
-            <div ref={containerRef} className="min-h-[300px] h-[300px]" />
+            <div
+              ref={containerRef}
+              onDragOver={handleCodeDragOver}
+              onDragLeave={handleCodeDragLeave}
+              onDrop={handleMonacoDrop}
+              className="min-h-[300px] h-[300px]"
+            />
           )}
         </div>
+        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+          Drag fields or values from Input Data to insert runtime snippets into your code.
+        </p>
         {loadError && (
           <p className="text-[11px] text-amber-600 dark:text-amber-400">
             Monaco could not load, so a plain editor is shown.

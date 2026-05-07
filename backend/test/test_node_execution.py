@@ -896,3 +896,241 @@ class NodeExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIsNotNone(merge_done)
             self.assertEqual(merge_done.status, "SUCCEEDED")
+
+    async def test_deferred_merge_resume_preserves_runtime_state_when_late_branch_enqueues(self) -> None:
+        user = await self._create_user("merge-late-branch@example.com")
+
+        async with self.session_factory() as session:
+            workflow = Workflow(
+                user_id=user.id,
+                name="Deferred Merge Late Branch Workflow",
+                definition={
+                    "nodes": [
+                        {"id": "trigger", "type": "manual_trigger", "config": {}},
+                        {"id": "delay_1", "type": "delay", "config": {"amount": "1", "unit": "days"}},
+                        {"id": "late_passthrough", "type": "unimplemented_passthrough", "config": {}},
+                        {"id": "merge_1", "type": "merge", "config": {}},
+                    ],
+                    "edges": [
+                        {"id": "e1", "source": "trigger", "target": "merge_1", "targetHandle": "input1"},
+                        {"id": "e2", "source": "trigger", "target": "delay_1"},
+                        {"id": "e3", "source": "delay_1", "target": "late_passthrough"},
+                        {"id": "e4", "source": "late_passthrough", "target": "merge_1", "targetHandle": "input2"},
+                    ],
+                },
+            )
+            session.add(workflow)
+            session.add(
+                Execution(
+                    workflow_id=workflow.id,
+                    user_id=user.id,
+                    status="PENDING",
+                    triggered_by="manual",
+                    started_at=None,
+                    finished_at=None,
+                    error_message=None,
+                )
+            )
+            await session.commit()
+            execution = await session.scalar(
+                select(Execution).where(Execution.workflow_id == workflow.id)
+            )
+            self.assertIsNotNone(execution)
+            execution_id = execution.id
+
+        initial_jobs: list[dict[str, object]] = []
+
+        def _capture_initial_apply_async(**kwargs):
+            initial_jobs.append(kwargs)
+            return None
+
+        with patch.object(
+            execute_workflow_tasks.run_execution,
+            "apply_async",
+            side_effect=_capture_initial_apply_async,
+        ):
+            await execute_workflow_tasks._run_execution(
+                execution_id=str(execution_id),
+                initial_payload=None,
+                start_node_id="trigger",
+            )
+
+        self.assertEqual(len(initial_jobs), 2)
+        initial_job_payloads = [job.get("kwargs") or {} for job in initial_jobs]
+        merge_job_1 = next(
+            job
+            for job in initial_job_payloads
+            if str(job.get("start_node_id")) == "merge_1"
+        )
+        late_node_job = next(
+            job
+            for job in initial_job_payloads
+            if str(job.get("start_node_id")) == "late_passthrough"
+        )
+
+        with patch.object(execute_workflow_tasks.run_execution, "apply_async", side_effect=lambda **kwargs: None):
+            await execute_workflow_tasks._run_execution(**merge_job_1)
+
+        async with self.session_factory() as session:
+            merge_mid = await session.scalar(
+                select(NodeExecution).where(
+                    NodeExecution.execution_id == execution_id,
+                    NodeExecution.node_id == "merge_1",
+                )
+            )
+            self.assertIsNotNone(merge_mid)
+            self.assertEqual(merge_mid.status, "QUEUED")
+            merge_runtime_mid = (
+                (merge_mid.output_data or {}).get("__runtime_merge_state")
+                if isinstance(merge_mid.output_data, dict)
+                else None
+            )
+            self.assertIsInstance(merge_runtime_mid, dict)
+            self.assertEqual(int((merge_runtime_mid or {}).get("received_inputs") or 0), 1)
+
+        late_jobs: list[dict[str, object]] = []
+
+        def _capture_late_apply_async(**kwargs):
+            late_jobs.append(kwargs)
+            return None
+
+        with patch.object(
+            execute_workflow_tasks.run_execution,
+            "apply_async",
+            side_effect=_capture_late_apply_async,
+        ):
+            await execute_workflow_tasks._run_execution(**late_node_job)
+
+        late_merge_jobs = [
+            (job.get("kwargs") or {})
+            for job in late_jobs
+            if str((job.get("kwargs") or {}).get("start_node_id")) == "merge_1"
+        ]
+        self.assertEqual(len(late_merge_jobs), 1)
+
+        async with self.session_factory() as session:
+            merge_after_enqueue = await session.scalar(
+                select(NodeExecution).where(
+                    NodeExecution.execution_id == execution_id,
+                    NodeExecution.node_id == "merge_1",
+                )
+            )
+            self.assertIsNotNone(merge_after_enqueue)
+            merge_runtime_after_enqueue = (
+                (merge_after_enqueue.output_data or {}).get("__runtime_merge_state")
+                if isinstance(merge_after_enqueue.output_data, dict)
+                else None
+            )
+            self.assertIsInstance(merge_runtime_after_enqueue, dict)
+            self.assertEqual(int((merge_runtime_after_enqueue or {}).get("received_inputs") or 0), 1)
+
+        with patch.object(execute_workflow_tasks.run_execution, "apply_async", side_effect=lambda **kwargs: None):
+            await execute_workflow_tasks._run_execution(**late_merge_jobs[0])
+
+        async with self.session_factory() as session:
+            execution_done = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution_done)
+            self.assertEqual(execution_done.status, "SUCCEEDED")
+            merge_done = await session.scalar(
+                select(NodeExecution).where(
+                    NodeExecution.execution_id == execution_id,
+                    NodeExecution.node_id == "merge_1",
+                )
+            )
+            self.assertIsNotNone(merge_done)
+            self.assertEqual(merge_done.status, "SUCCEEDED")
+
+    async def test_merge_resume_accounts_failed_continue_on_error_parent_as_blocked(self) -> None:
+        user = await self._create_user("merge-failed-continue-parent@example.com")
+
+        async with self.session_factory() as session:
+            workflow = Workflow(
+                user_id=user.id,
+                name="Merge Failed Continue Parent Workflow",
+                definition={
+                    "nodes": [
+                        {
+                            "id": "left_parent",
+                            "type": "code",
+                            "config": {
+                                "language": "python",
+                                "code": "raise RuntimeError('boom')",
+                                "on_error": "continue",
+                            },
+                        },
+                        {"id": "right_parent", "type": "unimplemented_right", "config": {}},
+                        {"id": "merge_1", "type": "merge", "config": {"mode": "append"}},
+                    ],
+                    "edges": [
+                        {"id": "e1", "source": "left_parent", "target": "merge_1", "targetHandle": "input1"},
+                        {"id": "e2", "source": "right_parent", "target": "merge_1", "targetHandle": "input2"},
+                    ],
+                },
+            )
+            session.add(workflow)
+            await session.flush()
+
+            execution = Execution(
+                workflow_id=workflow.id,
+                user_id=user.id,
+                status="PENDING",
+                triggered_by="manual",
+                started_at=None,
+                finished_at=None,
+                error_message=None,
+            )
+            session.add(execution)
+            await session.flush()
+
+            now = datetime.now(timezone.utc)
+            session.add_all(
+                [
+                    NodeExecution(
+                        execution_id=execution.id,
+                        node_id="left_parent",
+                        node_type="code",
+                        status="FAILED",
+                        input_data={"from": "left"},
+                        output_data={"from": "left"},
+                        error_message="boom",
+                        started_at=now,
+                        finished_at=now,
+                    ),
+                    NodeExecution(
+                        execution_id=execution.id,
+                        node_id="right_parent",
+                        node_type="unimplemented_right",
+                        status="SUCCEEDED",
+                        input_data={"from": "right"},
+                        output_data={"from": "right"},
+                        error_message=None,
+                        started_at=now,
+                        finished_at=now,
+                    ),
+                ]
+            )
+            await session.commit()
+            execution_id = execution.id
+
+        with patch.object(execute_workflow_tasks.run_execution, "apply_async", side_effect=lambda **kwargs: None):
+            await execute_workflow_tasks._run_execution(
+                execution_id=str(execution_id),
+                initial_payload={"from": "right"},
+                start_node_id="merge_1",
+                start_target_handle="input2",
+                resume=True,
+                merge_source_node_id="right_parent",
+            )
+
+        async with self.session_factory() as session:
+            execution_done = await session.get(Execution, execution_id)
+            self.assertIsNotNone(execution_done)
+            self.assertEqual(execution_done.status, "SUCCEEDED")
+            merge_done = await session.scalar(
+                select(NodeExecution).where(
+                    NodeExecution.execution_id == execution_id,
+                    NodeExecution.node_id == "merge_1",
+                )
+            )
+            self.assertIsNotNone(merge_done)
+            self.assertEqual(merge_done.status, "SUCCEEDED")
