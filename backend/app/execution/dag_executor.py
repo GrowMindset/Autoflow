@@ -1889,6 +1889,19 @@ try {
 
         next_input = self._strip_internal_fields(output_data)
         for edge in context.outgoing_edges.get(node_id, []):
+            target_node = context.nodes_by_id.get(edge.get("target"), {})
+            if self._defer_callback is not None and target_node.get("type") == "merge":
+                self._defer_callback(
+                    source_node_id=node_id,
+                    source_node_type="merge",
+                    target_node_id=edge["target"],
+                    target_handle=edge.get("targetHandle"),
+                    payload=next_input,
+                    delay_seconds=0.0,
+                    delay_run_at=None,
+                    loop_runtime_state=self._loop_runtime_state_snapshot(context=context),
+                )
+                continue
             self._execute_from_node(
                 context=context,
                 node_id=edge["target"],

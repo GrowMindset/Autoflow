@@ -816,6 +816,56 @@ class DagExecutorTests(unittest.TestCase):
         defer_index = events.index(("defer", "n3", "n5"))
         self.assertLess(skipped_index, defer_index)
 
+    def test_merge_output_to_merge_is_deferred_for_durable_join_accounting(self):
+        deferred_calls: list[dict[str, object]] = []
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: {
+                            "triggered": True,
+                            "trigger_type": "manual",
+                            **(input_data or {}),
+                        }
+                    ),
+                    "merge": MergeRunner(),
+                    "echo": _RecordingRunner(result=lambda _config, input_data, _ctx: input_data or {}),
+                }
+            )
+        )
+        definition = {
+            "nodes": [
+                {"id": "alert_context", "type": "merge", "config": {
+                    "mode": "choose_branch",
+                    "input_count": 1,
+                    "choose_branch": "input1",
+                }},
+                {"id": "normal_passthrough", "type": "echo", "config": {}},
+                {"id": "join_before_save", "type": "merge", "config": {
+                    "mode": "combine",
+                    "input_count": 2,
+                }},
+            ],
+            "edges": [
+                {"id": "e4", "source": "alert_context", "target": "join_before_save", "targetHandle": "input1"},
+                {"id": "e5", "source": "normal_passthrough", "target": "join_before_save", "targetHandle": "input2"},
+            ],
+        }
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"priority": "urgent", "ticket_id": "TCK-1"},
+            start_node_id="alert_context",
+            start_target_handle="input1",
+            defer_callback=lambda **kwargs: deferred_calls.append(kwargs),
+        )
+
+        self.assertEqual(result["visited_nodes"], ["alert_context"])
+        self.assertEqual(len(deferred_calls), 1)
+        self.assertEqual(deferred_calls[0]["source_node_id"], "alert_context")
+        self.assertEqual(deferred_calls[0]["target_node_id"], "join_before_save")
+        self.assertEqual(deferred_calls[0]["target_handle"], "input1")
+
     def test_blocked_path_executes_node_when_pending_input_already_present(self):
         definition = {
             "nodes": [
