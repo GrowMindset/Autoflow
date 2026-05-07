@@ -909,7 +909,10 @@ async def _run_execution(
                     start_node_id=start_node_id,
                     start_target_handle=start_target_handle,
                     runner_context={
+                        "execution_id": execution.id,
+                        "workflow_id": workflow.id,
                         "user_id": execution.user_id,
+                        "database_url": os.getenv("DATABASE_URL"),
                         "resolved_credentials": resolved_credentials,
                         "resolved_credential_data": resolved_credential_data,
                         "parallel_fanout_enabled": True,
@@ -1149,6 +1152,9 @@ async def _run_node_test(
                 config=node_def.get("config", {}),
                 input_data=input_data,
                 runner_context={
+                    "execution_id": execution.id,
+                    "workflow_id": workflow.id,
+                    "database_url": os.getenv("DATABASE_URL"),
                     "user_id": execution.user_id,
                     "resolved_credentials": resolved_credentials,
                     "resolved_credential_data": resolved_credential_data,

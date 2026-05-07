@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Any, Literal
 from uuid import UUID
 
@@ -38,7 +39,18 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
             }
         ],
     },
-    "workflow_trigger": {},
+    "workflow_trigger": {
+        "input_data_mode": "accept_all",
+        "input_schema": [],
+        "json_example": "",
+    },
+    "execute_workflow": {
+        "source": "database",
+        "workflow_id": "",
+        "workflow_json": "",
+        "workflow_inputs": [],
+        "mode": "run_once",
+    },
     "get_gmail_message": {
         "credential_id": "",
         "folder": "INBOX",
@@ -467,6 +479,11 @@ class WorkflowDefinition(BaseModel):
         node_ids = [node.id for node in self.nodes]
         if len(node_ids) != len(set(node_ids)):
             raise ValueError("Workflow definition contains duplicate node ids")
+        workflow_trigger_count = sum(
+            1 for node in self.nodes if node.type == "workflow_trigger"
+        )
+        if workflow_trigger_count > 1:
+            raise ValueError("Workflow can only contain one workflow_trigger node")
 
         edge_ids = [edge.id for edge in self.edges]
         if len(edge_ids) != len(set(edge_ids)):
@@ -518,6 +535,33 @@ class WorkflowDefinition(BaseModel):
                     )
                 edge.branch = branch_value
                 edge.sourceHandle = branch_value
+
+        for node in self.nodes:
+            if node.type != "execute_workflow":
+                continue
+            source = str(node.config.get("source") or "database").strip().lower()
+            if source == "json":
+                workflow_json = node.config.get("workflow_json")
+                if isinstance(workflow_json, str):
+                    if not workflow_json.strip():
+                        raise ValueError(
+                            "execute_workflow requires valid workflow_json when source=json"
+                        )
+                    try:
+                        json.loads(workflow_json)
+                    except Exception as exc:
+                        raise ValueError(
+                            "execute_workflow workflow_json must be valid JSON"
+                        ) from exc
+                elif not isinstance(workflow_json, dict):
+                    raise ValueError(
+                        "execute_workflow requires valid workflow_json when source=json"
+                    )
+            else:
+                if not str(node.config.get("workflow_id") or "").strip():
+                    raise ValueError(
+                        "execute_workflow requires workflow_id when source=database"
+                    )
         return self
 
 

@@ -112,6 +112,7 @@ class ExecutionDetailResponse(BaseModel):
     id: UUID
     workflow_id: UUID
     user_id: UUID
+    parent_execution_id: UUID | None = None
     status: ExecutionStatus
     triggered_by: TriggeredBy
     started_at: datetime | None
@@ -124,6 +125,7 @@ class ExecutionDetailResponse(BaseModel):
 class ExecutionListItem(BaseModel):
     id: UUID
     workflow_id: UUID
+    parent_execution_id: UUID | None = None
     workflow_name: str
     status: ExecutionStatus
     triggered_by: TriggeredBy

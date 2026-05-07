@@ -254,6 +254,25 @@ class DagExecutor:
                 ),
             }
 
+    def execute_inline_child(
+        self,
+        *,
+        definition: dict[str, Any],
+        initial_payload: dict[str, Any] | None,
+        runner_context: dict[str, Any] | None = None,
+        progress_callback: Callable[..., None] | None = None,
+    ) -> dict[str, Any]:
+        """Execute a child workflow synchronously inside the current worker."""
+        return self.execute(
+            definition=definition,
+            initial_payload=initial_payload,
+            runner_context={
+                **(runner_context or {}),
+                "parallel_fanout_enabled": False,
+            },
+            progress_callback=progress_callback,
+        )
+
     @staticmethod
     def _should_continue_on_error(config: dict[str, Any] | None) -> bool:
         if not isinstance(config, dict):
@@ -611,9 +630,13 @@ try {
         def _resolve(value: Any) -> Any:
             if isinstance(value, str):
                 # Fast path: keep real type if the whole string is one expression.
-                full = _PATTERN.fullmatch(value.strip())
-                if full:
-                    result = _get(full.group(1), input_data)
+                stripped_value = value.strip()
+                matches = list(_PATTERN.finditer(stripped_value))
+                if (
+                    len(matches) == 1
+                    and matches[0].span() == (0, len(stripped_value))
+                ):
+                    result = _get(matches[0].group(1), input_data)
                     return value if result is _MISSING else result
 
                 return _PATTERN.sub(

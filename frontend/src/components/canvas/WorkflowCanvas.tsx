@@ -1900,6 +1900,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
       return;
     }
+    if (
+      type === 'workflow_trigger'
+      && nodesRef.current.some((node) => node.data.type === 'workflow_trigger')
+    ) {
+      toast.error('Only one Workflow Trigger allowed per workflow');
+      return;
+    }
     try {
       const newNode = createNode(type, position);
       const newNodeId = newNode.id;
@@ -2334,7 +2341,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             data: {
               ...node.data,
               config: normalizedConfig,
-              last_output: output || node.data.last_output,
+              status: output === undefined ? 'PENDING' : node.data.status,
+              last_execution_result: output === undefined ? null : node.data.last_execution_result,
+              last_output: output === undefined ? undefined : output,
               schedule_is_active: scheduleIsActive,
             },
           };

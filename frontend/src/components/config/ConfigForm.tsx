@@ -301,7 +301,7 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     { key: 'fields', label: 'Form Fields', type: 'form_fields' }
   ],
   workflow_trigger: [
-    { key: 'source_workflow', label: 'Triggering Workflow', type: 'text', placeholder: 'e.g. main-sync-job' }
+    { key: 'input_data_mode', label: 'Input Data Mode', type: 'select', options: ['fields', 'json_example', 'accept_all'] }
   ],
   // Action Schemas
   get_gmail_message: [

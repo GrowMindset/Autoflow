@@ -18,6 +18,7 @@ export const NODE_SETTINGS_CONFIG: Record<string, NodeSettingsVisibility> = {
   webhook_trigger: { onError: false, retryOnFail: false, notes: true },
   schedule_trigger: { onError: false, retryOnFail: false, notes: true },
   workflow_trigger: { onError: false, retryOnFail: false, notes: true },
+  execute_workflow: { onError: true, retryOnFail: true, notes: true },
   code: { onError: true, retryOnFail: false, notes: true },
   if_else: { onError: true, retryOnFail: true, notes: true },
   switch: { onError: true, retryOnFail: true, notes: true },

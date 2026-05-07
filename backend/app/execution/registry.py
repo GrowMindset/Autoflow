@@ -27,6 +27,7 @@ class RunnerRegistry:
             "datetime_format": self._build_datetime_format,
             "split_in": self._build_split_in,
             "split_out": self._build_split_out,
+            "execute_workflow": self._build_execute_workflow,
             "ai_agent": self._build_ai_agent,
             "code": self._build_code,
             "image_gen": self._build_image_gen,
@@ -178,6 +179,12 @@ class RunnerRegistry:
         from app.execution.runners.nodes.split_out import SplitOutRunner
 
         return SplitOutRunner()
+
+    @staticmethod
+    def _build_execute_workflow() -> Any:
+        from app.execution.runners.nodes.execute_workflow import ExecuteWorkflowRunner
+
+        return ExecuteWorkflowRunner()
 
 
     @staticmethod

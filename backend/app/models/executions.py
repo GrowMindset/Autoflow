@@ -42,6 +42,10 @@ class Execution(UUIDPrimaryKeyMixin, Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
+    parent_execution_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("executions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
@@ -56,6 +60,16 @@ class Execution(UUIDPrimaryKeyMixin, Base):
 
     workflow: Mapped["Workflow"] = relationship("Workflow", back_populates="executions")
     user: Mapped["User"] = relationship("User", back_populates="executions")
+    parent_execution: Mapped["Execution | None"] = relationship(
+        "Execution",
+        remote_side="Execution.id",
+        back_populates="child_executions",
+    )
+    child_executions: Mapped[list["Execution"]] = relationship(
+        "Execution",
+        back_populates="parent_execution",
+        cascade="save-update, merge",
+    )
     node_executions: Mapped[list["NodeExecution"]] = relationship(
         "NodeExecution", back_populates="execution", cascade="all, delete-orphan"
     )

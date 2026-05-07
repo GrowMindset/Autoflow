@@ -75,8 +75,12 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       type: 'workflow_trigger',
       label: 'Workflow Trigger',
       category: 'trigger',
-      description: 'Trigger this workflow from another workflow.',
-      default_config: {},
+      description: 'Used in child workflows called by Execute Workflow node.',
+      default_config: {
+        input_data_mode: 'accept_all',
+        input_schema: [],
+        json_example: '',
+      },
       is_dummy: false,
     },
   ],
@@ -146,6 +150,20 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
     },
   ],
   action: [
+    {
+      type: 'execute_workflow',
+      label: 'Execute Workflow',
+      category: 'action',
+      description: 'Call another workflow and use its final output.',
+      default_config: {
+        source: 'database',
+        workflow_id: '',
+        workflow_json: '',
+        workflow_inputs: [],
+        mode: 'run_once',
+      },
+      is_dummy: false,
+    },
     {
       type: 'get_gmail_message',
       label: 'Get Gmail Message',

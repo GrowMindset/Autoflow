@@ -8,6 +8,8 @@ import DataView from './DataView';
 import ImageGenConfigPanel from './ImageGenConfigPanel';
 import ImageGenResultDisplay from './ImageGenResultDisplay';
 import CodeConfigPanel from './CodeConfigPanel';
+import ExecuteWorkflowConfigPanel from '../panels/ExecuteWorkflowConfigPanel';
+import WorkflowTriggerConfigPanel from '../panels/WorkflowTriggerConfigPanel';
 import { executionService } from '../../services/executionService';
 import api from '../../services/api';
 import { formatTimeInAppTimezone, getAppTimezone } from '../../utils/dateTime';
@@ -94,6 +96,32 @@ const CodeExecutionResultDisplay: React.FC<{
         </div>
       </details>
     </div>
+  );
+};
+
+const ChildWorkflowExecutionDisplay: React.FC<{ outputData: any }> = ({ outputData }) => {
+  const childExecution = outputData?.__child_execution;
+  if (!childExecution || typeof childExecution !== 'object') return null;
+
+  return (
+    <details open className="group rounded-2xl border border-emerald-200 bg-emerald-50/60 dark:border-emerald-900/40 dark:bg-emerald-900/10">
+      <summary className="cursor-pointer select-none px-4 py-3 text-[10px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300">
+        Child Workflow Execution
+      </summary>
+      <div className="space-y-3 border-t border-emerald-200 p-3 dark:border-emerald-900/40">
+        <div className="grid grid-cols-1 gap-2 text-xs">
+          <div>
+            <span className="font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300">Execution ID</span>
+            <p className="mt-1 break-all font-mono text-emerald-900 dark:text-emerald-100">{childExecution.execution_id || 'Unknown'}</p>
+          </div>
+          <div>
+            <span className="font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300">Status</span>
+            <p className="mt-1 font-mono text-emerald-900 dark:text-emerald-100">{childExecution.status || 'Unknown'}</p>
+          </div>
+        </div>
+        <DataView data={childExecution.final_output} emptyMessage="No child output recorded" />
+      </div>
+    </details>
   );
 };
 
@@ -993,6 +1021,18 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         config={node.data.config}
                         onChange={handleConfigPatch}
                       />
+                    ) : node.data.type === 'execute_workflow' ? (
+                      <ExecuteWorkflowConfigPanel
+                        config={node.data.config}
+                        workflowId={workflowId}
+                        onChange={handleConfigChange}
+                        onChangePatch={handleConfigPatch}
+                      />
+                    ) : node.data.type === 'workflow_trigger' ? (
+                      <WorkflowTriggerConfigPanel
+                        config={node.data.config}
+                        onChange={handleConfigChange}
+                      />
                     ) : (
                       <ConfigForm
                         nodeType={node.data.type}
@@ -1256,7 +1296,12 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         status={node.data.last_execution_result.status}
                       />
                     ) : (
-                      <LogSection title="Result Payload" data={node.data.last_execution_result.output_data} />
+                      <>
+                        {node.data.type === 'execute_workflow' && (
+                          <ChildWorkflowExecutionDisplay outputData={node.data.last_execution_result.output_data} />
+                        )}
+                        <LogSection title="Result Payload" data={node.data.last_execution_result.output_data} />
+                      </>
                     )}
                   </div>
                 ) : output ? (
@@ -1285,6 +1330,9 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         outputData={output}
                         errorMessage={typeof output?.error === 'string' ? output.error : null}
                       />
+                    )}
+                    {node.data.type === 'execute_workflow' && (
+                      <ChildWorkflowExecutionDisplay outputData={output} />
                     )}
                     <DataView data={output} emptyMessage="No output data recorded" />
                   </div>

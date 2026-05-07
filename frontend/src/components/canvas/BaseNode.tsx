@@ -176,6 +176,24 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     missing.push('Requires a Chat Model node connected to its bottom handle');
   }
 
+  if (type === 'execute_workflow') {
+    const source = String(config.source || 'database');
+    if (source === 'json') {
+      const rawJson = String(config.workflow_json || '').trim();
+      if (!rawJson) {
+        missing.push('Workflow Definition JSON is required');
+      } else {
+        try {
+          JSON.parse(rawJson);
+        } catch {
+          missing.push('Workflow Definition JSON must be valid JSON');
+        }
+      }
+    } else if (!String(config.workflow_id || '').trim()) {
+      missing.push('Child Workflow is required');
+    }
+  }
+
   return missing;
 };
 
