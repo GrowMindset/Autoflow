@@ -407,6 +407,22 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.definition.nodes[1].config["workflow_id"], "")
         self.assertEqual(result.message, SUB_WORKFLOW_RESPONSE_MESSAGE)
 
+    def test_sub_workflow_parent_trigger_selection_prefers_prompt_trigger(self) -> None:
+        cases = [
+            ("webhook receives data and calls a sub-workflow", "webhook_trigger"),
+            ("API POST calls a child workflow", "webhook_trigger"),
+            ("user submits a form then runs a child workflow", "form_trigger"),
+            ("daily schedule runs another workflow", "schedule_trigger"),
+            ("call another workflow to do the work", "manual_trigger"),
+        ]
+
+        for prompt, expected in cases:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(
+                    LLMService._infer_parent_trigger_type_from_prompt(prompt),
+                    expected,
+                )
+
     def test_validate_generated_workflow_rejects_unknown_node_type(self) -> None:
         payload = _valid_definition()
         payload["nodes"][1]["type"] = "slack"

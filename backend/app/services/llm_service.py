@@ -58,10 +58,13 @@ IMAGE_GENERATION_HINTS = (
 )
 
 SUB_WORKFLOW_RESPONSE_MESSAGE = (
-    "I've generated your parent workflow. The execute_workflow node is set up and waiting "
-    "for a child workflow. Now describe what the child workflow should do and I'll generate "
-    "that separately — it will start with a Workflow Trigger node that receives the inputs "
-    "from the parent."
+    "I've generated your parent workflow.\n\n"
+    "To complete the setup:\n"
+    "1. Accept and save this parent workflow first\n"
+    "2. Click 'New Workflow' in the sidebar to open a fresh canvas\n"
+    "3. Come back to this chat and describe what the child workflow should do\n"
+    "4. Once the child is saved, open the Execute Workflow node in the parent and select the child workflow from the dropdown\n\n"
+    "Ready when you are — describe the child workflow."
 )
 
 SUB_WORKFLOW_INTENT_HINTS = (
@@ -3327,6 +3330,13 @@ class LLMService:
             - If the request asks for an N-day sequence, design a clear day-by-day cadence and keep timing consistent with the requested duration.
             - If the request asks to use multiple channels (for example email + WhatsApp + Telegram), fan out into parallel channel branches from the trigger (or immediately after one router node) instead of serially chaining all channels in one line.
             - Sub-workflow detection is mandatory. If the user's prompt implies calling one workflow from another, triggering a sub-process, or reusing a workflow inside another workflow (for example "call a sub-workflow", "trigger another workflow", "reuse workflow X inside Y", "run a child workflow", or "execute a workflow within a workflow"), generate ONLY the parent workflow JSON.
+            - PARENT WORKFLOW TRIGGER SELECTION RULES — follow strictly:
+              - User mentions "webhook", "API", "receives data", "HTTP", or "POST" -> use webhook_trigger.
+              - User mentions "form", "user fills", "user submits", or "user input" -> use form_trigger.
+              - User mentions "schedule", "every day", "every hour", "cron", "daily", or "weekly" -> use schedule_trigger.
+              - User mentions "another workflow", "sub-workflow", or "child workflow" -> use manual_trigger ONLY for the parent if no other trigger is mentioned.
+              - NEVER default to manual_trigger just because it is the simplest option.
+              - Read the user's prompt carefully and pick the trigger that matches the use case.
             - For sub-workflow parent workflows, include an execute_workflow node with config.source="database" and config.workflow_id="" because the child workflow does not exist yet.
             - For sub-workflow parent workflows, append the message field exactly as: "{SUB_WORKFLOW_RESPONSE_MESSAGE}"
             - Never generate both parent and child in a single definition. One generation equals one workflow.
@@ -3661,7 +3671,11 @@ class LLMService:
         if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
             return hinted
 
-        preferred_trigger_type = cls._infer_trigger_type_from_prompt(prompt_text)
+        preferred_trigger_type = (
+            cls._infer_parent_trigger_type_from_prompt(prompt_text)
+            if cls._prompt_implies_sub_workflow(prompt_text)
+            else cls._infer_trigger_type_from_prompt(prompt_text)
+        )
         start_trigger_index = cls._find_start_trigger_node_index(raw_nodes, raw_edges)
         if (
             not preferred_trigger_type
@@ -4113,27 +4127,20 @@ class LLMService:
 
     @classmethod
     def _build_sub_workflow_parent_fallback(cls, prompt: str) -> GeneratedWorkflowResult:
-        allowed_parent_triggers = {
-            "manual_trigger",
-            "form_trigger",
-            "schedule_trigger",
-            "webhook_trigger",
-        }
-        inferred_trigger = cls._infer_trigger_type_from_prompt(prompt)
-        default_trigger = cls._infer_default_trigger_from_prompt(
-            prompt=prompt,
-            inferred_trigger=inferred_trigger,
-        )
-        trigger_type = (
-            inferred_trigger
-            if inferred_trigger in allowed_parent_triggers
-            else default_trigger
-            if default_trigger in allowed_parent_triggers
-            else "manual_trigger"
-        )
+        trigger_type = cls._infer_parent_trigger_type_from_prompt(prompt)
         trigger_config = deepcopy(NODE_CONFIG_DEFAULTS.get(trigger_type, {}))
         if trigger_type == "webhook_trigger":
-            trigger_config.update({"path": "parent-sub-workflow", "method": "POST"})
+            trigger_config = cls._hydrate_webhook_config_from_prompt(
+                trigger_config,
+                prompt,
+            )
+            if not str(trigger_config.get("path") or "").strip():
+                trigger_config["path"] = "parent-sub-workflow"
+            trigger_config["method"] = str(trigger_config.get("method") or "POST").upper()
+        elif trigger_type == "form_trigger":
+            trigger_config = cls._hydrate_form_config_from_prompt(trigger_config, prompt)
+        elif trigger_type == "schedule_trigger":
+            trigger_config = cls._hydrate_schedule_config_from_prompt(trigger_config, prompt)
 
         trigger_id = trigger_type
         execute_id = "execute_child_workflow"
@@ -4178,6 +4185,59 @@ class LLMService:
             name=cls._derive_workflow_name(prompt),
             message=SUB_WORKFLOW_RESPONSE_MESSAGE,
         )
+
+    @classmethod
+    def _infer_parent_trigger_type_from_prompt(cls, prompt: str) -> str:
+        lowered = f" {str(prompt or '').lower()} "
+        if any(
+            token in lowered
+            for token in (
+                "webhook",
+                " api ",
+                "receives data",
+                "receive data",
+                "http",
+                " post ",
+                "incoming payload",
+                "incoming event",
+            )
+        ):
+            return "webhook_trigger"
+        if any(
+            token in lowered
+            for token in (
+                " form",
+                "user fills",
+                "user submits",
+                "user input",
+                "submission",
+            )
+        ):
+            return "form_trigger"
+        if any(
+            token in lowered
+            for token in (
+                "schedule",
+                "every day",
+                "every hour",
+                "cron",
+                "daily",
+                "weekly",
+                "hourly",
+            )
+        ) or cls._extract_schedule_rule_from_prompt(prompt) is not None:
+            return "schedule_trigger"
+
+        inferred_trigger = cls._infer_trigger_type_from_prompt(prompt)
+        if inferred_trigger in {"webhook_trigger", "form_trigger", "schedule_trigger"}:
+            return inferred_trigger
+        default_trigger = cls._infer_default_trigger_from_prompt(
+            prompt=prompt,
+            inferred_trigger=None,
+        )
+        if default_trigger in {"webhook_trigger", "form_trigger", "schedule_trigger"}:
+            return default_trigger
+        return "manual_trigger"
 
     @staticmethod
     def _derive_workflow_name(prompt: str) -> str:
