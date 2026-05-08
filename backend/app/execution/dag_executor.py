@@ -280,6 +280,89 @@ class DagExecutor:
         return str(config.get("on_error", "stop")).strip().lower() == "continue"
 
     @staticmethod
+    def _parse_enabled_flag(raw_value: Any, default: bool = True) -> bool:
+        if raw_value is None:
+            return default
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, (int, float)):
+            return raw_value != 0
+        normalized = str(raw_value).strip().lower()
+        if not normalized:
+            return default
+        if normalized in {"1", "true", "yes", "on", "enabled", "active"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", "inactive"}:
+            return False
+        return default
+
+    @classmethod
+    def _is_node_active(cls, node: dict[str, Any]) -> bool:
+        return cls._parse_enabled_flag(node.get("is_active"), default=True)
+
+    @staticmethod
+    def _resolve_pending_input_payload(
+        *,
+        node_type: str,
+        pending_inputs: list[dict[str, Any]],
+        fallback_input: Any,
+    ) -> Any:
+        if node_type == "split_in":
+            if pending_inputs:
+                return pending_inputs[0].get("data")
+            return fallback_input
+
+        if not pending_inputs:
+            return fallback_input
+
+        if len(pending_inputs) == 1 and pending_inputs[0].get("handle") is None:
+            return pending_inputs[0].get("data")
+
+        resolved_input: dict[str, Any] = {}
+        for item in pending_inputs:
+            handle = item.get("handle")
+            data = item.get("data")
+            if handle:
+                resolved_input[str(handle)] = data
+            elif isinstance(data, dict):
+                resolved_input.update(data)
+            else:
+                resolved_input["_default"] = data
+
+        return resolved_input
+
+    def _skip_inactive_node(
+        self,
+        *,
+        context: ExecutionContext,
+        node_id: str,
+        node_type: str,
+        resolved_input: Any,
+    ) -> None:
+        context.node_inputs[node_id] = resolved_input
+        context.node_outputs[node_id] = resolved_input
+        context.node_states[node_id] = "skipped"
+        context.pending_inputs[node_id] = []
+        context.blocked_input_counts[node_id] = 0
+        self._emit_node_progress(
+            node_id=node_id,
+            node_type=node_type,
+            status="SKIPPED",
+            input_data=resolved_input,
+            output_data=resolved_input,
+            error_message="Node is deactivated.",
+        )
+
+        next_input = self._strip_internal_fields(resolved_input)
+        for edge in context.outgoing_edges.get(node_id, []):
+            self._execute_from_node(
+                context=context,
+                node_id=edge["target"],
+                input_data=next_input,
+                target_handle=edge.get("targetHandle"),
+            )
+
+    @staticmethod
     def _max_runner_attempts(config: dict[str, Any] | None) -> int:
         if not isinstance(config, dict) or not bool(config.get("retry_on_fail", False)):
             return 1
@@ -785,8 +868,12 @@ try {
         indegree: dict[str, int] = {}
 
         for node in nodes:
-            node_id = node.get("id")
-            node_type = node.get("type")
+            if not isinstance(node, dict):
+                raise ValueError("Every node must be an object")
+            safe_node = dict(node)
+
+            node_id = safe_node.get("id")
+            node_type = safe_node.get("type")
             if not node_id:
                 raise ValueError("Every node must have an id")
             if not node_type:
@@ -794,7 +881,8 @@ try {
             if node_id in nodes_by_id:
                 raise ValueError(f"Duplicate node id found: {node_id}")
 
-            nodes_by_id[node_id] = node
+            safe_node["is_active"] = self._is_node_active(safe_node)
+            nodes_by_id[node_id] = safe_node
             outgoing_edges[node_id] = []
             incoming_edges[node_id] = []
             indegree[node_id] = 0
@@ -1221,6 +1309,24 @@ try {
                 user_message=cap_message,
             )
 
+        # Prepare aggregated input once so both active and inactive paths can
+        # reuse consistent payload semantics.
+        all_inputs = context.pending_inputs[node_id]
+        resolved_input = self._resolve_pending_input_payload(
+            node_type=node_type,
+            pending_inputs=all_inputs,
+            fallback_input=input_data,
+        )
+
+        if not self._is_node_active(node):
+            self._skip_inactive_node(
+                context=context,
+                node_id=node_id,
+                node_type=node_type,
+                resolved_input=resolved_input,
+            )
+            return
+
         # Special handling for nodes that might be triggered with NO inputs (triggers)
         # or nodes that are now ready.
 
@@ -1232,39 +1338,12 @@ try {
         context.total_node_executions += 1
         context.node_execution_counts[node_id] += 1
 
-        # Merge and SplitIn have their own specialized logic, but we've already 
-        # collected their inputs. We'll adapt them.
-
+        # Merge and SplitIn have their own specialized logic, but we've already
+        # collected their inputs.
         if node_type == "split_in":
-            # split_in expects raw input_data from the first (and usually only) input
-            raw_input = context.pending_inputs[node_id][0]["data"] if context.pending_inputs[node_id] else input_data
             context.pending_inputs[node_id] = []
-            self._handle_split_in(context=context, node_id=node_id, input_data=raw_input)
+            self._handle_split_in(context=context, node_id=node_id, input_data=resolved_input)
             return
-
-        # Prepare aggregated input for the runner
-        # If there's only one input and no handle, pass it raw for backward compatibility.
-        # Otherwise, pass a dict of handle -> data.
-        
-        all_inputs = context.pending_inputs[node_id]
-        if not all_inputs:
-            resolved_input = input_data
-        elif len(all_inputs) == 1 and all_inputs[0]["handle"] is None:
-            resolved_input = all_inputs[0]["data"]
-        else:
-            # Multi-input or handle-specific input
-            resolved_input = {}
-            for inp in all_inputs:
-                handle = inp["handle"]
-                data = inp["data"]
-                if handle:
-                    resolved_input[handle] = data
-                else:
-                    # Merge data for default handle or if no handle exists
-                    if isinstance(data, dict):
-                        resolved_input.update(data)
-                    else:
-                        resolved_input["_default"] = data
 
         if node_type == "merge":
             # Merge runner receives input envelopes so it can support handle-aware
@@ -1653,6 +1732,28 @@ try {
             context.split_buffers[split_out_node_id].append(input_data)
             return
 
+        if not self._is_node_active(node):
+            context.node_inputs[node_id] = input_data
+            context.node_outputs[node_id] = input_data
+            context.node_states[node_id] = "skipped"
+            self._emit_node_progress(
+                node_id=node_id,
+                node_type=node_type,
+                status="SKIPPED",
+                input_data=input_data,
+                output_data=input_data,
+                error_message="Node is deactivated.",
+            )
+            next_input = self._strip_internal_fields(input_data)
+            for edge in context.outgoing_edges.get(node_id, []):
+                self._execute_split_path(
+                    context=context,
+                    node_id=edge["target"],
+                    input_data=next_input,
+                    split_out_node_id=split_out_node_id,
+                )
+            return
+
         runner = self.registry.get_runner(node_type)
         config = self._resolve_templates(
             node.get("config", {}),
@@ -1745,8 +1846,30 @@ try {
         if context.node_states[node_id] == "completed":
             return
 
+        node = context.nodes_by_id[node_id]
+        if not self._is_node_active(node):
+            context.node_inputs[node_id] = collected_inputs
+            context.node_outputs[node_id] = collected_inputs
+            context.node_states[node_id] = "skipped"
+            self._emit_node_progress(
+                node_id=node_id,
+                node_type="split_out",
+                status="SKIPPED",
+                input_data=collected_inputs,
+                output_data=collected_inputs,
+                error_message="Node is deactivated.",
+            )
+            next_input = self._strip_internal_fields(collected_inputs)
+            for edge in context.outgoing_edges.get(node_id, []):
+                self._execute_from_node(
+                    context=context,
+                    node_id=edge["target"],
+                    input_data=next_input,
+                )
+            return
+
         runner = self.registry.get_runner("split_out")
-        config = context.nodes_by_id[node_id].get("config", {})
+        config = node.get("config", {})
         context.node_inputs[node_id] = collected_inputs
         self._emit_node_progress(
             node_id=node_id,

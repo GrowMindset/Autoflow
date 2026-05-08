@@ -5,6 +5,8 @@ export interface WorkflowNodeData {
   type: string; // The specific node type (e.g., 'manual_trigger'), matches Backend ID
   category: 'trigger' | 'action' | 'transform' | 'input_output' | 'utility' | 'ai';
   config: Record<string, any>;
+  is_active?: boolean;
+  onToggleActive?: (nodeId: string) => void;
   is_dummy?: boolean;
   last_output?: any;
   status?: 'PENDING' | 'QUEUED' | 'WAITING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'SKIPPED' | string;

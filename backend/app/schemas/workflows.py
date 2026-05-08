@@ -661,6 +661,7 @@ class WorkflowNodeDefinition(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     position: WorkflowNodePosition
     config: dict[str, Any]
+    is_active: bool = True
 
     @model_validator(mode="after")
     def normalize_config(self) -> "WorkflowNodeDefinition":

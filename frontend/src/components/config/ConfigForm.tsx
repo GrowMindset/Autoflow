@@ -351,6 +351,9 @@ const normalizeFilterCondition = (
   };
 };
 
+type FilterCondition = ReturnType<typeof normalizeFilterCondition>;
+type FilterConditionDropKey = Extract<keyof FilterCondition, 'field' | 'value_field' | 'value'>;
+
 const normalizeScheduleRule = (rawRule: any, fallbackId?: string): ScheduleRule => {
   const rawObject: Partial<ScheduleRule> = rawRule && typeof rawRule === 'object' ? rawRule : {};
   const intervalRaw = String(rawRule?.interval || '').trim().toLowerCase();
@@ -1657,7 +1660,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({
         const handleFilterConditionDrop = (
           event: React.DragEvent<HTMLInputElement>,
           index: number,
-          conditionKey: string,
+          conditionKey: FilterConditionDropKey,
           dropFieldKey: string,
         ) => {
           event.preventDefault();

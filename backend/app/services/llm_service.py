@@ -1512,10 +1512,12 @@ class LLMService:
             - If users ask "how to build X", provide a concise step-by-step plan with suggested nodes and why.
             - For implementation questions, answer in this structure: Where to place it, Implementation Steps, Parameters.
             - If users ask about if_else or switch routing, include concrete config examples and branch wiring.
+            - If users share a runtime error, diagnose the likely root cause first, then provide direct node-level fix steps and a short validation checklist.
             - Avoid repeating the same generic brief when the user asks a specific follow-up.
             - Do not use markdown bold markers like * or ** in your response.
             - Always answer the latest user question first. Do not let older context override the current question intent.
             - If the question is about one node (for example http_request), focus on that node only and explain exactly what to send and where.
+            - Ask mode must support all node types for create/edit/add/delete/debug guidance, not only a single node family.
             - Do NOT generate workflow JSON in ASK mode unless user explicitly asks for JSON.
             - Keep guidance concrete and actionable.
             - If uncertain, say what is uncertain instead of inventing facts.
@@ -1686,15 +1688,41 @@ class LLMService:
             "prompt",
             "node",
         )
+        error_markers = (
+            "error",
+            "failed",
+            "exception",
+            "timeout",
+            "timed out",
+            "not found",
+            "bad gateway",
+            "status code",
+            "404",
+            "401",
+            "403",
+            "422",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+        )
 
         def _is_timestamp(value: str) -> bool:
             return bool(re.match(r"^\d{1,2}:\d{2}\s*(am|pm)$", value.strip(), flags=re.IGNORECASE))
 
+        def _has_error_marker(value: str) -> bool:
+            lowered_value = str(value or "").lower()
+            return any(marker in lowered_value for marker in error_markers)
+
         candidate: str | None = None
+        latest_error_line: str | None = None
         for line in reversed(lines):
             lowered = line.lower()
             if not lowered:
                 continue
+            if latest_error_line is None and _has_error_marker(lowered):
+                latest_error_line = " ".join(line.split()).strip()[:260]
             if _is_timestamp(lowered):
                 continue
             if any(lowered.startswith(prefix) for prefix in ignored_prefixes):
@@ -1709,8 +1737,26 @@ class LLMService:
             if candidate is None:
                 candidate = line
 
-        final_question = candidate or lines[-1]
-        return " ".join(final_question.split()).strip()[:800]
+        final_question = " ".join((candidate or lines[-1]).split()).strip()
+        if (
+            (not latest_error_line or latest_error_line.lower() == final_question.lower())
+            and lines
+        ):
+            for raw_line in reversed(lines):
+                compact_line = " ".join(raw_line.split()).strip()
+                if not compact_line or compact_line.lower() == final_question.lower():
+                    continue
+                if _has_error_marker(compact_line):
+                    latest_error_line = compact_line[:260]
+                    break
+        if (
+            latest_error_line
+            and final_question
+            and latest_error_line.lower() not in final_question.lower()
+            and not re.search(r"\b(?:4\d{2}|5\d{2})\b", final_question)
+        ):
+            final_question = f"{final_question} Error context: {latest_error_line}"
+        return final_question[:800]
 
     @staticmethod
     def _compact_json(value: Any, *, max_chars: int = 260) -> str:
@@ -2101,12 +2147,38 @@ class LLMService:
                 "better prompt",
             )
         )
+        asks_capabilities = any(
+            token in lowered
+            for token in (
+                "ask mode capability",
+                "ask mode capabilities",
+                "what can ask mode",
+                "what ask mode can",
+                "chatbot capability",
+                "what this chatbot can do",
+                "all node",
+                "all nodes",
+            )
+        )
+        runtime_debug_requested = ask_intent == "debug" or cls._looks_like_runtime_error_prompt(prompt)
 
         if (ask_intent == "routing" or wants_implementation_guide) and node_focus != "http_request":
             return cls._clip_assistant_message(
                 cls._build_routing_implementation_response(
                     definition=current_definition,
                     include_brief=wants_brief,
+                )
+            )
+        if asks_capabilities:
+            return cls._clip_assistant_message(
+                cls._build_ask_capabilities_response(current_definition=current_definition)
+            )
+        if runtime_debug_requested:
+            return cls._clip_assistant_message(
+                cls._build_runtime_debug_response(
+                    prompt=prompt,
+                    current_definition=current_definition,
+                    node_focus_types=node_focus_types,
                 )
             )
         if asks_prompt_improvement:
@@ -2199,6 +2271,402 @@ class LLMService:
                 lines.append(f"- {cls._compact_json(context_pack, max_chars=220)}")
 
         return cls._clip_assistant_message("\n".join(lines))
+
+    @classmethod
+    def _looks_like_runtime_error_prompt(cls, prompt: str) -> bool:
+        lowered = str(prompt or "").lower()
+        if not lowered:
+            return False
+        error_tokens = (
+            "error",
+            "fail",
+            "failed",
+            "failing",
+            "problem",
+            "issue",
+            "runtime",
+            "exception",
+            "traceback",
+            "timeout",
+            "timed out",
+            "not found",
+            "bad gateway",
+            "gateway timeout",
+            "unauthorized",
+            "forbidden",
+            "rate limit",
+            "too many requests",
+            "connection refused",
+            "dns",
+            "status code",
+            "invalid json",
+            "json decode",
+            "waiting",
+            "stuck",
+            "not run",
+            "not running",
+            "not execute",
+            "not executing",
+            "why false",
+        )
+        if any(token in lowered for token in error_tokens):
+            return True
+        return bool(re.search(r"\b(?:4\d{2}|5\d{2})\b", lowered))
+
+    @staticmethod
+    def _extract_error_excerpt(prompt: str, *, max_chars: int = 280) -> str:
+        raw = str(prompt or "").strip()
+        if not raw:
+            return ""
+        compact_lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        if not compact_lines:
+            return ""
+        patterns = (
+            r"(?i)(http request failed:[^\n]+)",
+            r"(?i)(error:[^\n]+)",
+            r"(?i)(failed:[^\n]+)",
+            r"(?i)(status code\s*\d{3}[^\n]*)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, raw)
+            if match:
+                return " ".join(match.group(1).split())[:max_chars]
+        for line in compact_lines:
+            lowered = line.lower()
+            if any(
+                token in lowered
+                for token in (
+                    "error",
+                    "failed",
+                    "timeout",
+                    "not found",
+                    "bad gateway",
+                    "status code",
+                    "exception",
+                )
+            ):
+                return " ".join(line.split())[:max_chars]
+        return " ".join(compact_lines[-1].split())[:max_chars]
+
+    @classmethod
+    def _classify_error_signature(cls, prompt: str) -> dict[str, Any]:
+        lowered = str(prompt or "").lower()
+        status_match = re.search(r"\b([1-5]\d{2})\b", lowered)
+        status_code = int(status_match.group(1)) if status_match else None
+
+        kind = "generic_runtime"
+        summary = "This is a runtime execution failure. It usually means one node config or upstream data shape is not matching what the node expects."
+        causes = [
+            "A required config value is missing or invalid for the failing node.",
+            "Upstream output fields do not match the templates used in downstream nodes.",
+            "External integration credentials, endpoint, or payload contract has changed.",
+        ]
+        fixes = [
+            "Open the failing node execution log and verify the exact node id + error message.",
+            "Check required config keys on that node and confirm template fields resolve from upstream output.",
+            "Re-run with one sample payload and inspect output at each node boundary.",
+        ]
+
+        if status_code == 404 or "not found" in lowered:
+            kind = "not_found"
+            summary = "HTTP 404 Not Found means the target URL/path/resource does not exist for the request being sent."
+            causes = [
+                "The base URL or endpoint path is wrong (typo, missing version like /v1, or wrong environment domain).",
+                "Method/path mismatch, for example calling GET on a POST-only endpoint.",
+                "Resource identifier in URL path/query is empty or invalid.",
+            ]
+            fixes = [
+                "Verify `url` exactly as API docs specify, including version and path segment.",
+                "Confirm `method` matches endpoint contract and required query/path params are present.",
+                "Test the same request in Postman/curl, then copy working URL/method back into the node.",
+            ]
+        elif status_code in {401, 403} or "unauthorized" in lowered or "forbidden" in lowered:
+            kind = "auth"
+            summary = "This is an authentication/authorization failure. The endpoint is reachable but credentials or access scope are invalid."
+            causes = [
+                "Missing/expired token or wrong credential selected in node config.",
+                "Token format mismatch (for example missing Bearer prefix).",
+                "API key lacks permission for this endpoint.",
+            ]
+            fixes = [
+                "Re-select the correct credential and refresh/reissue token if needed.",
+                "Verify `auth_mode` and auth headers exactly match provider documentation.",
+                "Confirm account/app has permission for the called endpoint.",
+            ]
+        elif status_code == 422 or "validation" in lowered or "unprocessable" in lowered:
+            kind = "payload_validation"
+            summary = "The request reached the service, but payload fields failed validation."
+            causes = [
+                "Wrong field names/data types in body or query.",
+                "Required fields are missing after template resolution.",
+                "Date/time/enum values are not in the expected format.",
+            ]
+            fixes = [
+                "Log final payload right before the outbound node and compare with API schema.",
+                "Fix mapping keys and data types in templates (string vs number vs boolean).",
+                "Add a code/filter validation step before outbound call for required fields.",
+            ]
+        elif status_code == 429 or "rate limit" in lowered or "too many requests" in lowered:
+            kind = "rate_limit"
+            summary = "The integration is being rate-limited (too many requests)."
+            causes = [
+                "Request burst exceeded provider limits.",
+                "No delay/backoff between retries.",
+                "Multiple workflow runs hit the same endpoint concurrently.",
+            ]
+            fixes = [
+                "Add delay + retry with exponential backoff.",
+                "Throttle schedule/concurrency and avoid duplicate trigger bursts.",
+                "Implement fallback path when retries are exhausted.",
+            ]
+        elif status_code in {500, 502, 503, 504} or any(
+            token in lowered for token in ("bad gateway", "gateway timeout", "service unavailable")
+        ):
+            kind = "server_or_gateway"
+            summary = "This is an upstream server/gateway failure. Your request may be valid but the target service is unstable or unreachable."
+            causes = [
+                "Temporary provider outage or upstream gateway issue.",
+                "Timeout due to slow downstream response.",
+                "Request size/payload complexity causing backend failure.",
+            ]
+            fixes = [
+                "Retry with delay/backoff and set a practical timeout value.",
+                "Check provider status page/logs and re-run after short interval.",
+                "Reduce payload size and avoid unnecessary fields.",
+            ]
+        elif any(token in lowered for token in ("timeout", "timed out", "connection refused", "dns")):
+            kind = "network_or_timeout"
+            summary = "This is a network/timeout failure while reaching a dependency."
+            causes = [
+                "Host is unreachable, DNS resolution failed, or firewall restrictions apply.",
+                "Timeout is too low for endpoint response time.",
+                "Endpoint requires VPN/private network that runner cannot access.",
+            ]
+            fixes = [
+                "Verify host reachability and DNS from runtime environment.",
+                "Increase timeout and add retry with delay.",
+                "Use the correct network route/environment endpoint.",
+            ]
+        elif "waiting" in lowered and "merge" in lowered:
+            kind = "merge_waiting"
+            summary = "The merge node is waiting because configured inputs do not all receive data in the same run."
+            causes = [
+                "Merge mode expects multiple inputs (`combine`/`append`) but one branch never executes.",
+                "`input_count` is higher than active incoming branches.",
+                "Branching logic routes only one side while merge waits for both.",
+            ]
+            fixes = [
+                "Set merge mode/inputs to match actual branch behavior in this run.",
+                "For mutually exclusive branches, route both branches into a mode that does not block on absent input.",
+                "Ensure every branch reaching merge has consistent execution path or add separate merge per route.",
+            ]
+        elif any(token in lowered for token in ("why false", "false branch", "if else")):
+            kind = "branch_condition"
+            summary = "The condition evaluated to false because compared field/value or type did not match at runtime."
+            causes = [
+                "Field path points to missing or wrong key.",
+                "Type mismatch (string 'true' vs boolean true, case mismatch, whitespace).",
+                "Condition compares against value that never occurs in actual payload.",
+            ]
+            fixes = [
+                "Inspect the previous node output and verify exact field path.",
+                "Normalize value in code/filter step before `if_else` (trim/lower/type-cast).",
+                "Update operator/value to match actual runtime values.",
+            ]
+        elif any(token in lowered for token in ("template", "{{", "undefined", "keyerror", "missing key")):
+            kind = "template_mapping"
+            summary = "The runtime failed because one or more template variables do not exist in current input data."
+            causes = [
+                "Template references outdated field path after node changes.",
+                "AI output key used directly instead of `{{output.<key>}}` where required.",
+                "Branch-specific fields are referenced in paths where branch does not run.",
+            ]
+            fixes = [
+                "Map templates to fields that exist in immediate upstream output.",
+                "For ai_agent outputs use `{{output.<field>}}` consistently.",
+                "Add safe defaults or branch-specific mappings before outbound nodes.",
+            ]
+
+        return {
+            "status_code": status_code,
+            "kind": kind,
+            "summary": summary,
+            "causes": causes,
+            "fixes": fixes,
+        }
+
+    @classmethod
+    def _build_node_debug_checks(
+        cls,
+        *,
+        node_type: str,
+        error_kind: str,
+    ) -> list[str]:
+        if node_type == "http_request":
+            return [
+                "Check `url`, `method`, and `auth_mode` first; then verify `body_type` and `body_json`/`body_form_json` mapping.",
+                "If API expects JSON, ensure `body_type=json` and `body_json` is valid JSON with resolved templates.",
+                "Confirm `headers_json` includes required content-type/auth headers.",
+            ]
+        if node_type == "merge":
+            return [
+                "Check `mode` and `input_count`; waiting issues happen when a configured input branch does not emit data.",
+                "If branch is exclusive (`if_else`), avoid merge settings that block for both branches on every run.",
+                "Verify each incoming edge targetHandle matches expected merge inputs.",
+            ]
+        if node_type in {"if_else", "switch", "filter"}:
+            return [
+                "Verify condition field path exists in runtime payload.",
+                "Align `operator`, `data_type`, and `case_sensitive` with actual values.",
+                "Use a code node to normalize values before routing when source payload is inconsistent.",
+            ]
+        if node_type == "ai_agent":
+            return [
+                "Confirm ai_agent has a connected chat model using targetHandle `chat_model`.",
+                "Keep output mappings as `{{output.<key>}}` in downstream nodes.",
+                "Reduce temperature for stable structured outputs when routing depends on exact keys.",
+            ]
+        if node_type in {"send_gmail_message", "telegram", "whatsapp", "slack_send_message", "linkedin"}:
+            return [
+                "Check credential binding and required destination fields before execution.",
+                "Ensure message template variables exist in current input payload.",
+                "Enable retry/fallback path so one delivery failure does not block workflow completion.",
+            ]
+        if node_type in {"search_update_google_sheets", "create_google_sheets"}:
+            return [
+                "Verify spreadsheet id/sheet name and operation-specific required fields.",
+                "Check `update_mappings` column names exactly match sheet headers.",
+                "Use `auto_create_headers` or pre-create headers to avoid mapping misses.",
+            ]
+        if node_type == "code":
+            return [
+                "Guard optional keys (`dict.get`) to prevent runtime key errors.",
+                "Return `output` as dict consistently for downstream template access.",
+                "Log intermediate payload shape for one run while debugging.",
+            ]
+        if node_type in {"file_write", "file_read"}:
+            return [
+                "Validate file path and permissions in runtime environment.",
+                "Check `input_key`/content source mapping for missing data.",
+                "Use `create_dirs=true` when writing nested paths.",
+            ]
+        defaults = NODE_CONFIG_DEFAULTS.get(node_type, {})
+        key_preview = ", ".join(list(defaults.keys())[:4]) if isinstance(defaults, Mapping) else ""
+        fallback = [
+            "Validate required config and credential fields for this node.",
+            "Confirm upstream output contains every template variable referenced here.",
+            "Run a single test payload and inspect this node input/output in execution logs.",
+        ]
+        if key_preview:
+            fallback.insert(0, f"Check these core keys first: {key_preview}.")
+        if error_kind == "template_mapping":
+            fallback.insert(0, "Prioritize fixing template field paths for this node before retrying.")
+        return fallback[:4]
+
+    @classmethod
+    def _build_runtime_debug_response(
+        cls,
+        *,
+        prompt: str,
+        current_definition: WorkflowDefinition | None,
+        node_focus_types: list[str],
+    ) -> str:
+        signature = cls._classify_error_signature(prompt)
+        error_excerpt = cls._extract_error_excerpt(prompt)
+        focus_types = node_focus_types[:3]
+
+        lines: list[str] = [
+            "Direct answer:",
+            f"- {signature['summary']}",
+        ]
+        if error_excerpt:
+            lines.append("Detected error:")
+            lines.append(f"- {error_excerpt}")
+
+        if current_definition is not None:
+            nodes_by_id = {node.id: node for node in current_definition.nodes}
+            matched_nodes = [
+                node for node in current_definition.nodes if node.type in set(focus_types)
+            ][:3]
+            if not matched_nodes:
+                matched_nodes = [
+                    node
+                    for node in current_definition.nodes
+                    if node.type not in TRIGGER_NODE_TYPES and node.type not in AI_CHAT_MODEL_NODE_TYPES
+                ][:2]
+            if matched_nodes:
+                lines.append("In your current workflow:")
+                for node in matched_nodes:
+                    lines.append(f"- {node.label} ({node.id}) type={node.type}")
+                    incoming = [edge for edge in current_definition.edges if edge.target == node.id][:2]
+                    outgoing = [edge for edge in current_definition.edges if edge.source == node.id][:2]
+                    anchor = cls._build_node_anchor_line(
+                        node_id=node.id,
+                        incoming_edges=incoming,
+                        outgoing_edges=outgoing,
+                        nodes_by_id=nodes_by_id,
+                    )
+                    if anchor:
+                        lines.append(f"  placement anchor: {anchor}")
+
+        lines.append("Likely root causes:")
+        for index, cause in enumerate(signature["causes"][:3], start=1):
+            lines.append(f"{index}. {cause}")
+
+        lines.append("Fix steps:")
+        if focus_types:
+            unique_types: list[str] = []
+            for node_type in focus_types:
+                if node_type not in unique_types:
+                    unique_types.append(node_type)
+            for node_type in unique_types:
+                checks = cls._build_node_debug_checks(
+                    node_type=node_type,
+                    error_kind=str(signature["kind"]),
+                )
+                lines.append(f"- For `{node_type}`:")
+                for idx, item in enumerate(checks[:3], start=1):
+                    lines.append(f"  {idx}. {item}")
+        else:
+            for index, step in enumerate(signature["fixes"][:3], start=1):
+                lines.append(f"{index}. {step}")
+
+        lines.append("Validation checklist:")
+        lines.append("1. Re-run one sample input and confirm the failing node executes successfully.")
+        lines.append("2. Verify downstream node receives expected fields (especially template values).")
+        lines.append("3. Confirm final branch/output reaches target node without waiting/stuck state.")
+
+        lines.append("If it still fails, share:")
+        lines.append("- Failing node id + full error line from execution log.")
+        lines.append("- One redacted sample input payload and expected output.")
+
+        return "\n".join(lines)
+
+    @classmethod
+    def _build_ask_capabilities_response(
+        cls,
+        *,
+        current_definition: WorkflowDefinition | None,
+    ) -> str:
+        lines: list[str] = [
+            "Direct answer:",
+            "- Ask mode can guide create, edit, add/remove nodes, parameter setup, routing, and runtime error troubleshooting across all Autoflow node types.",
+            "Ask mode capabilities:",
+            "1. Workflow creation plan: exact node sequence, trigger choice, and edge wiring.",
+            "2. Workflow edits: where to insert/remove/replace nodes without breaking existing logic.",
+            "3. Node-level help: parameter meaning, correct value format, and template mapping.",
+            "4. Runtime debugging: likely root cause, targeted fix steps, and validation checklist.",
+            "5. Optimization: simplify complex flows, add retries/fallbacks, and improve observability.",
+            "6. Multi-turn continuity: uses accepted workflow context, referenced nodes, and unresolved question memory.",
+            "Scope note:",
+            "- Build mode applies structural generation/modification. Ask mode provides directed guidance for all nodes and workflow-level decisions.",
+        ]
+        if current_definition is not None:
+            lines.append("In your current workflow:")
+            lines.append(
+                f"- Context loaded with {len(current_definition.nodes)} nodes and {len(current_definition.edges)} edges."
+            )
+        return "\n".join(lines)
 
     @classmethod
     def _build_workflow_sequence_response(
@@ -2490,15 +2958,47 @@ class LLMService:
         has_debug = any(
             token in lowered
             for token in (
+                "fail",
                 "not work",
                 "not working",
                 "error",
                 "failed",
+                "failing",
+                "problem",
+                "issue",
+                "runtime",
+                "exception",
                 "waiting",
                 "stuck",
+                "not run",
+                "not running",
+                "not execute",
+                "not executing",
+                "timeout",
+                "timed out",
+                "status code",
+                "not found",
                 "bad gateway",
                 "502",
+                "404",
+                "401",
+                "403",
+                "422",
+                "429",
+                "500",
+                "503",
                 "why false",
+            )
+        )
+        has_capability = any(
+            token in lowered
+            for token in (
+                "ask mode capability",
+                "ask mode capabilities",
+                "what can ask mode",
+                "what ask mode can",
+                "chatbot capability",
+                "what this chatbot can do",
             )
         )
         has_parameter_help = any(
@@ -2508,6 +3008,8 @@ class LLMService:
 
         if has_routing and (has_steps or has_parameter_help):
             return "routing"
+        if has_capability:
+            return "capability"
         if has_debug:
             return "debug"
         if has_steps:

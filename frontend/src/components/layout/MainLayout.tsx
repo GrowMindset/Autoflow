@@ -590,6 +590,25 @@ const MainLayout: React.FC = () => {
     await saveWorkflow({ silent: false, force: true });
   }, [clearAutoSaveTimeout, saveWorkflow]);
 
+  const ensureWorkflowSaved = useCallback(async (): Promise<boolean> => {
+    if (currentWorkflowId === 'new') {
+      toast.error('Please save your workflow before running');
+      return false;
+    }
+    if (!(window as any).isCanvasDirty?.()) {
+      return true;
+    }
+
+    clearAutoSaveTimeout();
+    queuedAutoSaveRef.current = false;
+    const saved = await saveWorkflow({ silent: true, force: true });
+    if (!saved) {
+      toast.error('Could not save latest workflow changes before running.');
+      return false;
+    }
+    return true;
+  }, [clearAutoSaveTimeout, currentWorkflowId, saveWorkflow]);
+
   useEffect(() => {
     return () => {
       clearAutoSaveTimeout();
@@ -1156,6 +1175,7 @@ const MainLayout: React.FC = () => {
               onTogglePollingEnabled={() => handleToggleWorkflowActive(currentWorkflowId)}
               isPublished={isPublished}
               footerOffset={footerOffset}
+              ensureWorkflowSaved={ensureWorkflowSaved}
               onCanvasMutated={handleCanvasMutated}
               onToggleAiAssistant={() => setIsAiAssistantOpen(!isAiAssistantOpen)}
               isAiAssistantOpen={isAiAssistantOpen}

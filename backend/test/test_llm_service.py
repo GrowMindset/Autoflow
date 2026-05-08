@@ -1707,6 +1707,163 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("linkedin", result["assistant_message"])
         self.assertNotIn("I found multiple node targets", result["assistant_message"])
 
+    async def test_assist_workflow_ask_mode_debugs_http_404_with_direct_fix_steps(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "schedule_trigger",
+                        "label": "Morning Schedule",
+                        "position": {"x": 100, "y": 120},
+                        "config": NODE_CONFIG_DEFAULTS["schedule_trigger"],
+                    },
+                    {
+                        "id": "sync_api",
+                        "type": "http_request",
+                        "label": "Sync Ticket API",
+                        "position": {"x": 360, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["http_request"],
+                            "method": "POST",
+                            "url": "https://www.google.com/non-existent-endpoint",
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "n1", "target": "sync_api"}],
+            }
+        )
+
+        result = await service.assist_workflow(
+            prompt=(
+                "HTTP request failed: 404 Not Found. in http node what error is come and how i can solve"
+            ),
+            interaction_mode="ask",
+            current_definition=current_definition,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIn("HTTP 404 Not Found", result["assistant_message"])
+        self.assertIn("Likely root causes:", result["assistant_message"])
+        self.assertIn("Fix steps:", result["assistant_message"])
+        self.assertIn("Validation checklist:", result["assistant_message"])
+        self.assertNotIn("Workflow Brief:", result["assistant_message"])
+
+    async def test_assist_workflow_ask_mode_debugs_merge_waiting_state(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "manual_trigger",
+                        "label": "Start",
+                        "position": {"x": 100, "y": 120},
+                        "config": {},
+                    },
+                    {
+                        "id": "route",
+                        "type": "if_else",
+                        "label": "Urgent?",
+                        "position": {"x": 300, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["if_else"],
+                            "field": "priority",
+                            "value": "urgent",
+                        },
+                    },
+                    {
+                        "id": "merge_wait",
+                        "type": "merge",
+                        "label": "Join Urgent and Normal Save Path",
+                        "position": {"x": 520, "y": 120},
+                        "config": {
+                            **NODE_CONFIG_DEFAULTS["merge"],
+                            "mode": "append",
+                            "input_count": 2,
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "n1", "target": "route"},
+                    {"id": "e2", "source": "route", "target": "merge_wait", "branch": "true", "targetHandle": "input1"},
+                ],
+            }
+        )
+
+        result = await service.assist_workflow(
+            prompt="merge node is waiting and stuck, why runtime error come?",
+            interaction_mode="ask",
+            current_definition=current_definition,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIn("merge node is waiting", result["assistant_message"].lower())
+        self.assertIn("input_count", result["assistant_message"])
+        self.assertIn("Fix steps:", result["assistant_message"])
+        self.assertIn("Validation checklist:", result["assistant_message"])
+
+    async def test_assist_workflow_ask_mode_capabilities_response_covers_full_scope(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+
+        result = await service.assist_workflow(
+            prompt="what can ask mode do for all nodes and workflows?",
+            interaction_mode="ask",
+            current_definition=WorkflowDefinition.model_validate(_valid_definition()),
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIn("Ask mode capabilities:", result["assistant_message"])
+        self.assertIn("create", result["assistant_message"].lower())
+        self.assertIn("edit", result["assistant_message"].lower())
+        self.assertIn("runtime debugging", result["assistant_message"].lower())
+
+    async def test_assist_workflow_ask_mode_treats_fail_problem_phrase_as_debug(self) -> None:
+        service = LLMService(client=object(), model="test-model")
+        current_definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "manual_trigger",
+                        "label": "Start",
+                        "position": {"x": 100, "y": 120},
+                        "config": {},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "file_read",
+                        "label": "Read Input",
+                        "position": {"x": 320, "y": 120},
+                        "config": NODE_CONFIG_DEFAULTS["file_read"],
+                    },
+                    {
+                        "id": "n3",
+                        "type": "ai_agent",
+                        "label": "Analyze",
+                        "position": {"x": 540, "y": 120},
+                        "config": NODE_CONFIG_DEFAULTS["ai_agent"],
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "n1", "target": "n2"},
+                    {"id": "e2", "source": "n2", "target": "n3"},
+                ],
+            }
+        )
+
+        result = await service.assist_workflow(
+            prompt="which problem is there which was fail the workflow so give solution for that problem",
+            interaction_mode="ask",
+            current_definition=current_definition,
+        )
+
+        self.assertEqual(result["mode"], "ask")
+        self.assertIn("Likely root causes:", result["assistant_message"])
+        self.assertIn("Fix steps:", result["assistant_message"])
+        self.assertNotIn("Workflow Brief:", result["assistant_message"])
+
     def test_extract_latest_user_question_skips_pasted_brief_blocks(self) -> None:
         raw = (
             "give some improvement for sending message to the mail for formate related what changes i can do\n"
@@ -1725,6 +1882,18 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("read the system prompt", extracted.lower())
         self.assertNotIn("workflow brief", extracted.lower())
+
+    def test_extract_latest_user_question_preserves_recent_error_context(self) -> None:
+        raw = (
+            "HTTP request failed: 404 Not Found - https://api.example.com/v1/tickets\n"
+            "in http node what error is come and how i can solve"
+        )
+
+        extracted = LLMService._extract_latest_user_question(raw)
+
+        self.assertIn("how i can solve", extracted.lower())
+        self.assertIn("error context:", extracted.lower())
+        self.assertIn("404", extracted)
 
     async def test_assist_workflow_generates_directly_for_clear_request(self) -> None:
         fake_client = _FakeClient(

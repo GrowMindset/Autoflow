@@ -67,6 +67,40 @@ class WorkflowSchemaTests(unittest.TestCase):
         self.assertEqual(definition.loop_control.max_node_executions, 3)
         self.assertEqual(definition.loop_control.max_total_node_executions, 500)
 
+    def test_node_is_active_defaults_true_and_accepts_false(self):
+        definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "manual_trigger",
+                        "label": "Manual Trigger",
+                        "position": {"x": 0, "y": 0},
+                        "config": {},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "filter",
+                        "label": "Filter",
+                        "position": {"x": 180, "y": 0},
+                        "config": {
+                            "input_key": "items",
+                            "field": "status",
+                            "operator": "equals",
+                            "value": "paid",
+                        },
+                        "is_active": False,
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "n1", "target": "n2"},
+                ],
+            }
+        )
+
+        self.assertTrue(definition.nodes[0].is_active)
+        self.assertFalse(definition.nodes[1].is_active)
+
     def test_merge_config_prunes_mode_irrelevant_keys_for_choose_branch(self):
         definition = WorkflowDefinition.model_validate(
             {

@@ -98,6 +98,8 @@ const isScheduleVisualActive = (
   return Boolean(workflowPublished) && parseBooleanLike(config?.enabled, true);
 };
 
+const isNodeActive = (rawValue: unknown): boolean => parseBooleanLike(rawValue, true);
+
 type SwitchBranchLookup = {
   caseIds: Set<string>;
   labelToId: Map<string, string>;
@@ -334,6 +336,7 @@ interface WorkflowCanvasProps {
   onTogglePollingEnabled?: () => void;
   isPublished?: boolean;
   footerOffset?: number;
+  ensureWorkflowSaved?: () => Promise<boolean> | boolean;
   onExecutionStart?: (executionId: string) => void;
   onExecutionUpdate?: (detail: ExecutionDetail) => void;
   onToggleAiAssistant?: () => void;
@@ -347,6 +350,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   onTogglePollingEnabled,
   isPublished = false,
   footerOffset = 0,
+  ensureWorkflowSaved,
   onExecutionStart,
   onExecutionUpdate,
   onToggleAiAssistant,
@@ -437,6 +441,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         type: node.data.type,
         label: node.data.label,
         position: node.position,
+        is_active: isNodeActive(node.data.is_active),
       })),
       edges: sourceEdges.map((edge: any) => ({
         id: edge.id,
@@ -852,6 +857,37 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     onCanvasMutated?.(reason);
   }, [onCanvasMutated, scheduleHistorySnapshot]);
 
+  const toggleNodeActive = useCallback((nodeId: string) => {
+    if (isAiPreviewMode) {
+      toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+      return;
+    }
+
+    let changed = false;
+    let nextActiveState = true;
+
+    setNodes((nds) =>
+      nds.map((node) => {
+        if (node.id !== nodeId) return node;
+        changed = true;
+        nextActiveState = !isNodeActive(node.data.is_active);
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            is_active: nextActiveState,
+            status: 'PENDING',
+            last_execution_result: null,
+          },
+        };
+      }),
+    );
+
+    if (!changed) return;
+    emitCanvasMutation('node_active_toggle');
+    toast.success(nextActiveState ? 'Node activated' : 'Node deactivated');
+  }, [emitCanvasMutation, isAiPreviewMode, setNodes]);
+
   const onNodesChange = useCallback((changes: any[]) => {
     onNodesChangeBase(changes);
 
@@ -1062,6 +1098,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           config: n.config || {},
           type: n.type,
           category,
+          is_active: isNodeActive(n.is_active),
+          onToggleActive: toggleNodeActive,
         },
       };
     });
@@ -1089,7 +1127,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       edges: graphEdges,
       name: typeof definition?.name === 'string' ? definition.name : '',
     };
-  }, [autoLayout]);
+  }, [autoLayout, toggleNodeActive]);
 
   const applyAiGraphToCanvas = useCallback((graph: AiPreviewGraph) => {
     triggerAiApplyFeedback(
@@ -1566,6 +1604,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       toast.error(WORKFLOW_INACTIVE_ERROR_MESSAGE);
       return;
     }
+    if (ensureWorkflowSaved) {
+      const synced = await ensureWorkflowSaved();
+      if (!synced) {
+        return;
+      }
+    }
     resetNodeExecutionVisualState();
     const shouldResolveLoopOverride =
       trigger.data.type === 'manual_trigger' || trigger.data.type === 'schedule_trigger';
@@ -1619,7 +1663,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       );
       toast.error(message);
     }
-  }, [beginExecutionTracking, isPollingEnabled, resetNodeExecutionVisualState, resolveRuntimeLoopOverride, workflowId]);
+  }, [beginExecutionTracking, ensureWorkflowSaved, isPollingEnabled, resetNodeExecutionVisualState, resolveRuntimeLoopOverride, workflowId]);
 
   const runSelectedFlowOption = useCallback(async (trigger: WorkflowNode) => {
     setIsStartingSelectedFlow(true);
@@ -1909,6 +1953,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
     try {
       const newNode = createNode(type, position);
+      newNode.data.is_active = isNodeActive(newNode.data.is_active);
+      newNode.data.onToggleActive = toggleNodeActive;
       const newNodeId = newNode.id;
 
       setNodes((nds) => nds.concat(newNode));
@@ -1959,7 +2005,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     } catch (error) {
       console.error(error);
     }
-  }, [isAiPreviewMode, setNodes, setEdges, emitCanvasMutation]);
+  }, [isAiPreviewMode, setNodes, setEdges, emitCanvasMutation, toggleNodeActive]);
 
   const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: any) => {
     if (isAiPreviewMode) return;
@@ -2044,6 +2090,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           config: normalizedConfig,
           type: n.type,
           category: category,
+          is_active: isNodeActive(n.is_active),
+          onToggleActive: toggleNodeActive,
           schedule_is_active: isScheduleVisualActive(
             n.type,
             normalizedConfig,
@@ -2094,6 +2142,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           label: node.label,
           position: node.position,
           config: node.config || {},
+          is_active: isNodeActive(node.is_active),
         })),
         edges: rfEdges.map((edge: any) => ({
           id: edge.id,
@@ -2113,7 +2162,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     requestAnimationFrame(() => {
       isHydratingCanvasRef.current = false;
     });
-  }, [setNodes, setEdges, resetUndoRedoHistory, workflowId, isPublished]);
+  }, [setNodes, setEdges, resetUndoRedoHistory, workflowId, isPublished, toggleNodeActive]);
 
   const applyHistoryEntry = useCallback((entry: CanvasHistoryEntry) => {
     isApplyingHistoryRef.current = true;

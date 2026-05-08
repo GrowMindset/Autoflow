@@ -1945,6 +1945,68 @@ class DagExecutorTests(unittest.TestCase):
         self.assertEqual(result["visited_nodes"], ["n2"])
         self.assertEqual(result["node_outputs"]["n2"]["items"], [{"amount": 150}])
 
+    def test_build_context_normalizes_node_active_flag(self):
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "echo", "config": {}, "is_active": "false"},
+                {"id": "n3", "type": "echo", "config": {}, "is_active": "true"},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+            ],
+        }
+
+        context = self.executor.build_context(definition)
+
+        self.assertTrue(context.nodes_by_id["n1"]["is_active"])
+        self.assertFalse(context.nodes_by_id["n2"]["is_active"])
+        self.assertTrue(context.nodes_by_id["n3"]["is_active"])
+
+    def test_execute_skips_inactive_node_and_passes_payload_forward(self):
+        echo_runner = _RecordingRunner(result=lambda _config, input_data, _ctx: dict(input_data or {}))
+        executor = DagExecutor(
+            registry=_FakeRegistry(
+                {
+                    "manual_trigger": _RecordingRunner(
+                        result=lambda _config, input_data, _ctx: {
+                            "triggered": True,
+                            "trigger_type": "manual",
+                            **(input_data or {}),
+                        }
+                    ),
+                    "echo": echo_runner,
+                }
+            )
+        )
+        events: list[tuple[str, str]] = []
+        definition = {
+            "nodes": [
+                {"id": "n1", "type": "manual_trigger", "config": {}},
+                {"id": "n2", "type": "echo", "config": {}, "is_active": False},
+                {"id": "n3", "type": "echo", "config": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "n2"},
+                {"id": "e2", "source": "n2", "target": "n3"},
+            ],
+        }
+
+        result = executor.execute(
+            definition=definition,
+            initial_payload={"value": 42},
+            progress_callback=lambda **kwargs: events.append(
+                (str(kwargs.get("node_id") or ""), str(kwargs.get("status") or ""))
+            ),
+        )
+
+        self.assertEqual(result["visited_nodes"], ["n1", "n3"])
+        self.assertEqual(len(echo_runner.calls), 1)
+        self.assertIn(("n2", "SKIPPED"), events)
+        self.assertEqual(result["node_outputs"]["n2"], result["node_outputs"]["n1"])
+        self.assertEqual(result["node_outputs"]["n3"], result["node_outputs"]["n1"])
+
 
 if __name__ == "__main__":
     unittest.main()

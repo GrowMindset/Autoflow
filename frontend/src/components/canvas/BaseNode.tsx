@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useMemo, useState } from 'react';
 import { Handle, Position, NodeProps, useUpdateNodeInternals, useReactFlow, useEdges } from 'reactflow';
-import { Check, Loader2, AlertCircle, AlertTriangle, Plus } from 'lucide-react';
+import { Check, Loader2, AlertCircle, AlertTriangle, Plus, Power } from 'lucide-react';
 import { WorkflowNodeData } from '../../types/workflow';
 import { CATEGORY_ACCENTS } from '../../constants/nodeLibrary';
 import NodeBadge from '../sidebar/NodeBadge';
@@ -229,6 +229,8 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
   const isRunningLike = (normalizedStatus === 'RUNNING' || isWaitingLike) && isExecutionVisualActive;
   const isSucceeded = normalizedStatus === 'SUCCEEDED';
   const isFailed = normalizedStatus === 'FAILED';
+  const isNodeActive = data.is_active !== false;
+  const canToggleActive = typeof data.onToggleActive === 'function';
 
   useEffect(() => {
     if (!shouldShowLiveCountdown || !isExecutionVisualActive) return;
@@ -245,6 +247,11 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
   const handleDeleteNode = (e: React.MouseEvent) => {
     e.stopPropagation();
     deleteElements({ nodes: [{ id }] });
+  };
+
+  const handleToggleNodeActive = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    data.onToggleActive?.(id);
   };
 
   // Notify React Flow when handles change (e.g. for Switch node cases)
@@ -347,11 +354,13 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
         ${isRunningLike ? 'border-emerald-600 ring-[6px] ring-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-900/10 animate-pulse' : ''}
         ${isSucceeded ? 'bg-emerald-50/30 dark:bg-emerald-500/5 border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)] ring-[6px] ring-emerald-500/30' : 'bg-white dark:bg-slate-900'}
         ${isFailed ? 'bg-rose-50/30 dark:bg-rose-500/5 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.2)] ring-[6px] ring-rose-500/30' : ''}
+        ${!isNodeActive && !isRunningLike && !isSucceeded && !isFailed ? 'bg-slate-100 dark:bg-slate-900/70 border-slate-300 dark:border-slate-700 opacity-70' : ''}
       `}
         style={{
           borderTop: `6px solid ${isRunningLike || isSucceeded ? '#10b981' :
             isFailed ? '#f43f5e' :
               isScheduleLive ? '#06b6d4' :
+              !isNodeActive ? '#94a3b8' :
               accentColor
           }`
         }}
@@ -413,6 +422,20 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
         </svg>
       </button>
 
+      {canToggleActive && (
+        <button
+          onClick={handleToggleNodeActive}
+          title={isNodeActive ? 'Deactivate node' : 'Activate node'}
+          className={`absolute -top-7 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 transition-all flex items-center justify-center shadow-sm z-30 opacity-0 group-hover/node:opacity-100 nodrag ${
+            isNodeActive
+              ? 'text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:border-emerald-300 dark:hover:border-emerald-900'
+              : 'text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:border-blue-300 dark:hover:border-blue-900'
+          }`}
+        >
+          <Power size={10} strokeWidth={2.5} />
+        </button>
+      )}
+
       {data.type !== 'merge' && (
         <Handle
           type="target"
@@ -430,6 +453,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
           <span className={`text-[8px] font-black uppercase tracking-widest`} style={{
             color: isRunningLike || isSucceeded ? '#059669' :
               isFailed ? '#e11d48' :
+                !isNodeActive ? '#64748b' :
                 accentColor
           }}>
             {data.category}
@@ -439,6 +463,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
 
         <h3 className={`text-xs font-bold leading-tight truncate ${isRunningLike || isSucceeded ? 'text-emerald-900 dark:text-emerald-100' :
             isFailed ? 'text-rose-900 dark:text-rose-100' :
+              !isNodeActive ? 'text-slate-500 dark:text-slate-400' :
               'text-slate-800 dark:text-slate-100'
           }`}>{data.label}</h3>
 
@@ -453,15 +478,18 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
 
         <div className={`mt-1.5 flex items-center justify-between border-t ${isRunningLike || isSucceeded ? 'border-emerald-200 dark:border-emerald-900/50' :
             isFailed ? 'border-rose-200 dark:border-rose-900/50' :
+              !isNodeActive ? 'border-slate-200 dark:border-slate-800/80' :
               'border-slate-50 dark:border-slate-800/50'
           } pt-1.5 text-[8px] font-bold uppercase tracking-tighter ${isRunningLike || isSucceeded ? 'text-emerald-600 dark:text-emerald-400' :
             isFailed ? 'text-rose-600 dark:text-rose-400' :
+              !isNodeActive ? 'text-slate-400 dark:text-slate-500' :
               'text-slate-400 dark:text-slate-500'
           }`}>
           <span className="truncate max-w-[100px]">{data.type.replace('_', ' ')}</span>
           <div className={`w-1 h-1 rounded-full ${isRunningLike ? 'bg-emerald-500 animate-pulse' :
               isSucceeded ? 'bg-emerald-500' :
                 isFailed ? 'bg-rose-500' :
+                  !isNodeActive ? 'bg-slate-400 dark:bg-slate-500' :
                   isScheduleLive ? 'bg-cyan-500 animate-pulse' :
                   data.is_dummy ? 'bg-slate-200 dark:bg-slate-700' : 'bg-green-400'
             }`} />
