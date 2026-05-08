@@ -69,6 +69,7 @@ interface AssistantApiQuestion {
 interface AssistantApiResponse {
   mode?: AssistantMode;
   assistant_message?: string;
+  message?: string | null;
   questions?: AssistantApiQuestion[];
   assumptions?: string[];
   change_summary?: string;
@@ -278,12 +279,12 @@ class AIService {
       ? response.data.assumptions.map((item) => String(item || '').trim()).filter(Boolean)
       : [];
 
-    const normalizedMessage = String(response.data?.assistant_message || '').trim();
+    const normalizedMessage = String(response.data?.assistant_message || response.data?.message || '').trim();
     const fallbackMessage = mode === 'clarify'
       ? 'I need a little more workflow detail before generating.'
       : mode === 'ask'
         ? 'Here is Autoflow guidance based on your question.'
-        : 'Workflow generated from backend AI service.';
+        : 'Workflow generated — review and save.';
 
     const nextUnresolvedQuestion =
       mode === 'clarify'

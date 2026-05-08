@@ -809,10 +809,9 @@ class WorkflowDefinition(BaseModel):
                         "execute_workflow requires valid workflow_json when source=json"
                     )
             else:
-                if not str(node.config.get("workflow_id") or "").strip():
-                    raise ValueError(
-                        "execute_workflow requires workflow_id when source=database"
-                    )
+                # Draft parent workflows may be generated before the child workflow exists.
+                # Runtime execution still requires a concrete workflow_id.
+                node.config["workflow_id"] = str(node.config.get("workflow_id") or "").strip()
         return self
 
 

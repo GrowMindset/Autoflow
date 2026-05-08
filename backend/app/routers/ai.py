@@ -333,4 +333,8 @@ async def generate_workflow(
             },
         ) from exc
 
-    return GenerateWorkflowResponse(definition=generated.definition, name=generated.name)
+    return GenerateWorkflowResponse(
+        definition=generated.definition,
+        name=generated.name,
+        message=generated.message,
+    )

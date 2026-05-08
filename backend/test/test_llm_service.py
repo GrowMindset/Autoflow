@@ -7,7 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.schemas.workflows import NODE_CONFIG_DEFAULTS, WorkflowDefinition
-from app.services.llm_service import GeneratedWorkflowResult, LLMService, WorkflowGenerationError
+from app.services.llm_service import (
+    GeneratedWorkflowResult,
+    LLMService,
+    SUB_WORKFLOW_RESPONSE_MESSAGE,
+    WorkflowGenerationError,
+)
 
 
 def _valid_definition() -> dict:
@@ -297,6 +302,8 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('targetHandle to "chat_model"', prompt)
         self.assertIn("If the user asks to generate or include an AI-created image/visual", prompt)
         self.assertIn("Outputs available to later nodes: image_base64, image_url", prompt)
+        self.assertIn("execute_workflow node with config.source=\"database\"", prompt)
+        self.assertIn("Never generate both parent and child in a single definition", prompt)
 
     def test_validate_generated_workflow_accepts_definition_wrapper(self) -> None:
         raw_content = json.dumps({"definition": _valid_definition()})
@@ -305,6 +312,100 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(definition.nodes), 2)
         self.assertEqual(definition.nodes[1].type, "telegram")
+
+    async def test_generate_workflow_definition_sub_workflow_returns_parent_message(self) -> None:
+        payload = {
+            "definition": {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "manual_trigger",
+                        "label": "Manual Trigger",
+                        "position": {"x": 100, "y": 120},
+                        "config": {},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "execute_workflow",
+                        "label": "Run Child Workflow",
+                        "position": {"x": 340, "y": 120},
+                        "config": {
+                            "source": "database",
+                            "workflow_id": "",
+                            "workflow_json": "",
+                            "workflow_inputs": [{"key": "email", "value": "{{email}}"}],
+                            "mode": "run_once",
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "n1",
+                        "target": "n2",
+                        "sourceHandle": None,
+                        "targetHandle": None,
+                        "branch": None,
+                    }
+                ],
+            },
+            "message": "ignored because backend enforces the exact message",
+        }
+        service = LLMService(client=_FakeClient([json.dumps(payload)]))
+
+        result = await service.generate_workflow_definition(
+            "When I run manually, call a sub-workflow with the email input."
+        )
+
+        self.assertEqual(result.message, SUB_WORKFLOW_RESPONSE_MESSAGE)
+        self.assertEqual(result.definition.nodes[1].type, "execute_workflow")
+        self.assertEqual(result.definition.nodes[1].config["workflow_id"], "")
+
+    async def test_generate_workflow_definition_sub_workflow_falls_back_to_parent_wrapper(self) -> None:
+        child_payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "workflow_trigger",
+                    "label": "Workflow Trigger",
+                    "position": {"x": 100, "y": 120},
+                    "config": {
+                        "input_data_mode": "accept_all",
+                        "input_schema": [],
+                        "json_example": "",
+                    },
+                },
+                {
+                    "id": "n2",
+                    "type": "telegram",
+                    "label": "Send Telegram Message",
+                    "position": {"x": 340, "y": 120},
+                    "config": {"credential_id": "", "message": "{{data}}", "parse_mode": ""},
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "target": "n2",
+                    "sourceHandle": None,
+                    "targetHandle": None,
+                    "branch": None,
+                }
+            ],
+        }
+        service = LLMService(
+            client=_FakeClient([json.dumps(child_payload), json.dumps(child_payload)])
+        )
+
+        result = await service.generate_workflow_definition(
+            "Create a workflow where a webhook receives data and calls a sub-workflow to send a Telegram message with that data"
+        )
+
+        node_types = [node.type for node in result.definition.nodes]
+        self.assertEqual(node_types, ["webhook_trigger", "execute_workflow"])
+        self.assertEqual(result.definition.nodes[1].config["workflow_id"], "")
+        self.assertEqual(result.message, SUB_WORKFLOW_RESPONSE_MESSAGE)
 
     def test_validate_generated_workflow_rejects_unknown_node_type(self) -> None:
         payload = _valid_definition()

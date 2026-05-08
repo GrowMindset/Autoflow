@@ -57,6 +57,40 @@ IMAGE_GENERATION_HINTS = (
     "ai visual",
 )
 
+SUB_WORKFLOW_RESPONSE_MESSAGE = (
+    "I've generated your parent workflow. The execute_workflow node is set up and waiting "
+    "for a child workflow. Now describe what the child workflow should do and I'll generate "
+    "that separately — it will start with a Workflow Trigger node that receives the inputs "
+    "from the parent."
+)
+
+SUB_WORKFLOW_INTENT_HINTS = (
+    "call a sub-workflow",
+    "call a sub workflow",
+    "call another workflow",
+    "calling one workflow from another",
+    "one workflow from another",
+    "trigger another workflow",
+    "run another workflow",
+    "reuse workflow",
+    "inside another workflow",
+    "run a child workflow",
+    "child workflow",
+    "sub-workflow",
+    "sub workflow",
+    "trigger a sub-process",
+    "trigger sub-process",
+    "trigger a sub process",
+    "sub-process",
+    "sub process",
+    "subprocess workflow",
+    "sub-process workflow",
+    "execute a workflow within a workflow",
+    "execute workflow within workflow",
+    "workflow inside workflow",
+    "workflow from another workflow",
+)
+
 TRIGGER_KEYWORD_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "workflow_trigger",
@@ -374,7 +408,31 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "workflow_trigger": {
         "category": "trigger",
-        "description": "Starts a workflow from another workflow execution context.",
+        "description": "Starts a child workflow from another workflow execution context.",
+        "rules": [
+            "Category: Trigger. Type id: workflow_trigger.",
+            "Use config keys: input_data_mode, input_schema, json_example.",
+            "input_data_mode must be one of fields, json_example, accept_all.",
+            "input_schema is an array of {\"name\": string, \"type\": \"Allow any type\" | \"String\" | \"Number\" | \"Boolean\" | \"Array\" | \"Object\"} and is used when input_data_mode=fields.",
+            "json_example is a string and is used when input_data_mode=json_example.",
+            "A child workflow must always start with workflow_trigger.",
+            "Never place workflow_trigger anywhere except as the first node of a workflow.",
+            "Never place more than one workflow_trigger per workflow.",
+        ],
+    },
+    "execute_workflow": {
+        "category": "action",
+        "description": "Calls a child workflow from a parent workflow.",
+        "rules": [
+            "Category: Action. Type id: execute_workflow.",
+            "Use config keys: source, workflow_id, workflow_json, workflow_inputs, mode.",
+            "source must be database or json.",
+            "workflow_id is the UUID of the child workflow when source=database.",
+            "workflow_json is the raw definition JSONB string when source=json.",
+            "workflow_inputs is an array of {\"key\": string, \"value\": string}; values support {{node_id.field}} syntax.",
+            "mode must be run_once or run_per_item.",
+            "For sub-workflow patterns generated from user intent, use source=database and leave workflow_id as an empty string because the child workflow does not exist yet.",
+        ],
     },
     "get_gmail_message": {
         "category": "action",
@@ -633,6 +691,7 @@ class WorkflowGenerationError(ValueError):
 class GeneratedWorkflowResult:
     definition: WorkflowDefinition
     name: str | None = None
+    message: str | None = None
 
 
 class LLMService:
@@ -693,13 +752,20 @@ class LLMService:
                 raw_content = self._extract_response_text(response)
 
             try:
-                definition, suggested_name = self.validate_generated_workflow(
+                definition, suggested_name, response_message = self.validate_generated_workflow(
                     raw_content,
                     user_prompt=cleaned_prompt,
+                    include_response_message=True,
                 )
                 if not suggested_name:
                     suggested_name = self._derive_workflow_name(cleaned_prompt)
-                return GeneratedWorkflowResult(definition=definition, name=suggested_name)
+                if self._prompt_implies_sub_workflow(cleaned_prompt):
+                    response_message = SUB_WORKFLOW_RESPONSE_MESSAGE
+                return GeneratedWorkflowResult(
+                    definition=definition,
+                    name=suggested_name,
+                    message=response_message,
+                )
             except WorkflowGenerationError as exc:
                 last_error = exc
                 if not isinstance(client, BaseLLMProvider):
@@ -715,6 +781,9 @@ class LLMService:
                             },
                         ]
                     )
+
+        if self._prompt_implies_sub_workflow(cleaned_prompt):
+            return self._build_sub_workflow_parent_fallback(cleaned_prompt)
 
         raise WorkflowGenerationError(
             "Could not generate a valid workflow from the model response."
@@ -883,6 +952,8 @@ class LLMService:
             mode=mode,
             assumptions=assumptions,
         )
+        if generated.message:
+            summary = generated.message
 
         change_summary = None
         if mode == "modify" and current_definition is not None:
@@ -906,8 +977,11 @@ class LLMService:
     def _analyze_prompt_for_assistant(cls, prompt: str) -> dict[str, Any]:
         lowered = prompt.lower()
         prompt_word_count = len(re.findall(r"\b\w+\b", lowered))
+        sub_workflow_requested = cls._prompt_implies_sub_workflow(prompt)
 
         inferred_trigger = cls._infer_trigger_type_from_prompt(prompt)
+        if sub_workflow_requested and inferred_trigger == "workflow_trigger":
+            inferred_trigger = None
         event_language_present = any(token in lowered for token in EVENT_LANGUAGE_HINTS)
         trigger_known = inferred_trigger is not None
         action_known = any(token in lowered for token in ASSISTANT_ACTION_HINTS)
@@ -944,6 +1018,7 @@ class LLMService:
             or timing_known
             or branching_requested
             or image_requested
+            or sub_workflow_requested
             or bool(requested_channels)
         )
 
@@ -969,6 +1044,10 @@ class LLMService:
                 assumptions.append(
                     "Primary action inferred from your context and channel intent."
                 )
+        if sub_workflow_requested:
+            assumptions.append(
+                "Sub-workflow intent detected; generating only the parent workflow with execute_workflow."
+            )
 
         if channel_requested and not channel_known:
             missing_logic_slots.append("destination_channel")
@@ -1014,6 +1093,7 @@ class LLMService:
                 "multi_channel_requested": multi_channel_requested,
                 "requested_channels": sorted(requested_channels),
                 "image_requested": image_requested,
+                "sub_workflow_requested": sub_workflow_requested,
                 "has_actionable_signal": has_actionable_signal,
                 "inferred_trigger": inferred_trigger,
                 "default_trigger": default_trigger,
@@ -1048,6 +1128,11 @@ class LLMService:
                 for channel in requested_channels
             )
             inferred_lines.append(f"Use these requested channels: {rendered_channels}.")
+
+        if bool(signals.get("sub_workflow_requested")):
+            inferred_lines.append(
+                "Generate only the parent workflow. Include execute_workflow with source=database and workflow_id=\"\". Do not include workflow_trigger in this parent workflow."
+            )
 
         if inferred_trigger:
             inferred_lines.append(f"Use {inferred_trigger} as the start trigger.")
@@ -3190,7 +3275,7 @@ class LLMService:
             Do not add explanation, notes, comments, or prose.
             The top-level object must be either:
             1. a workflow definition object with keys "nodes" and "edges", or
-            2. an object with "definition" and optional "name" keys where definition is the workflow and name is the workflow title.
+            2. an object with "definition", optional "name", and optional "message" keys where definition is the workflow, name is the workflow title, and message is null unless the sub-workflow rule below applies.
 
             Required workflow shape:
             {{
@@ -3241,6 +3326,14 @@ class LLMService:
             - For complex requests, include all required intermediate logic nodes (if_else, switch, filter, merge, split_in/split_out, aggregate, delay) instead of collapsing logic into one node.
             - If the request asks for an N-day sequence, design a clear day-by-day cadence and keep timing consistent with the requested duration.
             - If the request asks to use multiple channels (for example email + WhatsApp + Telegram), fan out into parallel channel branches from the trigger (or immediately after one router node) instead of serially chaining all channels in one line.
+            - Sub-workflow detection is mandatory. If the user's prompt implies calling one workflow from another, triggering a sub-process, or reusing a workflow inside another workflow (for example "call a sub-workflow", "trigger another workflow", "reuse workflow X inside Y", "run a child workflow", or "execute a workflow within a workflow"), generate ONLY the parent workflow JSON.
+            - For sub-workflow parent workflows, include an execute_workflow node with config.source="database" and config.workflow_id="" because the child workflow does not exist yet.
+            - For sub-workflow parent workflows, append the message field exactly as: "{SUB_WORKFLOW_RESPONSE_MESSAGE}"
+            - Never generate both parent and child in a single definition. One generation equals one workflow.
+            - A child workflow must always start with a workflow_trigger node.
+            - The parent workflow uses execute_workflow to call the child. Since this builder generates one workflow at a time, when the user asks for a sub-workflow pattern, generate the parent workflow and use the message field to explain that a separate child workflow is needed.
+            - Never place workflow_trigger anywhere except as the first node of a workflow.
+            - Never place more than one workflow_trigger per workflow.
 
             Edge rules:
             - Standard linear edges may omit branch or set it to null.
@@ -3286,6 +3379,7 @@ class LLMService:
             11. For ai_agent structured outputs, reference downstream fields using {{output.field_name}} (for example {{output.summary}}).
             12. Do not return trigger-only output for actionable prompts; include the needed downstream steps.
             13. Return only one JSON object; no explanation text.
+            14. If this is a sub-workflow parent pattern, return an object with definition and message. The definition must be only the parent workflow, with execute_workflow.source="database" and execute_workflow.workflow_id="".
             {validation_suffix}
             """
         ).strip()
@@ -3296,7 +3390,8 @@ class LLMService:
         raw_content: str,
         *,
         user_prompt: str | None = None,
-    ) -> tuple[WorkflowDefinition, str | None]:
+        include_response_message: bool = False,
+    ) -> tuple[WorkflowDefinition, str | None] | tuple[WorkflowDefinition, str | None, str | None]:
         if not raw_content.strip():
             raise WorkflowGenerationError("Model response was empty.")
 
@@ -3334,7 +3429,12 @@ class LLMService:
         cls._validate_multi_channel_branching_expectation(definition, user_prompt=user_prompt)
         cls._validate_complexity_alignment(definition, user_prompt=user_prompt)
         cls._validate_image_generation_expectation(definition, user_prompt=user_prompt)
-        return definition, cls._extract_workflow_name(payload)
+        cls._validate_sub_workflow_expectation(definition, user_prompt=user_prompt)
+        workflow_name = cls._extract_workflow_name(payload)
+        response_message = cls._extract_workflow_message(payload)
+        if include_response_message:
+            return definition, workflow_name, response_message
+        return definition, workflow_name
 
     @classmethod
     def _sanitize_generated_definition_payload(
@@ -3999,6 +4099,87 @@ class LLMService:
         return None
 
     @staticmethod
+    def _extract_workflow_message(payload: Mapping[str, Any]) -> str | None:
+        value = payload.get("message")
+        if not isinstance(value, str):
+            return None
+        normalized = " ".join(value.split())
+        return normalized[:1000] if normalized else None
+
+    @staticmethod
+    def _prompt_implies_sub_workflow(prompt: str) -> bool:
+        lowered = re.sub(r"[\s_]+", " ", str(prompt or "").lower())
+        return any(hint in lowered for hint in SUB_WORKFLOW_INTENT_HINTS)
+
+    @classmethod
+    def _build_sub_workflow_parent_fallback(cls, prompt: str) -> GeneratedWorkflowResult:
+        allowed_parent_triggers = {
+            "manual_trigger",
+            "form_trigger",
+            "schedule_trigger",
+            "webhook_trigger",
+        }
+        inferred_trigger = cls._infer_trigger_type_from_prompt(prompt)
+        default_trigger = cls._infer_default_trigger_from_prompt(
+            prompt=prompt,
+            inferred_trigger=inferred_trigger,
+        )
+        trigger_type = (
+            inferred_trigger
+            if inferred_trigger in allowed_parent_triggers
+            else default_trigger
+            if default_trigger in allowed_parent_triggers
+            else "manual_trigger"
+        )
+        trigger_config = deepcopy(NODE_CONFIG_DEFAULTS.get(trigger_type, {}))
+        if trigger_type == "webhook_trigger":
+            trigger_config.update({"path": "parent-sub-workflow", "method": "POST"})
+
+        trigger_id = trigger_type
+        execute_id = "execute_child_workflow"
+        definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": trigger_id,
+                        "type": trigger_type,
+                        "label": cls._humanize_node_type(trigger_type),
+                        "position": {"x": 100, "y": 160},
+                        "config": trigger_config,
+                    },
+                    {
+                        "id": execute_id,
+                        "type": "execute_workflow",
+                        "label": "Execute Child Workflow",
+                        "position": {"x": 380, "y": 160},
+                        "config": {
+                            "source": "database",
+                            "workflow_id": "",
+                            "workflow_json": "",
+                            "workflow_inputs": [],
+                            "mode": "run_once",
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": f"{trigger_id}_to_{execute_id}",
+                        "source": trigger_id,
+                        "target": execute_id,
+                        "sourceHandle": None,
+                        "targetHandle": None,
+                        "branch": None,
+                    }
+                ],
+            }
+        )
+        return GeneratedWorkflowResult(
+            definition=definition,
+            name=cls._derive_workflow_name(prompt),
+            message=SUB_WORKFLOW_RESPONSE_MESSAGE,
+        )
+
+    @staticmethod
     def _derive_workflow_name(prompt: str) -> str:
         base_prompt = prompt.split("\n\nCurrent canvas summary:", 1)[0]
         text = re.sub(r"\s+", " ", base_prompt.strip())
@@ -4129,6 +4310,20 @@ class LLMService:
             raise WorkflowGenerationError(
                 "Workflow must contain exactly one trigger node with indegree 0."
             )
+
+        workflow_triggers = [
+            (index, node)
+            for index, node in enumerate(definition.nodes)
+            if node.type == "workflow_trigger"
+        ]
+        if len(workflow_triggers) > 1:
+            raise WorkflowGenerationError("Workflow can contain only one workflow_trigger node.")
+        if workflow_triggers:
+            index, trigger = workflow_triggers[0]
+            if index != 0:
+                raise WorkflowGenerationError("workflow_trigger must be the first node in the workflow.")
+            if indegree.get(trigger.id, 0) != 0:
+                raise WorkflowGenerationError("workflow_trigger must not have incoming edges.")
 
     @staticmethod
     def _validate_branch_edges(definition: WorkflowDefinition) -> None:
@@ -4502,6 +4697,38 @@ class LLMService:
             raise WorkflowGenerationError(
                 "Image Gen nodes must include a non-empty prompt config. "
                 f"Affected node ids: {', '.join(empty_prompt_node_ids)}"
+            )
+
+    @classmethod
+    def _validate_sub_workflow_expectation(
+        cls,
+        definition: WorkflowDefinition,
+        *,
+        user_prompt: str | None,
+    ) -> None:
+        if not user_prompt or not cls._prompt_implies_sub_workflow(user_prompt):
+            return
+
+        execute_nodes = [node for node in definition.nodes if node.type == "execute_workflow"]
+        if not execute_nodes:
+            raise WorkflowGenerationError(
+                "Prompt asks for a sub-workflow pattern, but the parent workflow does not include an execute_workflow node."
+            )
+        workflow_triggers = [node for node in definition.nodes if node.type == "workflow_trigger"]
+        if workflow_triggers:
+            raise WorkflowGenerationError(
+                "Sub-workflow pattern generation must return only the parent workflow; do not include workflow_trigger in the parent."
+            )
+        invalid_execute_nodes = [
+            node.id
+            for node in execute_nodes
+            if str(node.config.get("source") or "database").strip().lower() != "database"
+            or str(node.config.get("workflow_id") or "").strip()
+        ]
+        if invalid_execute_nodes:
+            raise WorkflowGenerationError(
+                "Sub-workflow parent execute_workflow nodes must use source=database and workflow_id=\"\". "
+                f"Affected node ids: {', '.join(invalid_execute_nodes)}"
             )
 
     @staticmethod

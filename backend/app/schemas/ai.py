@@ -15,6 +15,7 @@ class GenerateWorkflowRequest(BaseModel):
 class GenerateWorkflowResponse(BaseModel):
     definition: WorkflowDefinition
     name: str | None = Field(default=None, min_length=1, max_length=100)
+    message: str | None = Field(default=None, max_length=1000)
 
 
 class GenerateCodeRequest(BaseModel):
