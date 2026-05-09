@@ -15,9 +15,13 @@ from app.execution.runners.nodes.file_write import FileWriteRunner
 from app.execution.runners.nodes.filter import FilterRunner
 from app.execution.runners.nodes.http_request import HttpRequestRunner
 from app.execution.runners.nodes.if_else import IfElseRunner
+from app.execution.runners.nodes.limit import LimitRunner
 from app.execution.runners.nodes.merge import MergeRunner
+from app.execution.runners.nodes.read_google_docs import ReadGoogleDocsRunner
+from app.execution.runners.nodes.read_google_sheets import ReadGoogleSheetsRunner
 from app.execution.runners.nodes.search_update_google_sheets import SearchUpdateGoogleSheetsRunner
 from app.execution.runners.nodes.send_gmail_message import SendGmailMessageRunner
+from app.execution.runners.nodes.sort import SortRunner
 from app.execution.runners.nodes.split_in import SplitInRunner
 from app.execution.runners.nodes.split_out import SplitOutRunner
 from app.execution.runners.nodes.switch import SwitchRunner
@@ -411,6 +415,287 @@ class RunnerTests(unittest.TestCase):
             SearchUpdateGoogleSheetsRunner._to_sheet_cell_value({"score": 10}),
             '{"score": 10}',
         )
+
+    def test_read_google_sheets_resolves_spreadsheet_id_from_url(self):
+        spreadsheet_id = ReadGoogleSheetsRunner._resolve_spreadsheet_id(
+            {
+                "spreadsheet_source_type": "url",
+                "spreadsheet_url": "https://docs.google.com/spreadsheets/d/1aBcD-12345_xyz/edit#gid=0",
+            }
+        )
+        self.assertEqual(spreadsheet_id, "1aBcD-12345_xyz")
+
+    def test_read_google_sheets_normalizes_duplicate_headers(self):
+        headers = ReadGoogleSheetsRunner._normalize_headers(["Name", "Name", "", "Email"])
+        self.assertEqual(headers, ["Name", "Name_2", "column_3", "Email"])
+
+    def test_read_google_sheets_maps_rows_using_header_mode(self):
+        class _FakeRequest:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class _FakeValuesApi:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def get(self, **kwargs):
+                return _FakeRequest(self.payload)
+
+        class _FakeSpreadsheetsApi:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def values(self):
+                return _FakeValuesApi(self.payload)
+
+        class _FakeSheetsService:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def spreadsheets(self):
+                return _FakeSpreadsheetsApi(self.payload)
+
+        runner = ReadGoogleSheetsRunner()
+        fake_service = _FakeSheetsService(
+            {
+                "values": [
+                    ["Name", "Email"],
+                    ["Asha", "asha@example.com"],
+                    ["Mina", "mina@example.com"],
+                ]
+            }
+        )
+
+        with (
+            patch.object(ReadGoogleSheetsRunner, "_build_sheets_service", return_value=fake_service),
+            patch.object(ReadGoogleSheetsRunner, "_resolve_sheet_name", return_value="Leads"),
+        ):
+            result = runner.run(
+                config={
+                    "credential_id": "cred-1",
+                    "spreadsheet_source_type": "id",
+                    "spreadsheet_id": "sheet-id-1",
+                    "sheet_name": "Leads",
+                    "first_row_as_header": True,
+                },
+                input_data={"source": "test"},
+                context={
+                    "resolved_credential_data": {
+                        "cred-1": {
+                            "provider": "google_oauth",
+                            "access_token": "token",
+                        }
+                    }
+                },
+            )
+
+        self.assertEqual(result["source"], "test")
+        self.assertEqual(result["google_sheets_row_count"], 2)
+        self.assertEqual(
+            result["google_sheets_headers"],
+            ["Name", "Email"],
+        )
+        self.assertEqual(
+            result["google_sheets_data"],
+            [
+                {"Name": "Asha", "Email": "asha@example.com"},
+                {"Name": "Mina", "Email": "mina@example.com"},
+            ],
+        )
+
+    def test_read_google_sheets_supports_plain_rows_and_max_rows(self):
+        class _FakeRequest:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class _FakeValuesApi:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def get(self, **kwargs):
+                return _FakeRequest(self.payload)
+
+        class _FakeSpreadsheetsApi:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def values(self):
+                return _FakeValuesApi(self.payload)
+
+        class _FakeSheetsService:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def spreadsheets(self):
+                return _FakeSpreadsheetsApi(self.payload)
+
+        runner = ReadGoogleSheetsRunner()
+        fake_service = _FakeSheetsService(
+            {
+                "values": [
+                    ["A", "B"],
+                    [],
+                    ["C", "D"],
+                ]
+            }
+        )
+
+        with (
+            patch.object(ReadGoogleSheetsRunner, "_build_sheets_service", return_value=fake_service),
+            patch.object(ReadGoogleSheetsRunner, "_resolve_sheet_name", return_value="Sheet1"),
+        ):
+            result = runner.run(
+                config={
+                    "credential_id": "cred-1",
+                    "spreadsheet_source_type": "id",
+                    "spreadsheet_id": "sheet-id-1",
+                    "sheet_name": "Sheet1",
+                    "first_row_as_header": False,
+                    "include_empty_rows": False,
+                    "max_rows": "2",
+                },
+                input_data=None,
+                context={
+                    "resolved_credential_data": {
+                        "cred-1": {
+                            "provider": "google_oauth",
+                            "access_token": "token",
+                        }
+                    }
+                },
+            )
+
+        self.assertEqual(result["google_sheets_data"], [["A", "B"], ["C", "D"]])
+        self.assertEqual(result["google_sheets_row_count"], 2)
+
+    def test_read_google_docs_resolves_document_id_from_url(self):
+        document_id = ReadGoogleDocsRunner._resolve_document_id(
+            {
+                "document_source_type": "url",
+                "document_url": "https://docs.google.com/document/d/1AbCdEfGhIJkLmNoPqRstUvWxYz1234567890/edit",
+            }
+        )
+        self.assertEqual(document_id, "1AbCdEfGhIJkLmNoPqRstUvWxYz1234567890")
+
+    def test_read_google_docs_extracts_text_and_applies_max_characters(self):
+        class _FakeRequest:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class _FakeDocumentsApi:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def get(self, **kwargs):
+                return _FakeRequest(self.payload)
+
+        class _FakeDocsService:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def documents(self):
+                return _FakeDocumentsApi(self.payload)
+
+        runner = ReadGoogleDocsRunner()
+        fake_service = _FakeDocsService(
+            {
+                "documentId": "doc-123",
+                "title": "Weekly Notes",
+                "revisionId": "rev-5",
+                "body": {
+                    "content": [
+                        {
+                            "paragraph": {
+                                "elements": [
+                                    {"textRun": {"content": "Hello "}},
+                                    {"textRun": {"content": "team\n"}},
+                                ]
+                            }
+                        },
+                        {
+                            "table": {
+                                "tableRows": [
+                                    {
+                                        "tableCells": [
+                                            {
+                                                "content": [
+                                                    {
+                                                        "paragraph": {
+                                                            "elements": [
+                                                                {"textRun": {"content": "Cell A\n"}}
+                                                            ]
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                    ]
+                },
+            }
+        )
+
+        with patch.object(ReadGoogleDocsRunner, "_build_docs_service", return_value=fake_service):
+            result = runner.run(
+                config={
+                    "credential_id": "cred-1",
+                    "document_source_type": "id",
+                    "document_id": "doc-123",
+                    "max_characters": "8",
+                    "include_raw_json": True,
+                },
+                input_data={"source": "test"},
+                context={
+                    "resolved_credential_data": {
+                        "cred-1": {
+                            "provider": "google_oauth",
+                            "access_token": "token",
+                        }
+                    }
+                },
+            )
+
+        self.assertEqual(result["source"], "test")
+        self.assertTrue(result["google_docs_read"])
+        self.assertEqual(result["google_docs_document_id"], "doc-123")
+        self.assertEqual(result["google_docs_title"], "Weekly Notes")
+        self.assertEqual(result["google_docs_text"], "Hello te")
+        self.assertEqual(result["google_docs_text_length"], 8)
+        self.assertEqual(result["google_docs_text_full_length"], 18)
+        self.assertTrue(result["google_docs_text_truncated"])
+        self.assertIn("google_docs_document", result)
+
+    def test_read_google_docs_rejects_invalid_source_type(self):
+        runner = ReadGoogleDocsRunner()
+        with self.assertRaisesRegex(ValueError, "document_source_type"):
+            runner.run(
+                config={
+                    "credential_id": "cred-1",
+                    "document_source_type": "folder",
+                    "document_id": "doc-123",
+                },
+                input_data={},
+                context={
+                    "resolved_credential_data": {
+                        "cred-1": {
+                            "provider": "google_oauth",
+                            "access_token": "token",
+                        }
+                    }
+                },
+            )
 
     def test_delay_runner_resolves_amount_and_unit(self):
         runner = DelayRunner()
@@ -956,6 +1241,193 @@ class RunnerTests(unittest.TestCase):
                     ],
                 },
                 input_data={"items": [{"amount": 10}]},
+            )
+
+    def test_limit_runner_limits_array_items(self):
+        runner = LimitRunner()
+        result = runner.run(
+            config={"input_key": "items", "limit": "2", "offset": "0"},
+            input_data={"items": [1, 2, 3, 4], "meta": {"source": "test"}},
+        )
+        self.assertEqual(result["items"], [1, 2])
+        self.assertEqual(result["meta"], {"source": "test"})
+
+    def test_limit_runner_applies_offset(self):
+        runner = LimitRunner()
+        result = runner.run(
+            config={"input_key": "items", "limit": 2, "offset": 1},
+            input_data={"items": ["a", "b", "c", "d"]},
+        )
+        self.assertEqual(result["items"], ["b", "c"])
+
+    def test_limit_runner_supports_zero_limit(self):
+        runner = LimitRunner()
+        result = runner.run(
+            config={"input_key": "items", "limit": 0, "offset": 0},
+            input_data={"items": ["a", "b"]},
+        )
+        self.assertEqual(result["items"], [])
+
+    def test_limit_runner_supports_end_mode(self):
+        runner = LimitRunner()
+        result = runner.run(
+            config={"input_key": "items", "limit": 2, "offset": 0, "start_from": "end"},
+            input_data={"items": ["a", "b", "c", "d"]},
+        )
+        self.assertEqual(result["items"], ["c", "d"])
+
+    def test_limit_runner_supports_end_mode_with_offset(self):
+        runner = LimitRunner()
+        result = runner.run(
+            config={"input_key": "items", "limit": 2, "offset": 1, "start_from": "end"},
+            input_data={"items": ["a", "b", "c", "d", "e"]},
+        )
+        self.assertEqual(result["items"], ["c", "d"])
+
+    def test_limit_runner_requires_list_input(self):
+        runner = LimitRunner()
+        with self.assertRaisesRegex(ValueError, "must be a list"):
+            runner.run(
+                config={"input_key": "items", "limit": 2},
+                input_data={"items": "not-a-list"},
+            )
+
+    def test_limit_runner_rejects_invalid_integer_values(self):
+        runner = LimitRunner()
+        with self.assertRaisesRegex(ValueError, "must be an integer"):
+            runner.run(
+                config={"input_key": "items", "limit": "abc"},
+                input_data={"items": [1, 2, 3]},
+            )
+
+    def test_limit_runner_rejects_invalid_start_from_value(self):
+        runner = LimitRunner()
+        with self.assertRaisesRegex(ValueError, "must be 'start' or 'end'"):
+            runner.run(
+                config={"input_key": "items", "limit": 2, "start_from": "middle"},
+                input_data={"items": [1, 2, 3]},
+            )
+
+    def test_sort_runner_sorts_primitive_array_ascending(self):
+        runner = SortRunner()
+        result = runner.run(
+            config={"input_key": "items", "order": "asc", "data_type": "number"},
+            input_data={"items": [5, 2, 9, 1]},
+        )
+        self.assertEqual(result["items"], [1, 2, 5, 9])
+
+    def test_sort_runner_sorts_object_array_by_field_desc(self):
+        runner = SortRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "sort_by": "score",
+                "order": "desc",
+                "data_type": "number",
+            },
+            input_data={
+                "items": [
+                    {"name": "A", "score": 7},
+                    {"name": "B", "score": 10},
+                    {"name": "C", "score": 3},
+                ]
+            },
+        )
+        self.assertEqual(
+            result["items"],
+            [
+                {"name": "B", "score": 10},
+                {"name": "A", "score": 7},
+                {"name": "C", "score": 3},
+            ],
+        )
+
+    def test_sort_runner_places_missing_values_first_when_configured(self):
+        runner = SortRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "sort_by": "amount",
+                "order": "asc",
+                "data_type": "number",
+                "nulls": "first",
+            },
+            input_data={
+                "items": [
+                    {"id": 1, "amount": 20},
+                    {"id": 2},
+                    {"id": 3, "amount": 10},
+                ]
+            },
+        )
+        self.assertEqual(
+            result["items"],
+            [
+                {"id": 2},
+                {"id": 3, "amount": 10},
+                {"id": 1, "amount": 20},
+            ],
+        )
+
+    def test_sort_runner_supports_case_insensitive_string_sort(self):
+        runner = SortRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "sort_by": "name",
+                "data_type": "string",
+                "case_sensitive": False,
+                "order": "asc",
+            },
+            input_data={
+                "items": [
+                    {"name": "zeta"},
+                    {"name": "Alpha"},
+                    {"name": "beta"},
+                ]
+            },
+        )
+        self.assertEqual(
+            result["items"],
+            [
+                {"name": "Alpha"},
+                {"name": "beta"},
+                {"name": "zeta"},
+            ],
+        )
+
+    def test_sort_runner_keeps_equal_values_stable_in_desc_order(self):
+        runner = SortRunner()
+        result = runner.run(
+            config={
+                "input_key": "items",
+                "sort_by": "score",
+                "order": "desc",
+                "data_type": "number",
+            },
+            input_data={
+                "items": [
+                    {"id": "first", "score": 100},
+                    {"id": "second", "score": 100},
+                    {"id": "third", "score": 99},
+                ]
+            },
+        )
+        self.assertEqual(
+            result["items"],
+            [
+                {"id": "first", "score": 100},
+                {"id": "second", "score": 100},
+                {"id": "third", "score": 99},
+            ],
+        )
+
+    def test_sort_runner_rejects_invalid_data_type(self):
+        runner = SortRunner()
+        with self.assertRaisesRegex(ValueError, "data_type"):
+            runner.run(
+                config={"input_key": "items", "data_type": "currency"},
+                input_data={"items": [1, 2, 3]},
             )
 
     def test_datetime_format_runner_reformats_date(self):

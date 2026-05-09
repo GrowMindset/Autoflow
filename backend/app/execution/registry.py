@@ -21,6 +21,8 @@ class RunnerRegistry:
             "if_else": self._build_if_else,
             "switch": self._build_switch,
             "filter": self._build_filter,
+            "limit": self._build_limit,
+            "sort": self._build_sort,
             "delay": self._build_delay,
             "merge": self._build_merge,
             "aggregate": self._build_aggregate,
@@ -36,8 +38,10 @@ class RunnerRegistry:
             "get_gmail_message": self._build_get_gmail_message,
             "send_gmail_message": self._build_send_gmail_message,
             "create_google_sheets": self._build_create_google_sheets,
+            "read_google_sheets": self._build_read_google_sheets,
             "search_update_google_sheets": self._build_search_update_google_sheets,
             "create_google_docs": self._build_create_google_docs,
+            "read_google_docs": self._build_read_google_docs,
             "update_google_docs": self._build_update_google_docs,
             "telegram": self._build_telegram,
             "whatsapp": self._build_whatsapp,
@@ -48,6 +52,7 @@ class RunnerRegistry:
             "file_write": self._build_file_write,
             # n8n compatibility alias
             "n8n-nodes-base.httpRequest": self._build_http_request,
+            "n8n-nodes-base.sort": self._build_sort,
         }
         self._legacy_dummy_node_types = (
             set(legacy_dummy_node_types)
@@ -141,6 +146,18 @@ class RunnerRegistry:
         from app.execution.runners.nodes.filter import FilterRunner
 
         return FilterRunner()
+
+    @staticmethod
+    def _build_limit() -> Any:
+        from app.execution.runners.nodes.limit import LimitRunner
+
+        return LimitRunner()
+
+    @staticmethod
+    def _build_sort() -> Any:
+        from app.execution.runners.nodes.sort import SortRunner
+
+        return SortRunner()
 
     @staticmethod
     def _build_delay() -> Any:
@@ -240,6 +257,12 @@ class RunnerRegistry:
         return CreateGoogleSheetsRunner()
 
     @staticmethod
+    def _build_read_google_sheets() -> Any:
+        from app.execution.runners.nodes.read_google_sheets import ReadGoogleSheetsRunner
+
+        return ReadGoogleSheetsRunner()
+
+    @staticmethod
     def _build_search_update_google_sheets() -> Any:
         from app.execution.runners.nodes.search_update_google_sheets import (
             SearchUpdateGoogleSheetsRunner,
@@ -252,6 +275,12 @@ class RunnerRegistry:
         from app.execution.runners.nodes.create_google_docs import CreateGoogleDocsRunner
 
         return CreateGoogleDocsRunner()
+
+    @staticmethod
+    def _build_read_google_docs() -> Any:
+        from app.execution.runners.nodes.read_google_docs import ReadGoogleDocsRunner
+
+        return ReadGoogleDocsRunner()
 
     @staticmethod
     def _build_update_google_docs() -> Any:

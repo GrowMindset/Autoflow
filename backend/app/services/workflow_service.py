@@ -318,14 +318,14 @@ class WorkflowService:
                 config.pop("user_email", None)
                 config.pop("username", None)
                 node_copy["config"] = config
-            if node_copy.get("type") in {"create_google_sheets", "search_update_google_sheets"} and isinstance(node_copy.get("config"), dict):
+            if node_copy.get("type") in {"create_google_sheets", "read_google_sheets", "search_update_google_sheets"} and isinstance(node_copy.get("config"), dict):
                 config = dict(node_copy["config"])
                 config.pop("service_account_json", None)
                 config.pop("serviceAccountJson", None)
                 config.pop("private_key", None)
                 config.pop("privateKey", None)
                 node_copy["config"] = config
-            if node_copy.get("type") in {"create_google_docs", "update_google_docs"} and isinstance(node_copy.get("config"), dict):
+            if node_copy.get("type") in {"create_google_docs", "read_google_docs", "update_google_docs"} and isinstance(node_copy.get("config"), dict):
                 config = dict(node_copy["config"])
                 config.pop("service_account_json", None)
                 config.pop("serviceAccountJson", None)

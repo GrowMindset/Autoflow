@@ -77,6 +77,17 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "sheet_name": "",
         "columns": [],
     },
+    "read_google_sheets": {
+        "credential_id": "",
+        "spreadsheet_source_type": "id",
+        "spreadsheet_id": "",
+        "spreadsheet_url": "",
+        "sheet_name": "Sheet1",
+        "range": "",
+        "first_row_as_header": True,
+        "include_empty_rows": False,
+        "max_rows": "",
+    },
     "search_update_google_sheets": {
         "credential_id": "",
         "spreadsheet_source_type": "id",
@@ -103,6 +114,14 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "credential_id": "",
         "title": "",
         "initial_content": "",
+    },
+    "read_google_docs": {
+        "credential_id": "",
+        "document_source_type": "id",
+        "document_id": "",
+        "document_url": "",
+        "max_characters": "",
+        "include_raw_json": False,
     },
     "update_google_docs": {
         "credential_id": "",
@@ -216,6 +235,20 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "value_mode": "literal",
         "value_field": "",
         "case_sensitive": True,
+    },
+    "limit": {
+        "input_key": "",
+        "limit": 10,
+        "offset": 0,
+        "start_from": "start",
+    },
+    "sort": {
+        "input_key": "",
+        "sort_by": "",
+        "order": "asc",
+        "data_type": "auto",
+        "nulls": "last",
+        "case_sensitive": False,
     },
     "delay": {
         "amount": "1",

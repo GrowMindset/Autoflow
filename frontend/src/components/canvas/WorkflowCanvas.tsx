@@ -419,7 +419,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             delete nextConfig.private_key;
             delete nextConfig.privateKey;
           }
-          if (node.data.type === 'create_google_docs' || node.data.type === 'update_google_docs') {
+          if (node.data.type === 'create_google_docs' || node.data.type === 'read_google_docs' || node.data.type === 'update_google_docs') {
             delete nextConfig.service_account_json;
             delete nextConfig.serviceAccountJson;
             delete nextConfig.private_key;

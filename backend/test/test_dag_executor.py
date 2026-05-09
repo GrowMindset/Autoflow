@@ -7,6 +7,8 @@ from app.execution.runners.nodes.ai_agent import AIAgentRunner
 from app.execution.runners.nodes.delay import DelayRunner
 from app.execution.runners.nodes.dummy import DummyNodeRunner
 from app.execution.runners.nodes.merge import MergeRunner
+from app.execution.runners.nodes.read_google_docs import ReadGoogleDocsRunner
+from app.execution.runners.nodes.sort import SortRunner
 
 
 class _RecordingRunner:
@@ -83,6 +85,14 @@ class DagExecutorTests(unittest.TestCase):
     def test_runner_registry_registers_ai_agent_runner(self):
         runner = RunnerRegistry().get_runner("ai_agent")
         self.assertIsInstance(runner, AIAgentRunner)
+
+    def test_runner_registry_maps_n8n_sort_alias(self):
+        runner = RunnerRegistry().get_runner("n8n-nodes-base.sort")
+        self.assertIsInstance(runner, SortRunner)
+
+    def test_runner_registry_registers_read_google_docs_runner(self):
+        runner = RunnerRegistry().get_runner("read_google_docs")
+        self.assertIsInstance(runner, ReadGoogleDocsRunner)
 
     def test_runner_registry_routes_send_gmail_to_non_dummy_by_default(self):
         class _SentinelRunner:

@@ -49,6 +49,7 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     'file_read': ['file_path'],
     'file_write': ['file_path'],
     'create_google_docs': ['credential_id', 'title'],
+    'read_google_docs': ['credential_id'],
     'update_google_docs': ['credential_id', 'document_id', 'operation'],
     'telegram': ['credential_id'],
     'whatsapp': ['credential_id', 'to_number', 'template_name'],
@@ -87,6 +88,16 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
   }
   if (type === 'update_google_docs' && !String(config.text || '').trim() && !String(config.image || '').trim()) {
     missing.push("Provide either 'text' or 'image'");
+  }
+  if (type === 'read_google_docs') {
+    const sourceType = String(config.document_source_type || 'id').trim().toLowerCase();
+    if (sourceType === 'url') {
+      if (!String(config.document_url || '').trim()) {
+        missing.push("Required field 'document_url' is missing for document_source_type='url'");
+      }
+    } else if (!String(config.document_id || '').trim()) {
+      missing.push("Required field 'document_id' is missing");
+    }
   }
 
   if (type === 'search_update_google_sheets') {

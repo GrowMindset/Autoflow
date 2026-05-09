@@ -8,7 +8,7 @@ import { WorkflowNode } from '../../types/workflow';
 const OAUTH_APPS = ['gmail', 'sheets', 'docs', 'linkedin'] as const;
 const OAUTH_NODE_USAGE: Record<string, string[]> = {
   gmail: ['Get Gmail Message', 'Send Gmail Message'],
-  sheets: ['Create Google Sheets', 'Search/Update Google Sheets'],
+  sheets: ['Create Google Sheets', 'Read Google Sheets', 'Search/Update Google Sheets'],
   docs: ['Create Google Docs', 'Update Google Docs'],
   linkedin: ['LinkedIn Post'],
 };
@@ -389,6 +389,47 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       helperText: 'Add one or more condition rows. Supports field-to-field comparisons.',
     },
   ],
+  limit: [
+    { key: 'input_key', label: 'Input Array Key', type: 'text', placeholder: 'e.g. items' },
+    { key: 'limit', label: 'Limit', type: 'text', placeholder: 'e.g. 10' },
+    { key: 'offset', label: 'Offset', type: 'text', placeholder: 'e.g. 0' },
+    {
+      key: 'start_from',
+      label: 'Start From',
+      type: 'select',
+      options: ['start', 'end'],
+      helperText: "start = from first item, end = from last item.",
+    },
+  ],
+  sort: [
+    { key: 'input_key', label: 'Input Array Key', type: 'text', placeholder: 'e.g. items' },
+    {
+      key: 'sort_by',
+      label: 'Sort Field (Optional)',
+      type: 'text',
+      placeholder: 'e.g. amount or user.created_at',
+      helperText: 'Leave empty to sort primitive arrays directly.',
+    },
+    {
+      key: 'order',
+      label: 'Order',
+      type: 'select',
+      options: ['asc', 'desc'],
+    },
+    {
+      key: 'data_type',
+      label: 'Data Type',
+      type: 'select',
+      options: ['auto', 'string', 'number', 'boolean', 'date'],
+    },
+    {
+      key: 'nulls',
+      label: 'Null / Missing Values',
+      type: 'select',
+      options: ['last', 'first'],
+    },
+    { key: 'case_sensitive', label: 'Case Sensitive (strings)', type: 'boolean' },
+  ],
   aggregate: [
     { key: 'input_key', label: 'Input Array Key', type: 'text', placeholder: 'e.g. orders' },
     { key: 'field', label: 'Field to aggregate', type: 'text', placeholder: 'e.g. total' },
@@ -556,6 +597,34 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       helperText: 'Optional: add headers (e.g. Name, Email, Status). They will be written to row 1.',
     },
   ],
+  read_google_sheets: [
+    {
+      key: 'credential_id',
+      label: 'Google Sheets Credential',
+      type: 'credential_selector',
+      appName: 'sheets',
+      helperText: 'OAuth only: connect Google Sheets in Credential Manager, then select it here.',
+    },
+    {
+      key: 'spreadsheet_source_type',
+      label: 'Spreadsheet Source',
+      type: 'select',
+      options: ['id', 'url'],
+    },
+    { key: 'spreadsheet_id', label: 'Spreadsheet ID', type: 'text', placeholder: 'e.g. 1aBC...xyz' },
+    { key: 'spreadsheet_url', label: 'Spreadsheet URL', type: 'text', placeholder: 'https://docs.google.com/spreadsheets/d/...' },
+    { key: 'sheet_name', label: 'Sheet Name (Tab)', type: 'text', placeholder: 'e.g. Sheet1' },
+    {
+      key: 'range',
+      label: 'Range (Optional)',
+      type: 'text',
+      placeholder: 'e.g. A1:F200 or Sheet1!A:Z',
+      helperText: 'Leave empty to read the full sheet range (A:ZZ).',
+    },
+    { key: 'first_row_as_header', label: 'Use First Row As Header', type: 'boolean' },
+    { key: 'include_empty_rows', label: 'Include Empty Rows', type: 'boolean' },
+    { key: 'max_rows', label: 'Max Rows (Optional)', type: 'text', placeholder: 'e.g. 1000' },
+  ],
   search_update_google_sheets: [
     {
       key: 'credential_id',
@@ -623,6 +692,31 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     },
     { key: 'title', label: 'Document Title', type: 'text', placeholder: 'e.g. Daily Report' },
     { key: 'initial_content', label: 'Initial Content', type: 'textarea', placeholder: 'Optional initial content...' },
+  ],
+  read_google_docs: [
+    {
+      key: 'credential_id',
+      label: 'Google Docs Credential',
+      type: 'credential_selector',
+      appName: 'docs',
+      helperText: 'OAuth only: connect Google Docs in Credential Manager, then select it here.',
+    },
+    {
+      key: 'document_source_type',
+      label: 'Document Source',
+      type: 'select',
+      options: ['id', 'url'],
+    },
+    { key: 'document_id', label: 'Document ID', type: 'text', placeholder: 'e.g. 1AbCdEf...' },
+    {
+      key: 'document_url',
+      label: 'Document URL',
+      type: 'text',
+      placeholder: 'https://docs.google.com/document/d/.../edit',
+      helperText: "Required when Document Source is 'url'.",
+    },
+    { key: 'max_characters', label: 'Max Characters (Optional)', type: 'text', placeholder: 'e.g. 5000' },
+    { key: 'include_raw_json', label: 'Include Raw Google Response', type: 'boolean' },
   ],
   update_google_docs: [
     {
@@ -1249,6 +1343,29 @@ const ConfigForm: React.FC<ConfigFormProps> = ({
       if (nextMappings.length > 0) {
         patch.update_mappings = nextMappings;
       }
+    }
+
+    if (Object.keys(patch).length > 0) {
+      applyConfigPatch(patch);
+    }
+  }, [nodeType, config, applyConfigPatch]);
+
+  useEffect(() => {
+    if (nodeType !== 'read_google_sheets') return;
+
+    const patch: Record<string, any> = {};
+    const sourceTypeRaw = String(config.spreadsheet_source_type || '').trim().toLowerCase();
+    if (!sourceTypeRaw) {
+      patch.spreadsheet_source_type = String(config.spreadsheet_url || '').trim() ? 'url' : 'id';
+    }
+    if (typeof config.sheet_name === 'undefined') {
+      patch.sheet_name = 'Sheet1';
+    }
+    if (typeof config.first_row_as_header === 'undefined') {
+      patch.first_row_as_header = true;
+    }
+    if (typeof config.include_empty_rows === 'undefined') {
+      patch.include_empty_rows = false;
     }
 
     if (Object.keys(patch).length > 0) {
@@ -2781,15 +2898,19 @@ const ConfigForm: React.FC<ConfigFormProps> = ({
       return true;
     }
 
-    if (nodeType !== 'search_update_google_sheets') {
+    if (!['search_update_google_sheets', 'read_google_sheets'].includes(nodeType)) {
       return true;
     }
 
     const sourceType = String(config.spreadsheet_source_type || 'id').trim().toLowerCase();
-    const operation = normalizeSheetsOperation(config.operation, Boolean(config.upsert_if_not_found));
 
     if (field.key === 'spreadsheet_id') return sourceType !== 'url';
     if (field.key === 'spreadsheet_url') return sourceType === 'url';
+    if (nodeType === 'read_google_sheets') {
+      return true;
+    }
+
+    const operation = normalizeSheetsOperation(config.operation, Boolean(config.upsert_if_not_found));
 
     if (field.key === 'key_column' || field.key === 'key_value') {
       return ['delete_rows', 'overwrite_row', 'upsert_row'].includes(operation);

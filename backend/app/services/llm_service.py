@@ -271,6 +271,7 @@ ASSISTANT_CHANNEL_HINTS: dict[str, tuple[str, ...]] = {
     "linkedin": ("linkedin", "linked in", "linkdin", "likendin"),
     "create_google_sheets": ("sheet", "sheets", "spreadsheet"),
     "create_google_docs": ("doc", "docs", "document"),
+    "read_google_docs": ("read doc", "read docs", "google doc", "google docs document"),
 }
 
 ASSISTANT_BRANCH_HINTS = (
@@ -346,6 +347,7 @@ CHANNEL_DISPLAY_NAMES: dict[str, str] = {
     "linkedin": "LinkedIn",
     "create_google_sheets": "Google Sheets",
     "create_google_docs": "Google Docs",
+    "read_google_docs": "Google Docs",
 }
 
 ASK_NODE_MANUAL_ALIASES: dict[str, tuple[str, ...]] = {
@@ -353,6 +355,10 @@ ASK_NODE_MANUAL_ALIASES: dict[str, tuple[str, ...]] = {
     "send_gmail_message": ("gmail node", "email node", "mail node"),
     "search_update_google_sheets": ("google sheets node", "sheets node", "sheet node"),
     "create_google_sheets": ("google sheets create", "create sheet"),
+    "read_google_sheets": ("read google sheets", "google sheets read", "read sheet"),
+    "read_google_docs": ("read google docs", "google docs read", "read doc"),
+    "limit": ("limit node", "array limit"),
+    "sort": ("sort node", "array sort"),
     "webhook_trigger": ("webhook", "webhook trigger"),
     "form_trigger": ("form trigger", "form submission node"),
     "schedule_trigger": ("schedule trigger", "cron trigger"),
@@ -479,6 +485,33 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
             "Column references can be header names, column letters (A/B/C), or column numbers.",
         ],
     },
+    "read_google_sheets": {
+        "category": "action",
+        "description": "Reads rows from a Google Sheets worksheet.",
+        "rules": [
+            "Use config keys: credential_id, spreadsheet_source_type, spreadsheet_id, spreadsheet_url, sheet_name, range, first_row_as_header, include_empty_rows, max_rows.",
+            "spreadsheet_source_type must be id or url. Use sheet_name as the worksheet tab name.",
+            "first_row_as_header maps rows to objects; when false, rows are returned as arrays.",
+        ],
+    },
+    "limit": {
+        "category": "transform",
+        "description": "Keeps only a fixed slice of items from an input array.",
+        "rules": [
+            "Use config keys: input_key, limit, offset, start_from.",
+            "start_from should be start or end.",
+            "Set limit=0 to return an empty array safely.",
+        ],
+    },
+    "sort": {
+        "category": "transform",
+        "description": "Sorts an array of primitives or objects by a field.",
+        "rules": [
+            "Use config keys: input_key, sort_by, order, data_type, nulls, case_sensitive.",
+            "Leave sort_by empty to sort primitive arrays directly.",
+            "order should be asc or desc; nulls should be first or last.",
+        ],
+    },
     "create_google_docs": {
         "category": "action",
         "description": "Creates a Google Doc using a Docs credential.",
@@ -486,6 +519,15 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
             "Use config keys: credential_id, title, initial_content.",
             "credential_id must point to app_credentials with app_name=docs.",
             "title is required. initial_content is optional.",
+        ],
+    },
+    "read_google_docs": {
+        "category": "action",
+        "description": "Reads text content from a Google Doc.",
+        "rules": [
+            "Use config keys: credential_id, document_source_type, document_id, document_url, max_characters, include_raw_json.",
+            "document_source_type must be id or url.",
+            "When source type is url, document_url is required. Otherwise document_id is required.",
         ],
     },
     "update_google_docs": {
@@ -3186,6 +3228,20 @@ class LLMService:
                 "update_mappings",
                 "key_column",
             ),
+            "read_google_sheets": (
+                "sheet_name",
+                "spreadsheet_source_type",
+                "first_row_as_header",
+                "max_rows",
+            ),
+            "limit": ("input_key", "limit", "offset", "start_from"),
+            "sort": ("input_key", "sort_by", "order", "data_type"),
+            "read_google_docs": (
+                "document_source_type",
+                "document_id",
+                "document_url",
+                "max_characters",
+            ),
             "send_gmail_message": ("to", "subject", "body", "is_html"),
             "telegram": ("message", "parse_mode", "credential_id"),
             "whatsapp": ("to_number", "template_name", "template_params", "language_code"),
@@ -3258,6 +3314,10 @@ class LLMService:
         nodes_by_id = {node.id: node for node in definition.nodes}
         if node_type in {"if_else", "switch"}:
             return cls._resolve_routing_insertion_point(definition)
+        if node_type in {"limit", "sort"}:
+            return (
+                f"Place `{node_type}` after the node that outputs your target array and before aggregation/delivery steps."
+            )
         if node_type in {"telegram", "whatsapp", "send_gmail_message", "slack_send_message", "linkedin"}:
             for edge in definition.edges:
                 source = nodes_by_id.get(edge.source)
@@ -3265,7 +3325,7 @@ class LLMService:
                     return (
                         f"Place `{node_type}` after `{source.label}` ({source.id}) on the branch where notification is required."
                     )
-        if node_type in {"http_request", "file_write", "search_update_google_sheets", "create_google_docs"}:
+        if node_type in {"http_request", "file_write", "read_google_sheets", "search_update_google_sheets", "create_google_docs", "read_google_docs"}:
             for edge in definition.edges:
                 source = nodes_by_id.get(edge.source)
                 if source and source.type in {"code", "merge", "ai_agent"}:
