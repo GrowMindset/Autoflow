@@ -1,12 +1,14 @@
 import unittest
 import os
 import tempfile
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 from app.execution.runners.nodes import ai_agent
 from app.execution.runners.nodes.aggregate import AggregateRunner
+from app.execution.runners.nodes.add_gmail_label import AddGmailLabelRunner
 from app.execution.runners.nodes.ai_agent import AIAgentRunner
+from app.execution.runners.nodes.create_gmail_draft import CreateGmailDraftRunner
 from app.execution.runners.nodes.delay import DelayRunner
 from app.execution.runners.nodes.datetime_format import DateTimeFormatRunner
 from app.execution.runners.nodes.dummy import DummyNodeRunner
@@ -325,6 +327,120 @@ class RunnerTests(unittest.TestCase):
             field_name="to",
         )
         self.assertEqual(recipients, ["one@example.com", "two@example.com"])
+
+    def test_create_gmail_draft_runner_creates_draft(self):
+        runner = CreateGmailDraftRunner()
+        credential = {
+            "provider": "google_oauth",
+            "access_token": "token",
+            "refresh_token": "refresh",
+            "email": "sender@example.com",
+        }
+        drafts_resource = MagicMock()
+        drafts_resource.create.return_value.execute.return_value = {"id": "r123456789"}
+        users_resource = MagicMock()
+        users_resource.drafts.return_value = drafts_resource
+        service = MagicMock()
+        service.users.return_value = users_resource
+
+        with patch(
+            "app.execution.runners.nodes.create_gmail_draft.build_google_user_credentials",
+            return_value=object(),
+        ), patch("app.execution.runners.nodes.create_gmail_draft.build", return_value=service):
+            result = runner.run(
+                config={
+                    "credential_id": "cred-1",
+                    "to": "recipient@example.com",
+                    "subject": "Draft subject",
+                    "body": "Draft body text",
+                },
+                input_data={"upstream": True},
+                context={"resolved_credential_data": {"cred-1": credential}},
+            )
+
+        drafts_resource.create.assert_called_once()
+        self.assertEqual(result["draft_id"], "r123456789")
+        self.assertEqual(result["gmail_draft_id"], "r123456789")
+        self.assertEqual(result["upstream"], True)
+        self.assertIn("created_at", result)
+
+    def test_add_gmail_label_runner_finds_existing_label_and_modifies_message(self):
+        runner = AddGmailLabelRunner()
+        credential = {
+            "provider": "google_oauth",
+            "access_token": "token",
+            "refresh_token": "refresh",
+        }
+        labels_resource = MagicMock()
+        labels_resource.list.return_value.execute.return_value = {
+            "labels": [{"id": "Label_123", "name": "Autoflow/Processed"}]
+        }
+        messages_resource = MagicMock()
+        messages_resource.modify.return_value.execute.return_value = {"id": "msg123"}
+        users_resource = MagicMock()
+        users_resource.labels.return_value = labels_resource
+        users_resource.messages.return_value = messages_resource
+        service = MagicMock()
+        service.users.return_value = users_resource
+
+        with patch(
+            "app.execution.runners.nodes.add_gmail_label.build_google_user_credentials",
+            return_value=object(),
+        ), patch("app.execution.runners.nodes.add_gmail_label.build", return_value=service):
+            result = runner.run(
+                config={
+                    "credential_id": "cred-1",
+                    "message_id": "msg123",
+                    "label_name": "Autoflow/Processed",
+                },
+                input_data=None,
+                context={"resolved_credential_data": {"cred-1": credential}},
+            )
+
+        labels_resource.create.assert_not_called()
+        messages_resource.modify.assert_called_once_with(
+            userId="me",
+            id="msg123",
+            body={"addLabelIds": ["Label_123"]},
+        )
+        self.assertEqual(result["message_id"], "msg123")
+        self.assertEqual(result["label_id"], "Label_123")
+        self.assertEqual(result["label_name"], "Autoflow/Processed")
+        self.assertIn("applied_at", result)
+
+    def test_add_gmail_label_runner_creates_missing_label(self):
+        runner = AddGmailLabelRunner()
+        labels_resource = MagicMock()
+        labels_resource.list.return_value.execute.return_value = {"labels": []}
+        labels_resource.create.return_value.execute.return_value = {"id": "Label_New"}
+        messages_resource = MagicMock()
+        messages_resource.modify.return_value.execute.return_value = {"id": "msg123"}
+        users_resource = MagicMock()
+        users_resource.labels.return_value = labels_resource
+        users_resource.messages.return_value = messages_resource
+        service = MagicMock()
+        service.users.return_value = users_resource
+
+        with patch(
+            "app.execution.runners.nodes.add_gmail_label.build_google_user_credentials",
+            return_value=object(),
+        ), patch("app.execution.runners.nodes.add_gmail_label.build", return_value=service):
+            result = runner.run(
+                config={
+                    "credential_id": "cred-1",
+                    "message_id": "msg123",
+                    "label_name": "Autoflow/Processed",
+                },
+                input_data={},
+                context={
+                    "resolved_credential_data": {
+                        "cred-1": {"provider": "google_oauth", "access_token": "token"}
+                    }
+                },
+            )
+
+        labels_resource.create.assert_called_once()
+        self.assertEqual(result["label_id"], "Label_New")
 
     def test_sheets_search_update_prefers_header_name_over_column_letters(self):
         headers = ["Email", "Status", "Notes"]

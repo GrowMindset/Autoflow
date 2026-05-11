@@ -37,6 +37,8 @@ class RunnerRegistry:
             "chat_model_groq": self._build_chat_model_groq,
             "get_gmail_message": self._build_get_gmail_message,
             "send_gmail_message": self._build_send_gmail_message,
+            "create_gmail_draft": self._build_create_gmail_draft,
+            "add_gmail_label": self._build_add_gmail_label,
             "create_google_sheets": self._build_create_google_sheets,
             "read_google_sheets": self._build_read_google_sheets,
             "search_update_google_sheets": self._build_search_update_google_sheets,
@@ -249,6 +251,18 @@ class RunnerRegistry:
         from app.execution.runners.nodes.send_gmail_message import SendGmailMessageRunner
 
         return SendGmailMessageRunner()
+
+    @staticmethod
+    def _build_create_gmail_draft() -> Any:
+        from app.execution.runners.nodes.create_gmail_draft import CreateGmailDraftRunner
+
+        return CreateGmailDraftRunner()
+
+    @staticmethod
+    def _build_add_gmail_label() -> Any:
+        from app.execution.runners.nodes.add_gmail_label import AddGmailLabelRunner
+
+        return AddGmailLabelRunner()
 
     @staticmethod
     def _build_create_google_sheets() -> Any:

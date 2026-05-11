@@ -44,6 +44,8 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     'filter': ['input_key', 'field', 'operator', 'value'],
     'get_gmail_message': ['credential_id'],
     'send_gmail_message': ['credential_id', 'to', 'subject', 'body'],
+    'create_gmail_draft': ['credential_id', 'to', 'subject', 'body'],
+    'add_gmail_label': ['credential_id', 'message_id', 'label_name'],
     'create_google_sheets': ['credential_id', 'title'],
     'delay': ['amount', 'unit'],
     'file_read': ['file_path'],
@@ -211,6 +213,10 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
 const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected }) => {
   const accentColor = data.type === 'image_gen'
     ? '#f59e0b'
+    : data.color
+    ? data.color
+    : ['get_gmail_message', 'send_gmail_message', 'create_gmail_draft', 'add_gmail_label'].includes(data.type)
+    ? '#ea4335'
     : CATEGORY_ACCENTS[data.category] || '#cbd5e1';
   const updateNodeInternals = useUpdateNodeInternals();
   const { deleteElements } = useReactFlow();

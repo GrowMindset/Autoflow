@@ -412,7 +412,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             delete nextConfig.bot_token;
             delete nextConfig.chat_id;
           }
-          if (node.data.type === 'get_gmail_message' || node.data.type === 'send_gmail_message') {
+          if (
+            node.data.type === 'get_gmail_message' ||
+            node.data.type === 'send_gmail_message' ||
+            node.data.type === 'create_gmail_draft' ||
+            node.data.type === 'add_gmail_label'
+          ) {
             delete nextConfig.app_password;
             delete nextConfig.password;
             delete nextConfig.api_key;

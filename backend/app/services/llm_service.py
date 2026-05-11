@@ -266,6 +266,8 @@ ASSISTANT_COMPLETION_HINTS = (
 
 ASSISTANT_CHANNEL_HINTS: dict[str, tuple[str, ...]] = {
     "send_gmail_message": ("gmail", "g mail", "email", "e-mail", "mail"),
+    "create_gmail_draft": ("gmail draft", "email draft", "draft email", "draft in gmail"),
+    "add_gmail_label": ("gmail label", "email label", "label gmail", "label email"),
     "slack_send_message": ("slack",),
     "telegram": ("telegram", "telegarm", "telegrm"),
     "whatsapp": ("whatsapp", "watsapp", "whatapp", "whats app", "wa"),
@@ -342,6 +344,8 @@ ASSISTANT_SENSITIVE_CONFIG_KEYS = {
 
 CHANNEL_DISPLAY_NAMES: dict[str, str] = {
     "send_gmail_message": "Gmail",
+    "create_gmail_draft": "Gmail Draft",
+    "add_gmail_label": "Gmail Label",
     "slack_send_message": "Slack",
     "telegram": "Telegram",
     "whatsapp": "WhatsApp",
@@ -354,6 +358,8 @@ CHANNEL_DISPLAY_NAMES: dict[str, str] = {
 ASK_NODE_MANUAL_ALIASES: dict[str, tuple[str, ...]] = {
     "http_request": ("http node", "api node", "http request node"),
     "send_gmail_message": ("gmail node", "email node", "mail node"),
+    "create_gmail_draft": ("gmail draft node", "email draft node"),
+    "add_gmail_label": ("gmail label node", "email label node"),
     "search_update_google_sheets": ("google sheets node", "sheets node", "sheet node"),
     "create_google_sheets": ("google sheets create", "create sheet"),
     "read_google_sheets": ("read google sheets", "google sheets read", "read sheet"),
@@ -388,6 +394,8 @@ CREDENTIAL_TROUBLESHOOT_NODE_TYPES = {
     "http_request",
     "get_gmail_message",
     "send_gmail_message",
+    "create_gmail_draft",
+    "add_gmail_label",
     "create_google_sheets",
     "search_update_google_sheets",
     "read_google_sheets",
@@ -423,6 +431,8 @@ RELIABILITY_PATTERN_NODE_TYPES = {
     "telegram",
     "whatsapp",
     "send_gmail_message",
+    "create_gmail_draft",
+    "add_gmail_label",
     "slack_send_message",
     "linkedin",
     "search_update_google_sheets",
@@ -445,6 +455,8 @@ PERFORMANCE_SENSITIVE_NODE_TYPES = {
     "search_update_google_sheets",
     "read_google_sheets",
     "send_gmail_message",
+    "create_gmail_draft",
+    "add_gmail_label",
     "telegram",
     "whatsapp",
     "slack_send_message",
@@ -462,6 +474,8 @@ SECURITY_REVIEW_NODE_TYPES = {
     "read_google_docs",
     "update_google_docs",
     "send_gmail_message",
+    "create_gmail_draft",
+    "add_gmail_label",
     "telegram",
     "whatsapp",
     "slack_send_message",
@@ -497,6 +511,8 @@ PUBLISH_CRITICAL_NODE_TYPES = {
     "ai_agent",
     "search_update_google_sheets",
     "send_gmail_message",
+    "create_gmail_draft",
+    "add_gmail_label",
     "telegram",
     "whatsapp",
     "slack_send_message",
@@ -610,6 +626,24 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
             "Use comma-separated emails in to/cc/bcc when multiple recipients are needed.",
             "If attaching an Image Gen result, set image to {{image_gen_node_id.image_base64}} or {{image_gen_node_id.image_url}}.",
             "Use Autoflow template syntax {{...}} for dynamic values, not {....}.",
+        ],
+    },
+    "create_gmail_draft": {
+        "category": "action",
+        "description": "Creates a Gmail draft using OAuth credential. Requires credential_id, to, subject, and body.",
+        "rules": [
+            "Use config keys: credential_id, to, subject, body.",
+            "All fields support Autoflow template syntax {{...}}.",
+            "Use this instead of send_gmail_message when the user asks to draft, prepare, or save an email without sending it.",
+        ],
+    },
+    "add_gmail_label": {
+        "category": "action",
+        "description": "Finds or creates a Gmail label and applies it to a Gmail message. Requires credential_id, message_id, and label_name.",
+        "rules": [
+            "Use config keys: credential_id, message_id, label_name.",
+            "message_id should usually reference an upstream Gmail output, for example {{send_gmail_node.message_id}}.",
+            "label_name supports nested Gmail labels using /, for example Autoflow/Processed.",
         ],
     },
     "create_google_sheets": {
@@ -4478,14 +4512,14 @@ class LLMService:
         # Priority 3: error-kind based defaults.
         kind_priority: dict[str, tuple[str, ...]] = {
             "not_found": ("http_request",),
-            "auth": ("http_request", "send_gmail_message", "telegram", "whatsapp", "slack_send_message", "linkedin"),
-            "payload_validation": ("http_request", "search_update_google_sheets", "send_gmail_message"),
-            "rate_limit": ("http_request", "telegram", "whatsapp", "send_gmail_message", "slack_send_message", "linkedin"),
+            "auth": ("http_request", "send_gmail_message", "create_gmail_draft", "add_gmail_label", "telegram", "whatsapp", "slack_send_message", "linkedin"),
+            "payload_validation": ("http_request", "search_update_google_sheets", "send_gmail_message", "create_gmail_draft", "add_gmail_label"),
+            "rate_limit": ("http_request", "telegram", "whatsapp", "send_gmail_message", "create_gmail_draft", "add_gmail_label", "slack_send_message", "linkedin"),
             "server_or_gateway": ("http_request",),
             "network_or_timeout": ("http_request",),
             "merge_waiting": ("merge",),
             "branch_condition": ("if_else", "switch", "filter"),
-            "template_mapping": ("ai_agent", "code", "send_gmail_message", "telegram", "whatsapp", "slack_send_message", "linkedin"),
+            "template_mapping": ("ai_agent", "code", "send_gmail_message", "create_gmail_draft", "add_gmail_label", "telegram", "whatsapp", "slack_send_message", "linkedin"),
             "generic_runtime": ("code", "ai_agent", "http_request"),
         }
         for preferred_type in kind_priority.get(error_kind, ()):
@@ -4691,6 +4725,8 @@ class LLMService:
             ("switch", ("switch", "case", "default_case")),
             ("code", ("code", "python code", "output dict")),
             ("send_gmail_message", ("email", "gmail", "mail body")),
+            ("create_gmail_draft", ("gmail draft", "email draft", "draft email")),
+            ("add_gmail_label", ("gmail label", "email label", "label gmail")),
             ("telegram", ("telegram",)),
             ("whatsapp", ("whatsapp", "template_params")),
             ("search_update_google_sheets", ("google sheets", "sheet", "update_mappings")),
@@ -4746,6 +4782,8 @@ class LLMService:
             "webhook_trigger": "Output includes inbound request context like `body`, `headers`, and query values.",
             "workflow_trigger": "Output shape follows configured `input_schema` or incoming parent payload.",
             "send_gmail_message": "Output includes send status/metadata after message dispatch.",
+            "create_gmail_draft": "Output includes `draft_id` and `created_at` after draft creation.",
+            "add_gmail_label": "Output includes `message_id`, `label_id`, `label_name`, and `applied_at`.",
             "telegram": "Output includes delivery response metadata from Telegram API.",
             "whatsapp": "Output includes provider response for template send request.",
             "search_update_google_sheets": "Output includes operation status and row/update response metadata.",
@@ -6262,7 +6300,11 @@ class LLMService:
             explicit_channels.append("telegram")
         if any(token in lowered for token in ("whatsapp", "watsapp", "whats app")):
             explicit_channels.append("whatsapp")
-        if any(token in lowered for token in ("gmail", "email", "mail")):
+        if any(token in lowered for token in ("gmail label", "email label", "label gmail", "label email")):
+            explicit_channels.append("add_gmail_label")
+        elif any(token in lowered for token in ("gmail draft", "email draft", "draft email")):
+            explicit_channels.append("create_gmail_draft")
+        elif any(token in lowered for token in ("gmail", "email", "mail")):
             explicit_channels.append("send_gmail_message")
         if "slack" in lowered:
             explicit_channels.append("slack_send_message")
@@ -6363,6 +6405,8 @@ class LLMService:
             "search_update_google_sheets": "Persist status/results into sheet storage.",
             "file_write": "Store final payload locally for sync/audit.",
             "send_gmail_message": "Deliver final content through email.",
+            "create_gmail_draft": "Prepare an email draft without sending it.",
+            "add_gmail_label": "Mark an existing Gmail message with a label.",
             "telegram": "Deliver final content through Telegram.",
             "whatsapp": "Deliver final content through WhatsApp.",
             "slack_send_message": "Deliver final content through Slack.",
@@ -6839,6 +6883,8 @@ class LLMService:
             "create_google_docs": 10,
             "file_write": 10,
             "send_gmail_message": 11,
+            "create_gmail_draft": 11,
+            "add_gmail_label": 11,
             "telegram": 11,
             "whatsapp": 11,
             "slack_send_message": 11,
@@ -6879,6 +6925,8 @@ class LLMService:
         hard_required_map: dict[str, list[str]] = {
             "http_request": ["url", "method"],
             "send_gmail_message": ["credential_id", "to", "subject", "body"],
+            "create_gmail_draft": ["credential_id", "to", "subject", "body"],
+            "add_gmail_label": ["credential_id", "message_id", "label_name"],
             "telegram": ["credential_id", "message"],
             "whatsapp": ["credential_id", "to_number", "template_name"],
             "slack_send_message": ["credential_id", "message"],
@@ -7066,6 +7114,8 @@ class LLMService:
                 "max_characters",
             ),
             "send_gmail_message": ("to", "subject", "body", "is_html"),
+            "create_gmail_draft": ("to", "subject", "body"),
+            "add_gmail_label": ("message_id", "label_name", "credential_id"),
             "telegram": ("message", "parse_mode", "credential_id"),
             "whatsapp": ("to_number", "template_name", "template_params", "language_code"),
         }

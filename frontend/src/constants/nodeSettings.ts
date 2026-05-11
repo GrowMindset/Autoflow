@@ -39,6 +39,8 @@ export const NODE_SETTINGS_CONFIG: Record<string, NodeSettingsVisibility> = {
   gmail_send: { onError: true, retryOnFail: true, notes: true },
   get_gmail_message: { onError: true, retryOnFail: true, notes: true },
   send_gmail_message: { onError: true, retryOnFail: true, notes: true },
+  create_gmail_draft: { onError: true, retryOnFail: true, notes: true },
+  add_gmail_label: { onError: true, retryOnFail: true, notes: true },
   google_sheets_create: { onError: true, retryOnFail: true, notes: true },
   read_google_sheets: { onError: true, retryOnFail: true, notes: true },
   google_sheets_search_update: { onError: true, retryOnFail: true, notes: true },

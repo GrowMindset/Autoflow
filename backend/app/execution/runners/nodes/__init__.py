@@ -15,6 +15,8 @@ from .chat_model_openai import ChatModelOpenAIRunner
 from .chat_model_groq import ChatModelGroqRunner
 from .get_gmail_message import GetGmailMessageRunner
 from .send_gmail_message import SendGmailMessageRunner
+from .create_gmail_draft import CreateGmailDraftRunner
+from .add_gmail_label import AddGmailLabelRunner
 from .create_google_sheets import CreateGoogleSheetsRunner
 from .read_google_sheets import ReadGoogleSheetsRunner
 from .search_update_google_sheets import SearchUpdateGoogleSheetsRunner
@@ -52,6 +54,8 @@ __all__ = [
     "ChatModelGroqRunner",
     "GetGmailMessageRunner",
     "SendGmailMessageRunner",
+    "CreateGmailDraftRunner",
+    "AddGmailLabelRunner",
     "CreateGoogleSheetsRunner",
     "ReadGoogleSheetsRunner",
     "SearchUpdateGoogleSheetsRunner",

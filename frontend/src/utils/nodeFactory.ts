@@ -39,6 +39,7 @@ export const createNode = (type: string, position: XYPosition): WorkflowNode => 
       // Shallow copy the default config to prevent shared state between nodes
       config: { ...DEFAULT_NODE_SETTINGS, ...definition.default_config },
       is_dummy: definition.is_dummy,
+      color: definition.color,
     },
   };
 };

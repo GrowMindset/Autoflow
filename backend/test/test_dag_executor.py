@@ -4,6 +4,8 @@ from unittest.mock import patch
 from app.execution.dag_executor import DagExecutor, NodeExecutionError
 from app.execution.registry import RunnerRegistry
 from app.execution.runners.nodes.ai_agent import AIAgentRunner
+from app.execution.runners.nodes.add_gmail_label import AddGmailLabelRunner
+from app.execution.runners.nodes.create_gmail_draft import CreateGmailDraftRunner
 from app.execution.runners.nodes.delay import DelayRunner
 from app.execution.runners.nodes.dummy import DummyNodeRunner
 from app.execution.runners.nodes.merge import MergeRunner
@@ -105,6 +107,11 @@ class DagExecutorTests(unittest.TestCase):
 
         runner = _SafeRegistry().get_runner("send_gmail_message")
         self.assertIsInstance(runner, _SentinelRunner)
+
+    def test_runner_registry_registers_new_gmail_runners(self):
+        registry = RunnerRegistry()
+        self.assertIsInstance(registry.get_runner("create_gmail_draft"), CreateGmailDraftRunner)
+        self.assertIsInstance(registry.get_runner("add_gmail_label"), AddGmailLabelRunner)
 
     def test_runner_registry_can_force_legacy_dummy_node_via_env(self):
         with patch.dict(

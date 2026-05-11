@@ -73,6 +73,17 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "image": "",
         "is_html": False,
     },
+    "create_gmail_draft": {
+        "credential_id": "",
+        "to": "",
+        "subject": "",
+        "body": "",
+    },
+    "add_gmail_label": {
+        "credential_id": "",
+        "message_id": "",
+        "label_name": "",
+    },
     "create_google_sheets": {
         "credential_id": "",
         "title": "",

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import re
 from email.message import EmailMessage
 from email.utils import parseaddr
@@ -14,11 +13,9 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from .google_oauth_utils import build_google_user_credentials, is_google_oauth_credential
+from .gmail_common import GMAIL_SEND_SCOPES, extract_google_error, resolve_gmail_credential_data
 
 
-GMAIL_SEND_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.send",
-]
 EMAIL_PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*.+?\s*\}\}")
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 EMAIL_LIKE_DICT_KEYS = (
@@ -41,7 +38,7 @@ class SendGmailMessageRunner:
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         context = context or {}
-        credential_data = self._resolve_credential_data(config, context)
+        credential_data = resolve_gmail_credential_data(config, context, integration_name="Gmail Send")
 
         to_list = self._split_and_validate_emails(config.get("to"), field_name="to")
         cc_list = self._split_and_validate_emails(config.get("cc"), field_name="cc")
@@ -91,10 +88,11 @@ class SendGmailMessageRunner:
                 "Gmail Send: selected credential is not Google OAuth. Reconnect using Google OAuth."
             )
 
-        self._send_via_gmail_api(
+        api_response = self._send_via_gmail_api(
             credential_data=credential_data,
             message=message,
         )
+        message_id = str(api_response.get("id") or "").strip()
 
         result: dict[str, Any] = {}
         if isinstance(input_data, dict):
@@ -109,6 +107,8 @@ class SendGmailMessageRunner:
                 "gmail_subject": subject,
                 "gmail_is_html": is_html,
                 "gmail_attached_image": bool(image),
+                "message_id": message_id,
+                "gmail_message_id": message_id,
             }
         )
         return result
@@ -118,7 +118,7 @@ class SendGmailMessageRunner:
         *,
         credential_data: dict[str, Any],
         message: EmailMessage,
-    ) -> None:
+    ) -> dict[str, Any]:
         credentials = build_google_user_credentials(
             credential_data=credential_data,
             required_scopes=GMAIL_SEND_SCOPES,
@@ -127,18 +127,19 @@ class SendGmailMessageRunner:
         service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
         try:
-            (
+            response = (
                 service.users()
                 .messages()
                 .send(userId="me", body={"raw": raw})
                 .execute()
             )
+            return response if isinstance(response, dict) else {}
         except RefreshError as exc:
             raise ValueError(
                 "Gmail Send: OAuth token refresh failed. Reconnect Google OAuth credential."
             ) from exc
         except HttpError as exc:
-            google_error = self._extract_google_error(exc)
+            google_error = extract_google_error(exc)
             if "invalid to header" in google_error.lower():
                 raise ValueError(
                     "Gmail Send: Invalid recipient in 'to'. "
@@ -240,24 +241,6 @@ class SendGmailMessageRunner:
         return bool(EMAIL_PATTERN.match(value))
 
     @staticmethod
-    def _extract_google_error(exc: HttpError) -> str:
-        try:
-            raw = exc.content.decode("utf-8", "ignore")
-            payload = json.loads(raw)
-            if isinstance(payload, dict):
-                err = payload.get("error")
-                if isinstance(err, dict):
-                    message = str(err.get("message") or "").strip()
-                    status = str(err.get("status") or "").strip()
-                    if message and status:
-                        return f"{status}: {message}"
-                    if message:
-                        return message
-            return raw or str(exc)
-        except Exception:
-            return str(exc)
-
-    @staticmethod
     def _decode_image(value: str) -> tuple[bytes, str]:
         raw = str(value or "").strip()
         mime_type = "image/png"
@@ -274,17 +257,3 @@ class SendGmailMessageRunner:
             ) from exc
         subtype = mime_type.split("/", 1)[1] if "/" in mime_type else "png"
         return image_bytes, subtype
-
-    @staticmethod
-    def _resolve_credential_data(config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        cred_id = config.get("credential_id")
-        if not cred_id:
-            raise ValueError("Gmail Send: 'credential_id' is required.")
-
-        all_credential_data: dict[str, Any] = context.get("resolved_credential_data") or {}
-        raw_data = all_credential_data.get(str(cred_id))
-        if not isinstance(raw_data, dict):
-            raise ValueError(
-                "Gmail Send: Credential data not found. Save a Gmail credential and select it in this node."
-            )
-        return raw_data

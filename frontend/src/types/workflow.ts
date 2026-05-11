@@ -8,6 +8,7 @@ export interface WorkflowNodeData {
   is_active?: boolean;
   onToggleActive?: (nodeId: string) => void;
   is_dummy?: boolean;
+  color?: string;
   last_output?: any;
   status?: 'PENDING' | 'QUEUED' | 'WAITING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'SKIPPED' | string;
   last_execution_result?: any;

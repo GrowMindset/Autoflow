@@ -7,7 +7,7 @@ import { WorkflowNode } from '../../types/workflow';
 
 const OAUTH_APPS = ['gmail', 'sheets', 'docs', 'linkedin'] as const;
 const OAUTH_NODE_USAGE: Record<string, string[]> = {
-  gmail: ['Get Gmail Message', 'Send Gmail Message'],
+  gmail: ['Get Gmail Message', 'Send Gmail Message', 'Create Gmail Draft', 'Add Gmail Label'],
   sheets: ['Create Google Sheets', 'Read Google Sheets', 'Search/Update Google Sheets'],
   docs: ['Create Google Docs', 'Update Google Docs'],
   linkedin: ['LinkedIn Post'],
@@ -579,6 +579,29 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
       imageTemplateHints: true,
     },
     { key: 'is_html', label: 'Send As HTML', type: 'boolean' },
+  ],
+  create_gmail_draft: [
+    {
+      key: 'credential_id',
+      label: 'Gmail Credential',
+      type: 'credential_selector',
+      appName: 'gmail',
+      helperText: 'OAuth only: connect Gmail in Credential Manager, then select it here.',
+    },
+    { key: 'to', label: 'Recipient Email', type: 'text', placeholder: 'e.g. user@example.com or {{form.email}}' },
+    { key: 'subject', label: 'Subject', type: 'text', placeholder: 'e.g. Draft subject' },
+    { key: 'body', label: 'Draft Body', type: 'textarea', placeholder: 'Type your draft body here...' },
+  ],
+  add_gmail_label: [
+    {
+      key: 'credential_id',
+      label: 'Gmail Credential',
+      type: 'credential_selector',
+      appName: 'gmail',
+      helperText: 'OAuth only: connect Gmail in Credential Manager, then select it here.',
+    },
+    { key: 'message_id', label: 'Message ID', type: 'text', placeholder: 'e.g. {{send_gmail_node.message_id}}' },
+    { key: 'label_name', label: 'Label Name', type: 'text', placeholder: 'e.g. Autoflow/Processed' },
   ],
   create_google_sheets: [
     {

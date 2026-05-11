@@ -309,7 +309,7 @@ class WorkflowService:
                 config.pop("bot_token", None)
                 config.pop("chat_id", None)
                 node_copy["config"] = config
-            if node_copy.get("type") in {"get_gmail_message", "send_gmail_message"} and isinstance(node_copy.get("config"), dict):
+            if node_copy.get("type") in {"get_gmail_message", "send_gmail_message", "create_gmail_draft", "add_gmail_label"} and isinstance(node_copy.get("config"), dict):
                 config = dict(node_copy["config"])
                 config.pop("app_password", None)
                 config.pop("password", None)
