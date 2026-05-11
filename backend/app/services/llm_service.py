@@ -539,6 +539,11 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "description": "Starts from a form submission. Include form_title, form_description, and a non-empty fields array.",
         "rules": [
             "Each field object should include name, label, type, and required.",
+            "Supported field.type values: text, email, number, textarea, select, radio, checkbox, date, time, datetime, url, phone, rating, checkbox_group.",
+            "select, radio, and checkbox_group fields require options: [{label: string, value: string}] with at least one option.",
+            "select and radio submit one selected string value; checkbox submits a boolean; checkbox_group submits an array of selected value strings.",
+            "date submits YYYY-MM-DD, time submits HH:MM, datetime submits an ISO 8601 string, url submits a URL string, phone submits a phone string, and rating submits an integer from 1 to max_stars.",
+            "Optional extras by type: select placeholder; radio layout inline/stacked; checkbox default_checked; date min_date/max_date; time min_time/max_time; datetime min_datetime/max_datetime; phone default_country_code; rating max_stars; checkbox_group options only.",
         ],
     },
     "webhook_trigger": {
@@ -8417,32 +8422,69 @@ class LLMService:
             }
 
         lowered = prompt.lower()
-        field_catalog: list[tuple[str, str, str]] = [
-            ("name", "Full Name", "text"),
-            ("email", "Email", "email"),
-            ("phone", "Phone", "text"),
-            ("company", "Company", "text"),
-            ("message", "Message", "textarea"),
-            ("title", "Title", "text"),
+        field_catalog: list[dict[str, Any]] = [
+            {"name": "name", "label": "Full Name", "type": "text"},
+            {"name": "email", "label": "Email", "type": "email"},
+            {"name": "age", "label": "Age", "type": "number"},
+            {"name": "phone", "label": "Phone", "type": "phone", "default_country_code": "+91"},
+            {"name": "website", "label": "Website", "type": "url"},
+            {"name": "company", "label": "Company", "type": "text"},
+            {"name": "message", "label": "Message", "type": "textarea"},
+            {"name": "title", "label": "Title", "type": "text"},
+            {"name": "date_of_birth", "label": "Date of Birth", "type": "date"},
+            {"name": "appointment_date", "label": "Appointment Date", "type": "date"},
+            {"name": "meeting_time", "label": "Meeting Time", "type": "time"},
+            {"name": "scheduled_at", "label": "Scheduled At", "type": "datetime"},
+            {"name": "subscribed", "label": "Subscribed", "type": "checkbox"},
+            {"name": "satisfaction", "label": "Satisfaction", "type": "rating", "max_stars": 5},
+            {
+                "name": "contact_method",
+                "label": "Contact Method",
+                "type": "radio",
+                "layout": "stacked",
+                "options": [
+                    {"label": "Email", "value": "email"},
+                    {"label": "Phone", "value": "phone"},
+                ],
+            },
+            {
+                "name": "affected_platforms",
+                "label": "Affected Platforms",
+                "type": "checkbox_group",
+                "options": [
+                    {"label": "Gmail", "value": "gmail"},
+                    {"label": "Google Sheets", "value": "sheets"},
+                    {"label": "Telegram", "value": "telegram"},
+                ],
+            },
         ]
         keyword_aliases: dict[str, tuple[str, ...]] = {
             "name": ("name", "full name"),
             "email": ("email", "e-mail"),
+            "age": ("age",),
             "phone": ("phone", "mobile", "contact number", "whatsapp number"),
+            "website": ("website", "url", "site"),
             "company": ("company", "organization"),
             "message": ("message", "feedback", "comment", "query", "question"),
             "title": ("title", "subject"),
+            "date_of_birth": ("date of birth", "dob", "birth date", "birthday"),
+            "appointment_date": ("appointment date", "booking date", "visit date"),
+            "meeting_time": ("meeting time", "appointment time", "current time", "time"),
+            "scheduled_at": ("scheduled at", "date and time", "datetime", "schedule time"),
+            "subscribed": ("subscribe", "subscribed", "newsletter", "opt in", "opt-in"),
+            "satisfaction": ("rating", "satisfaction", "stars", "score"),
+            "contact_method": ("contact method", "preferred contact", "reach by"),
+            "affected_platforms": ("affected platforms", "platforms", "apps", "applications", "services affected"),
         }
 
         inferred_fields: list[dict[str, Any]] = []
-        for field_name, field_label, field_type in field_catalog:
+        for field_config in field_catalog:
+            field_name = str(field_config.get("name") or "").strip()
             aliases = keyword_aliases.get(field_name, (field_name,))
             if any(alias in lowered for alias in aliases):
                 inferred_fields.append(
                     {
-                        "name": field_name,
-                        "label": field_label,
-                        "type": field_type,
+                        **deepcopy(field_config),
                         "required": field_name in {"name", "email"},
                     }
                 )

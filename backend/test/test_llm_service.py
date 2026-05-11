@@ -662,6 +662,38 @@ class LLMServiceTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertTrue({"name", "email", "phone"}.issubset(field_names))
 
+    def test_generation_prompt_lists_expanded_form_field_types(self) -> None:
+        system_prompt = LLMService.build_workflow_generation_system_prompt()
+
+        self.assertIn("checkbox_group", system_prompt)
+        self.assertIn("select, radio, and checkbox_group fields require options", system_prompt)
+        self.assertIn("checkbox_group submits an array", system_prompt)
+
+    def test_validate_generated_workflow_infers_checkbox_group_form_field(self) -> None:
+        payload = _valid_definition()
+        payload["nodes"][0]["type"] = "manual_trigger"
+        payload["nodes"][0]["config"] = {}
+
+        definition, _ = LLMService.validate_generated_workflow(
+            json.dumps(payload),
+            user_prompt="When a user submits affected platforms in a form, send Telegram message",
+        )
+
+        self.assertEqual(definition.nodes[0].type, "form_trigger")
+        fields = definition.nodes[0].config.get("fields") or []
+        affected_field = next(
+            (
+                item
+                for item in fields
+                if isinstance(item, dict)
+                and str(item.get("name") or "").strip() == "affected_platforms"
+            ),
+            None,
+        )
+        self.assertIsNotNone(affected_field)
+        self.assertEqual(affected_field["type"], "checkbox_group")
+        self.assertGreaterEqual(len(affected_field.get("options") or []), 1)
+
     def test_validate_generated_workflow_prefers_groq_chat_model_when_prompt_mentions_groq(self) -> None:
         payload = _definition_for_prompt_kind("manual_ai_agent_openai")
 
