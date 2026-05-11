@@ -24,10 +24,23 @@ export interface WorkflowPublicRunUrl {
 }
 
 export interface PublicFormField {
+  id?: string;
   name: string;
   label: string;
   type: string;
   required: boolean;
+  placeholder?: string;
+  options?: Array<{ label: string; value: string }>;
+  layout?: 'inline' | 'stacked';
+  default_checked?: boolean;
+  min_date?: string;
+  max_date?: string;
+  min_time?: string;
+  max_time?: string;
+  min_datetime?: string;
+  max_datetime?: string;
+  default_country_code?: string;
+  max_stars?: number;
 }
 
 export interface PublicFormDefinition {

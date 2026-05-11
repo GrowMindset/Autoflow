@@ -28,6 +28,13 @@ import { useTheme } from '../../context/ThemeContext';
 import { Play, Square, LayoutGrid, Sparkles, Search, Undo2, Redo2, Loader2, Plus } from 'lucide-react';
 import { formatDateTimeInAppTimezone } from '../../utils/dateTime';
 import { toUserFriendlyErrorMessage } from '../../utils/errorMessages';
+import {
+  FormErrors,
+  FormFieldRenderer,
+  FormValues,
+  readFormValuesFromElement,
+  validateFormValues,
+} from '../forms/FormFieldRenderer';
 
 const nodeTypes = {
   trigger: BaseNode,
@@ -843,7 +850,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [menuVisible]);
 
   const [showTriggerForm, setShowTriggerForm] = useState(false);
-  const [triggerFormData, setTriggerFormData] = useState<Record<string, string>>({});
+  const [triggerFormData, setTriggerFormData] = useState<FormValues>({});
+  const [triggerFormErrors, setTriggerFormErrors] = useState<FormErrors>({});
   const [triggerNode, setTriggerNode] = useState<WorkflowNode | null>(null);
   const [showRunFlowSelector, setShowRunFlowSelector] = useState(false);
   const [runFlowOptions, setRunFlowOptions] = useState<WorkflowNode[]>([]);
@@ -2963,6 +2971,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                         onClick={() => {
                           setShowTriggerForm(false);
                           setTriggerFormData({});
+                          setTriggerFormErrors({});
                           setTriggerNode(null);
                         }}
                         className="p-2 hover:bg-slate-100 rounded-xl transition-colors text-slate-400 hover:text-slate-600"
@@ -2978,19 +2987,29 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                           toast.error(WORKFLOW_INACTIVE_ERROR_MESSAGE);
                           return;
                         }
+                        const formFields = Array.isArray(triggerNode.data.config?.fields) ? triggerNode.data.config.fields : [];
+                        const submittedValues = readFormValuesFromElement(e.currentTarget as HTMLFormElement, formFields, triggerFormData);
+                        setTriggerFormData(submittedValues);
+                        const validationErrors = validateFormValues(formFields, submittedValues);
+                        setTriggerFormErrors(validationErrors);
+                        if (Object.keys(validationErrors).length > 0) {
+                          toast.error('Please fix the highlighted fields.');
+                          return;
+                        }
                         const runtimeLoopOverride = resolveRuntimeLoopOverride();
                         if (runtimeLoopOverride === 'cancelled') {
                           return;
                         }
                         try {
                           const enqueue = await executionService.runWorkflowForm(workflowId, {
-                            form_data: triggerFormData,
+                            form_data: submittedValues,
                             start_node_id: triggerNode.id,
                             loop_control_override: runtimeLoopOverride || undefined,
                           });
                           toast.success('Workflow execution started!');
                           setShowTriggerForm(false);
                           setTriggerFormData({});
+                          setTriggerFormErrors({});
                           setTriggerNode(null);
                           beginExecutionTracking(enqueue.execution_id);
                         } catch (error) {
@@ -3005,39 +3024,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                       className="space-y-6"
                     >
                       {Array.isArray(triggerNode.data.config?.fields) && triggerNode.data.config.fields.length > 0 ? (
-                        triggerNode.data.config.fields.map((field: any, index: number) => {
-                          const fieldName = field?.name || `field_${index + 1}`;
-                          const label = field?.label || fieldName;
-                          const inputType = field?.type === 'textarea' ? 'textarea' : (field?.type || 'text');
-                          const value = triggerFormData[fieldName] ?? '';
-
-                          return (
-                            <div key={`${fieldName}_${index}`} className="space-y-2">
-                              <label className="text-sm font-bold text-slate-700">
-                                {label}
-                                {field?.required ? ' *' : ''}
-                              </label>
-                              {inputType === 'textarea' ? (
-                                <textarea
-                                  value={value}
-                                  required={Boolean(field?.required)}
-                                  onChange={(e) => setTriggerFormData(prev => ({ ...prev, [fieldName]: e.target.value }))}
-                                  className="w-full min-h-[100px] rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:bg-white"
-                                  placeholder={`Enter ${label.toLowerCase()}`}
-                                />
-                              ) : (
-                                <input
-                                  type={inputType}
-                                  value={value}
-                                  required={Boolean(field?.required)}
-                                  onChange={(e) => setTriggerFormData(prev => ({ ...prev, [fieldName]: e.target.value }))}
-                                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:bg-white"
-                                  placeholder={`Enter ${label.toLowerCase()}`}
-                                />
-                              )}
-                            </div>
-                          );
-                        })
+                        <FormFieldRenderer
+                          fields={triggerNode.data.config.fields}
+                          values={triggerFormData}
+                          errors={triggerFormErrors}
+                          onChange={(key, value) => {
+                            setTriggerFormData(prev => ({ ...prev, [key]: value }));
+                            setTriggerFormErrors(prev => ({ ...prev, [key]: '' }));
+                          }}
+                        />
                       ) : (
                         <div className="text-center py-8 text-slate-500">
                           <p>No form fields configured. Add fields in the trigger node configuration.</p>
@@ -3050,6 +3045,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                           onClick={() => {
                             setShowTriggerForm(false);
                             setTriggerFormData({});
+                            setTriggerFormErrors({});
                             setTriggerNode(null);
                           }}
                           className="px-6 py-2.5 text-sm font-bold text-slate-600 hover:text-slate-800 transition-colors"

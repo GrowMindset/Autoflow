@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.form_fields import normalize_form_field_config
+
 
 NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
     "manual_trigger": {},
@@ -735,6 +737,16 @@ class WorkflowNodeDefinition(BaseModel):
 
         if self.type == "filter":
             self.config = _normalize_filter_config(self.config)
+
+        if self.type == "form_trigger":
+            raw_fields = self.config.get("fields", [])
+            normalized_fields: list[dict[str, Any]] = []
+            if isinstance(raw_fields, list):
+                for index, raw_field in enumerate(raw_fields):
+                    field = normalize_form_field_config(raw_field, index=index)
+                    if field is not None:
+                        normalized_fields.append(field)
+            self.config["fields"] = normalized_fields
 
         return self
 

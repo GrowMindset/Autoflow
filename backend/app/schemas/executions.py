@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 ExecutionStatus = Literal[
@@ -80,6 +80,8 @@ class WebhookEnqueueResponse(BaseModel):
 
 
 class PublicFormField(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     name: str
     label: str
     type: str

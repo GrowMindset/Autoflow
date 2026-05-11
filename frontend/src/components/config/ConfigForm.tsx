@@ -1067,6 +1067,57 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
   ]
 };
 
+const FORM_FIELD_TYPES = [
+  'text',
+  'email',
+  'number',
+  'textarea',
+  'select',
+  'radio',
+  'checkbox',
+  'checkbox_group',
+  'date',
+  'time',
+  'datetime',
+  'url',
+  'phone',
+  'rating',
+] as const;
+
+const buildFormFieldForType = (fieldDef: any, type: string) => {
+  const base: Record<string, any> = {
+    name: fieldDef.name || '',
+    label: fieldDef.label || '',
+    type,
+    required: Boolean(fieldDef.required),
+  };
+  if (fieldDef.placeholder && ['text', 'email', 'number', 'textarea', 'select'].includes(type)) {
+    base.placeholder = fieldDef.placeholder;
+  }
+  if (type === 'select' || type === 'radio' || type === 'checkbox_group') {
+    base.options = Array.isArray(fieldDef.options) && fieldDef.options.length > 0
+      ? fieldDef.options
+      : [{ label: 'Option 1', value: 'option_1' }];
+  }
+  if (type === 'radio') base.layout = fieldDef.layout === 'inline' ? 'inline' : 'stacked';
+  if (type === 'checkbox') base.default_checked = Boolean(fieldDef.default_checked);
+  if (type === 'date') {
+    if (fieldDef.min_date) base.min_date = fieldDef.min_date;
+    if (fieldDef.max_date) base.max_date = fieldDef.max_date;
+  }
+  if (type === 'time') {
+    if (fieldDef.min_time) base.min_time = fieldDef.min_time;
+    if (fieldDef.max_time) base.max_time = fieldDef.max_time;
+  }
+  if (type === 'datetime') {
+    if (fieldDef.min_datetime) base.min_datetime = fieldDef.min_datetime;
+    if (fieldDef.max_datetime) base.max_datetime = fieldDef.max_datetime;
+  }
+  if (type === 'phone' && fieldDef.default_country_code) base.default_country_code = fieldDef.default_country_code;
+  if (type === 'rating') base.max_stars = [3, 4, 5].includes(Number(fieldDef.max_stars)) ? Number(fieldDef.max_stars) : 5;
+  return base;
+};
+
 
 interface ConfigFormProps {
   nodeType: string;
@@ -2444,74 +2495,239 @@ const ConfigForm: React.FC<ConfigFormProps> = ({
 
       case 'form_fields':
         const formFields = Array.isArray(value) ? value : [];
+        const updateFormField = (idx: number, patch: Record<string, any>) => {
+          const next = [...formFields];
+          next[idx] = { ...next[idx], ...patch };
+          onChange(field.key, next);
+        };
+        const updateFormOption = (fieldIdx: number, optionIdx: number, patch: Record<string, any>) => {
+          const next = [...formFields];
+          const options = Array.isArray(next[fieldIdx]?.options) ? [...next[fieldIdx].options] : [];
+          options[optionIdx] = { ...options[optionIdx], ...patch };
+          next[fieldIdx] = { ...next[fieldIdx], options };
+          onChange(field.key, next);
+        };
+        const moveFormOption = (fieldIdx: number, fromIdx: number, toIdx: number) => {
+          if (fromIdx === toIdx) return;
+          const next = [...formFields];
+          const options = Array.isArray(next[fieldIdx]?.options) ? [...next[fieldIdx].options] : [];
+          const [moved] = options.splice(fromIdx, 1);
+          if (!moved) return;
+          options.splice(toIdx, 0, moved);
+          next[fieldIdx] = { ...next[fieldIdx], options };
+          onChange(field.key, next);
+        };
         return (
           <div className="space-y-3">
-            {formFields.map((fieldDef: any, idx: number) => (
-              <div key={idx} className="p-3 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-xl space-y-3 relative transition-colors">
-                <button
-                  onClick={() => {
-                    const next = [...formFields];
-                    next.splice(idx, 1);
-                    onChange(field.key, next);
-                  }}
-                  className="absolute top-2 right-2 text-slate-300 dark:text-slate-700 hover:text-red-500 dark:hover:text-red-400 transition-colors"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
-                </button>
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="text"
-                    placeholder="Field name"
-                    value={fieldDef.name || ''}
-                    onChange={(e) => {
+            {formFields.map((fieldDef: any, idx: number) => {
+              const fieldType = (FORM_FIELD_TYPES as readonly string[]).includes(fieldDef.type) ? fieldDef.type : 'text';
+              const options = Array.isArray(fieldDef.options) ? fieldDef.options : [];
+              return (
+                <div key={idx} className="p-3 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-xl space-y-3 relative transition-colors">
+                  <button
+                    onClick={() => {
                       const next = [...formFields];
-                      next[idx] = { ...fieldDef, name: e.target.value };
+                      next.splice(idx, 1);
                       onChange(field.key, next);
                     }}
-                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Label"
-                    value={fieldDef.label || ''}
-                    onChange={(e) => {
-                      const next = [...formFields];
-                      next[idx] = { ...fieldDef, label: e.target.value };
-                      onChange(field.key, next);
-                    }}
-                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <select
-                    value={fieldDef.type || 'text'}
-                    onChange={(e) => {
-                      const next = [...formFields];
-                      next[idx] = { ...fieldDef, type: e.target.value };
-                      onChange(field.key, next);
-                    }}
-                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400"
+                    className="absolute top-2 right-2 text-slate-300 dark:text-slate-700 hover:text-red-500 dark:hover:text-red-400 transition-colors"
                   >
-                    <option value="text">text</option>
-                    <option value="email">email</option>
-                    <option value="number">number</option>
-                    <option value="textarea">textarea</option>
-                  </select>
-                  <label className="flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-600 dark:text-slate-400">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                  </button>
+                  <div className="grid grid-cols-2 gap-2">
                     <input
-                      type="checkbox"
-                      checked={Boolean(fieldDef.required)}
+                      type="text"
+                      placeholder="Field name"
+                      value={fieldDef.name || ''}
+                      onChange={(e) => updateFormField(idx, { name: e.target.value })}
+                      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Label"
+                      value={fieldDef.label || ''}
+                      onChange={(e) => updateFormField(idx, { label: e.target.value })}
+                      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <select
+                      value={fieldType}
                       onChange={(e) => {
                         const next = [...formFields];
-                        next[idx] = { ...fieldDef, required: e.target.checked };
+                        next[idx] = buildFormFieldForType(fieldDef, e.target.value);
                         onChange(field.key, next);
                       }}
+                      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400"
+                    >
+                      {FORM_FIELD_TYPES.map((type) => (
+                        <option key={type} value={type}>{type}</option>
+                      ))}
+                    </select>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-600 dark:text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(fieldDef.required)}
+                        onChange={(e) => updateFormField(idx, { required: e.target.checked })}
+                      />
+                      Required
+                    </label>
+                  </div>
+
+                  {['text', 'email', 'number', 'textarea', 'select'].includes(fieldType) && (
+                    <input
+                      type="text"
+                      placeholder="Placeholder"
+                      value={fieldDef.placeholder || ''}
+                      onChange={(e) => updateFormField(idx, { placeholder: e.target.value })}
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
                     />
-                    Required
-                  </label>
+                  )}
+
+                  {(fieldType === 'select' || fieldType === 'radio' || fieldType === 'checkbox_group') && (
+                    <div className="space-y-2">
+                      {fieldType === 'radio' && (
+                        <div className="grid grid-cols-2 gap-2">
+                          {['inline', 'stacked'].map((layout) => (
+                            <button
+                              key={layout}
+                              type="button"
+                              onClick={() => updateFormField(idx, { layout })}
+                              className={`rounded-lg border px-3 py-1.5 text-xs font-bold transition-colors ${fieldDef.layout === layout || (!fieldDef.layout && layout === 'stacked')
+                                ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-300'
+                                : 'border-slate-200 bg-white text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400'
+                              }`}
+                            >
+                              {layout}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <div className="space-y-2">
+                        {options.map((option: any, optionIdx: number) => (
+                          <div
+                            key={optionIdx}
+                            draggable
+                            onDragStart={(e) => e.dataTransfer.setData('text/plain', String(optionIdx))}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              moveFormOption(idx, Number(e.dataTransfer.getData('text/plain')), optionIdx);
+                            }}
+                            className="grid grid-cols-[18px_1fr_1fr_24px] items-center gap-2"
+                          >
+                            <span className="cursor-grab text-slate-300 dark:text-slate-600">::</span>
+                            <input
+                              type="text"
+                              placeholder="Label"
+                              value={option.label || ''}
+                              onChange={(e) => updateFormOption(idx, optionIdx, { label: e.target.value })}
+                              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Value"
+                              value={option.value || ''}
+                              onChange={(e) => updateFormOption(idx, optionIdx, { value: e.target.value })}
+                              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = [...formFields];
+                                const nextOptions = options.filter((_: any, removeIdx: number) => removeIdx !== optionIdx);
+                                next[idx] = { ...fieldDef, options: nextOptions.length ? nextOptions : [{ label: 'Option 1', value: 'option_1' }] };
+                                onChange(field.key, next);
+                              }}
+                              className="text-slate-300 hover:text-red-500 dark:text-slate-700"
+                            >
+                              x
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => updateFormField(idx, { options: [...options, { label: `Option ${options.length + 1}`, value: `option_${options.length + 1}` }] })}
+                        className="w-full rounded-lg border border-dashed border-slate-200 py-1.5 text-xs font-bold text-slate-400 hover:border-blue-300 hover:text-blue-500 dark:border-slate-700"
+                      >
+                        Add option
+                      </button>
+                    </div>
+                  )}
+
+                  {fieldType === 'checkbox' && (
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-600 dark:text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(fieldDef.default_checked)}
+                        onChange={(e) => updateFormField(idx, { default_checked: e.target.checked })}
+                      />
+                      Default checked
+                    </label>
+                  )}
+
+                  {fieldType === 'date' && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Min date</span>
+                        <input type="date" value={fieldDef.min_date || ''} onChange={(e) => updateFormField(idx, { min_date: e.target.value })} className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400" />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Max date</span>
+                        <input type="date" value={fieldDef.max_date || ''} onChange={(e) => updateFormField(idx, { max_date: e.target.value })} className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400" />
+                      </label>
+                    </div>
+                  )}
+
+                  {fieldType === 'time' && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Min time</span>
+                        <input type="time" value={fieldDef.min_time || ''} onChange={(e) => updateFormField(idx, { min_time: e.target.value })} className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400" />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Max time</span>
+                        <input type="time" value={fieldDef.max_time || ''} onChange={(e) => updateFormField(idx, { max_time: e.target.value })} className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400" />
+                      </label>
+                    </div>
+                  )}
+
+                  {fieldType === 'datetime' && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Min datetime</span>
+                        <input type="datetime-local" value={fieldDef.min_datetime || ''} onChange={(e) => updateFormField(idx, { min_datetime: e.target.value })} className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400" />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Max datetime</span>
+                        <input type="datetime-local" value={fieldDef.max_datetime || ''} onChange={(e) => updateFormField(idx, { max_datetime: e.target.value })} className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400" />
+                      </label>
+                    </div>
+                  )}
+
+                  {fieldType === 'phone' && (
+                    <input
+                      type="text"
+                      placeholder="Default country code, e.g. +91"
+                      value={fieldDef.default_country_code || ''}
+                      onChange={(e) => updateFormField(idx, { default_country_code: e.target.value })}
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-slate-300 dark:placeholder:text-slate-700 transition-all"
+                    />
+                  )}
+
+                  {fieldType === 'rating' && (
+                    <select
+                      value={Number(fieldDef.max_stars || 5)}
+                      onChange={(e) => updateFormField(idx, { max_stars: Number(e.target.value) })}
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:border-blue-500 dark:focus:border-blue-400"
+                    >
+                      {[3, 4, 5].map((count) => <option key={count} value={count}>{count} stars</option>)}
+                    </select>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
             <button
               onClick={() => onChange(field.key, [
                 ...formFields,

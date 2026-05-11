@@ -1627,6 +1627,127 @@ class RunnerTests(unittest.TestCase):
                 input_data={"notes": "hello"},
             )
 
+    def test_form_trigger_runner_validates_new_field_types(self):
+        runner = FormTriggerRunner()
+        result = runner.run(
+            config={
+                "fields": [
+                    {
+                        "name": "priority",
+                        "label": "Priority",
+                        "type": "select",
+                        "required": True,
+                        "options": [{"label": "High", "value": "high"}],
+                    },
+                    {
+                        "name": "contact_method",
+                        "label": "Contact Method",
+                        "type": "radio",
+                        "options": [{"label": "Email", "value": "email"}],
+                    },
+                    {"name": "subscribed", "label": "Subscribed", "type": "checkbox"},
+                    {"name": "appointment_date", "label": "Date", "type": "date"},
+                    {"name": "meeting_time", "label": "Time", "type": "time"},
+                    {"name": "scheduled_at", "label": "Scheduled", "type": "datetime"},
+                    {"name": "website", "label": "Website", "type": "url"},
+                    {"name": "contact", "label": "Contact", "type": "phone"},
+                    {"name": "satisfaction", "label": "Satisfaction", "type": "rating", "max_stars": 5},
+                ]
+            },
+            input_data={
+                "priority": "high",
+                "contact_method": "email",
+                "subscribed": True,
+                "appointment_date": "2026-05-15",
+                "meeting_time": "14:30",
+                "scheduled_at": "2026-05-15T14:30:00Z",
+                "website": "https://example.com",
+                "contact": "+919876543210",
+                "satisfaction": 4,
+            },
+        )
+        self.assertEqual(result["priority"], "high")
+        self.assertEqual(result["subscribed"], True)
+        self.assertEqual(result["satisfaction"], 4)
+
+    def test_form_trigger_runner_rejects_invalid_new_field_values(self):
+        runner = FormTriggerRunner()
+        invalid_cases = [
+            (
+                {"name": "priority", "label": "Priority", "type": "select", "options": [{"label": "High", "value": "high"}]},
+                {"priority": "low"},
+                "configured options",
+            ),
+            (
+                {"name": "subscribed", "label": "Subscribed", "type": "checkbox"},
+                {"subscribed": "true"},
+                "must be a boolean",
+            ),
+            (
+                {"name": "appointment_date", "label": "Date", "type": "date"},
+                {"appointment_date": "15-05-2026"},
+                "YYYY-MM-DD",
+            ),
+            (
+                {"name": "website", "label": "Website", "type": "url"},
+                {"website": "not-a-url"},
+                "valid URL",
+            ),
+            (
+                {"name": "satisfaction", "label": "Satisfaction", "type": "rating"},
+                {"satisfaction": 6},
+                "integer from 1 to 5",
+            ),
+        ]
+        for field, payload, message in invalid_cases:
+            with self.subTest(field=field["type"]):
+                with self.assertRaisesRegex(ValueError, message):
+                    runner.run(config={"fields": [field]}, input_data=payload)
+
+    def test_form_trigger_runner_accepts_checkbox_group(self):
+        runner = FormTriggerRunner()
+        result = runner.run(
+            config={
+                "fields": [
+                    {
+                        "name": "affected_platforms",
+                        "label": "Affected Platforms",
+                        "type": "checkbox_group",
+                        "required": True,
+                        "options": [
+                            {"label": "Gmail", "value": "gmail"},
+                            {"label": "Google Sheets", "value": "sheets"},
+                            {"label": "Telegram", "value": "telegram"},
+                        ],
+                    }
+                ]
+            },
+            input_data={"affected_platforms": ["gmail", "telegram"]},
+        )
+        self.assertEqual(result["affected_platforms"], ["gmail", "telegram"])
+
+    def test_form_trigger_runner_rejects_invalid_checkbox_group(self):
+        runner = FormTriggerRunner()
+        field = {
+            "name": "affected_platforms",
+            "label": "Affected Platforms",
+            "type": "checkbox_group",
+            "required": True,
+            "options": [
+                {"label": "Gmail", "value": "gmail"},
+                {"label": "Telegram", "value": "telegram"},
+            ],
+        }
+
+        with self.assertRaisesRegex(ValueError, "at least one selected option"):
+            runner.run(config={"fields": [field]}, input_data={"affected_platforms": []})
+
+        with self.assertRaisesRegex(ValueError, "must be a list"):
+            runner.run(config={"fields": [field]}, input_data={"affected_platforms": "gmail"})
+
+        with self.assertRaisesRegex(ValueError, "configured options"):
+            runner.run(config={"fields": [field]}, input_data={"affected_platforms": ["slack"]})
+
     def test_webhook_trigger_runner_sets_webhook_metadata(self):
         runner = WebhookTriggerRunner()
         result = runner.run(

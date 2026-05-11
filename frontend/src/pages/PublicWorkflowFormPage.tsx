@@ -2,13 +2,22 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { PublicFormDefinition, workflowService } from '../services/workflowService';
+import {
+  FormErrors,
+  FormFieldRenderer,
+  FormValues,
+  initializeFormValues,
+  readFormValuesFromElement,
+  validateFormValues,
+} from '../components/forms/FormFieldRenderer';
 
 const PublicWorkflowFormPage: React.FC = () => {
   const { pathToken } = useParams<{ pathToken: string }>();
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formDefinition, setFormDefinition] = useState<PublicFormDefinition | null>(null);
-  const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [formValues, setFormValues] = useState<FormValues>({});
+  const [formErrors, setFormErrors] = useState<FormErrors>({});
 
   useEffect(() => {
     const loadForm = async () => {
@@ -18,12 +27,8 @@ const PublicWorkflowFormPage: React.FC = () => {
         const payload = await workflowService.getPublicFormDefinition(pathToken);
         setFormDefinition(payload);
 
-        const initialValues: Record<string, string> = {};
-        payload.fields.forEach((field, index) => {
-          const key = field.name || `field_${index + 1}`;
-          initialValues[key] = '';
-        });
-        setFormValues(initialValues);
+        setFormValues(initializeFormValues(payload.fields));
+        setFormErrors({});
       } catch (error: any) {
         const message =
           error?.response?.data?.detail ||
@@ -43,17 +48,21 @@ const PublicWorkflowFormPage: React.FC = () => {
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!pathToken || !formDefinition) return;
+    const submittedValues = readFormValuesFromElement(event.currentTarget as HTMLFormElement, fields, formValues);
+    setFormValues(submittedValues);
+    const validationErrors = validateFormValues(fields, submittedValues);
+    setFormErrors(validationErrors);
+    if (Object.keys(validationErrors).length > 0) {
+      toast.error('Please fix the highlighted fields.');
+      return;
+    }
 
     setIsSubmitting(true);
     try {
-      await workflowService.submitPublicForm(pathToken, formValues);
+      await workflowService.submitPublicForm(pathToken, submittedValues);
       toast.success('Form submitted successfully.');
-      setFormValues((prev) =>
-        Object.keys(prev).reduce<Record<string, string>>((acc, key) => {
-          acc[key] = '';
-          return acc;
-        }, {})
-      );
+      setFormValues(initializeFormValues(fields));
+      setFormErrors({});
     } catch (error: any) {
       const message =
         error?.response?.data?.detail ||
@@ -116,37 +125,15 @@ const PublicWorkflowFormPage: React.FC = () => {
               No fields configured in this form.
             </div>
           ) : (
-            fields.map((field, index) => {
-              const fieldName = field.name || `field_${index + 1}`;
-              const label = field.label || fieldName;
-              const inputType = field.type === 'textarea' ? 'textarea' : (field.type || 'text');
-              const value = formValues[fieldName] ?? '';
-
-              return (
-                <div key={`${fieldName}_${index}`} className="space-y-2">
-                  <label className="block text-xs font-black uppercase tracking-widest text-slate-500">
-                    {label}
-                    {field.required ? ' *' : ''}
-                  </label>
-                  {inputType === 'textarea' ? (
-                    <textarea
-                      required={Boolean(field.required)}
-                      value={value}
-                      onChange={(e) => setFormValues((prev) => ({ ...prev, [fieldName]: e.target.value }))}
-                      className="min-h-[120px] w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-blue-500 focus:bg-white"
-                    />
-                  ) : (
-                    <input
-                      type={inputType}
-                      required={Boolean(field.required)}
-                      value={value}
-                      onChange={(e) => setFormValues((prev) => ({ ...prev, [fieldName]: e.target.value }))}
-                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-blue-500 focus:bg-white"
-                    />
-                  )}
-                </div>
-              );
-            })
+            <FormFieldRenderer
+              fields={fields}
+              values={formValues}
+              errors={formErrors}
+              onChange={(key, value) => {
+                setFormValues((prev) => ({ ...prev, [key]: value }));
+                setFormErrors((prev) => ({ ...prev, [key]: '' }));
+              }}
+            />
           )}
 
           <button

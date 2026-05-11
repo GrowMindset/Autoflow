@@ -3,13 +3,15 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { workflowService } from '../services/workflowService';
 import { executionService } from '../services/executionService';
-
-type FormField = {
-  name?: string;
-  label?: string;
-  type?: string;
-  required?: boolean;
-};
+import {
+  FormErrors,
+  FormField,
+  FormFieldRenderer,
+  FormValues,
+  initializeFormValues,
+  readFormValuesFromElement,
+  validateFormValues,
+} from '../components/forms/FormFieldRenderer';
 
 type WorkflowNode = {
   id: string;
@@ -68,7 +70,8 @@ const WorkflowFormPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [workflowName, setWorkflowName] = useState('Workflow Form');
   const [formNode, setFormNode] = useState<WorkflowNode | null>(null);
-  const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [formValues, setFormValues] = useState<FormValues>({});
+  const [formErrors, setFormErrors] = useState<FormErrors>({});
   const [isLoopWorkflow, setIsLoopWorkflow] = useState(false);
   const [loopControlDefaults, setLoopControlDefaults] = useState(DEFAULT_LOOP_CONTROL);
 
@@ -125,12 +128,8 @@ const WorkflowFormPage: React.FC = () => {
         const fields: FormField[] = Array.isArray(chosenNode.config?.fields)
           ? chosenNode.config?.fields
           : [];
-        const initialValues: Record<string, string> = {};
-        fields.forEach((field, idx) => {
-          const key = field?.name || `field_${idx + 1}`;
-          initialValues[key] = '';
-        });
-        setFormValues(initialValues);
+        setFormValues(initializeFormValues(fields));
+        setFormErrors({});
       } finally {
         setIsLoading(false);
       }
@@ -147,6 +146,14 @@ const WorkflowFormPage: React.FC = () => {
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!workflowId) return;
+    const submittedValues = readFormValuesFromElement(event.currentTarget as HTMLFormElement, formFields, formValues);
+    setFormValues(submittedValues);
+    const validationErrors = validateFormValues(formFields, submittedValues);
+    setFormErrors(validationErrors);
+    if (Object.keys(validationErrors).length > 0) {
+      toast.error('Please fix the highlighted fields.');
+      return;
+    }
 
     setIsSubmitting(true);
     try {
@@ -188,7 +195,7 @@ const WorkflowFormPage: React.FC = () => {
       }
 
       const enqueue = await executionService.runWorkflowForm(workflowId, {
-        form_data: formValues,
+        form_data: submittedValues,
         start_node_id: formNode.id,
         loop_control_override: runtimeLoopOverride,
       });
@@ -284,37 +291,15 @@ const WorkflowFormPage: React.FC = () => {
               No fields configured in this form trigger.
             </div>
           ) : (
-            formFields.map((field, index) => {
-              const fieldName = field?.name || `field_${index + 1}`;
-              const label = field?.label || fieldName;
-              const inputType = field?.type === 'textarea' ? 'textarea' : (field?.type || 'text');
-              const value = formValues[fieldName] ?? '';
-
-              return (
-                <div key={`${fieldName}_${index}`} className="space-y-2">
-                  <label className="block text-xs font-black uppercase tracking-widest text-slate-500">
-                    {label}
-                    {field?.required ? ' *' : ''}
-                  </label>
-                  {inputType === 'textarea' ? (
-                    <textarea
-                      required={Boolean(field?.required)}
-                      value={value}
-                      onChange={(e) => setFormValues((prev) => ({ ...prev, [fieldName]: e.target.value }))}
-                      className="min-h-[120px] w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-blue-500 focus:bg-white"
-                    />
-                  ) : (
-                    <input
-                      type={inputType}
-                      required={Boolean(field?.required)}
-                      value={value}
-                      onChange={(e) => setFormValues((prev) => ({ ...prev, [fieldName]: e.target.value }))}
-                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-blue-500 focus:bg-white"
-                    />
-                  )}
-                </div>
-              );
-            })
+            <FormFieldRenderer
+              fields={formFields}
+              values={formValues}
+              errors={formErrors}
+              onChange={(key, value) => {
+                setFormValues((prev) => ({ ...prev, [key]: value }));
+                setFormErrors((prev) => ({ ...prev, [key]: '' }));
+              }}
+            />
           )}
 
           <button

@@ -19,6 +19,7 @@ from app.models.user import User
 from app.models.webhook import WebhookEndpoint
 from app.models.workflows import Workflow
 from app.schemas.executions import ExecutionStatus, TriggeredBy
+from app.schemas.form_fields import FORM_FIELD_TYPES, normalize_form_field_config, validate_form_submission
 from app.services.workflow_service import PUBLISHED_RUN_NODE_ID
 from app.services.schedule_service import is_schedule_enabled, next_schedule_run_at
 from app.tasks.execute_workflow import run_execution, run_node_test
@@ -93,11 +94,22 @@ class ExecutionService:
             expected_types={"form_trigger"},
             preferred_node_id=start_node_id,
         )
+        form_node = next(
+            (
+                node
+                for node in workflow.definition.get("nodes", [])
+                if str(node.get("id") or "") == str(start_node_id)
+                and node.get("type") == "form_trigger"
+            ),
+            None,
+        )
+        form_config = form_node.get("config", {}) if isinstance(form_node, dict) else {}
+        validated_form_data = validate_form_submission(form_config.get("fields"), form_data)
         return await self._create_and_enqueue_execution(
             workflow=workflow,
             user=user,
             triggered_by="form",
-            initial_payload=form_data,
+            initial_payload=validated_form_data,
             start_node_id=start_node_id,
             loop_control_override=loop_control_override,
         )
@@ -341,7 +353,17 @@ class ExecutionService:
 
         await self._mark_stale_running_executions(user_id=user.id)
 
-        payload = dict(form_data or {})
+        form_node = next(
+            (
+                node
+                for node in workflow.definition.get("nodes", [])
+                if str(node.get("id") or "") == str(start_node_id)
+                and node.get("type") == "form_trigger"
+            ),
+            None,
+        )
+        form_config = form_node.get("config", {}) if isinstance(form_node, dict) else {}
+        payload = validate_form_submission(form_config.get("fields"), form_data)
         payload.setdefault("source", "public_form")
 
         return await self._create_and_enqueue_execution(
@@ -803,34 +825,23 @@ class ExecutionService:
 
         fields: list[dict[str, Any]] = []
         for index, raw_field in enumerate(raw_fields):
-            if not isinstance(raw_field, dict):
+            field = normalize_form_field_config(raw_field, index=index)
+            if field is None:
                 continue
-            name = str(raw_field.get("name") or f"field_{index + 1}").strip()
+            name = str(field.get("name") or field.get("id") or f"field_{index + 1}").strip()
             if not name:
                 continue
-            label = str(raw_field.get("label") or name).strip() or name
-            field_type = str(raw_field.get("type") or "text").strip().lower() or "text"
-            if field_type not in {
-                "text",
-                "email",
-                "number",
-                "password",
-                "url",
-                "tel",
-                "date",
-                "datetime-local",
-                "textarea",
-            }:
+            label = str(field.get("label") or name).strip() or name
+            field_type = str(field.get("type") or "text").strip().lower() or "text"
+            if field_type not in FORM_FIELD_TYPES:
                 field_type = "text"
 
-            fields.append(
-                {
-                    "name": name,
-                    "label": label,
-                    "type": field_type,
-                    "required": bool(raw_field.get("required")),
-                }
-            )
+            public_field = dict(field)
+            public_field["name"] = name
+            public_field["label"] = label
+            public_field["type"] = field_type
+            public_field["required"] = bool(field.get("required"))
+            fields.append(public_field)
         return fields
 
     @staticmethod
