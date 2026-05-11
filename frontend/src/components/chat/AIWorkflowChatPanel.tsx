@@ -57,10 +57,10 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const copyResetTimerRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const examplePrompts = interactionMode === 'ask' ? ASK_EXAMPLE_PROMPTS : BUILD_EXAMPLE_PROMPTS;
   const inputPlaceholder = interactionMode === 'ask'
-    ? 'Ask anything about Autoflow nodes, triggers, and parameters...'
+    ? 'Ask anything about Autoflow'
     : 'Describe the workflow you want to build...';
 
   useEffect(() => {
@@ -90,8 +90,11 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
 
   const handleSend = () => {
     if (!input.trim() || isLoading) return;
-    onSendMessage(input);
+    onSendMessage(input.trim());
     setInput('');
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
   };
 
   const handleExamplePromptClick = (prompt: string) => {
@@ -133,6 +136,16 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
       behavior: 'smooth',
     });
   };
+
+  const autoResizeInput = () => {
+    if (!inputRef.current) return;
+    inputRef.current.style.height = 'auto';
+    inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 180)}px`;
+  };
+
+  useEffect(() => {
+    autoResizeInput();
+  }, [input]);
 
   if (!isOpen) return null;
 
@@ -373,19 +386,24 @@ const AIWorkflowChatPanel: React.FC<AIWorkflowChatPanelProps> = ({
       {/* Input */}
       <div className="p-4 bg-white/90 dark:bg-slate-900/90 border-t border-slate-200/80 dark:border-slate-800 backdrop-blur">
         <div className="relative group">
-          <input
+          <textarea
             ref={inputRef}
-            type="text"
+            rows={1}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
             placeholder={inputPlaceholder}
-            className="w-full bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl py-3 pl-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-300 transition-all shadow-sm"
+            className="w-full resize-none overflow-y-auto bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl py-3 pl-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-300 transition-all shadow-sm min-h-[48px] max-h-[180px]"
           />
           <button
             onClick={isLoading ? onStopGeneration : handleSend}
             disabled={isLoading ? false : !input.trim()}
-            className={`absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-xl transition-all ${
+            className={`absolute right-2 bottom-2 p-2 rounded-xl transition-all ${
               isLoading
                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-500/20 hover:scale-105'
                 : input.trim()

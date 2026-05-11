@@ -332,6 +332,7 @@ const MainLayout: React.FC = () => {
   const isCurrentWorkflowPollingActive =
     currentWorkflowId !== 'new' ? currentWorkflow.is_active !== false : true;
   const footerOffset = logsExpanded ? logsPanelHeight : FOOTER_COLLAPSED_HEIGHT;
+  const logsLeftOffset = isAiAssistantOpen ? chatPanelWidth : 0;
 
   const clearAutoSaveTimeout = useCallback(() => {
     if (autoSaveTimeoutRef.current !== null) {
@@ -1207,6 +1208,7 @@ const MainLayout: React.FC = () => {
             executionDetail={currentExecutionDetail}
             isExpanded={logsExpanded}
             panelHeight={logsPanelHeight}
+            leftOffset={logsLeftOffset}
             onToggle={() => setLogsExpanded((prev) => !prev)}
             onResizeStart={handleLogResizeStart}
             isPopoutOpen={isLogsPopupOpen}
@@ -1236,7 +1238,7 @@ const MainLayout: React.FC = () => {
             isLoading={isAiLoading}
             width={chatPanelWidth}
             onResizeStart={handleChatResizeStart}
-            style={{ paddingBottom: `${footerOffset}px` }}
+            style={{ paddingBottom: '0px' }}
           />
         </div>
       </div>

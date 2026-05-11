@@ -9,6 +9,7 @@ interface ExecutionLogsFooterProps {
   executionId: string | null;
   isExpanded: boolean;
   panelHeight: number;
+  leftOffset?: number;
   onToggle: () => void;
   onResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void;
   isPopoutOpen: boolean;
@@ -51,6 +52,7 @@ const ExecutionLogsFooter: React.FC<ExecutionLogsFooterProps> = ({
   executionId,
   isExpanded,
   panelHeight,
+  leftOffset = 0,
   onToggle,
   onResizeStart,
   isPopoutOpen,
@@ -84,7 +86,10 @@ const ExecutionLogsFooter: React.FC<ExecutionLogsFooterProps> = ({
           ? 'border-slate-800 bg-slate-950 text-slate-100'
           : 'border-slate-200 bg-white text-slate-900'
       }`}
-      style={{ height: isExpanded ? panelHeight : COLLAPSED_HEIGHT }}
+      style={{
+        height: isExpanded ? panelHeight : COLLAPSED_HEIGHT,
+        left: leftOffset,
+      }}
     >
       {isExpanded && (
         <div className="absolute left-0 right-0 top-0 z-20 flex justify-center">
