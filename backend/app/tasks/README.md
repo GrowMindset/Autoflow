@@ -20,13 +20,14 @@ Do not put here:
 
 - Queue `workflow.executions`: full workflow runs
 - Queue `workflow.node_tests`: node test runs
+- Queue `workflow.node.resume`: deferred/resume branches (delay wait resume, fan-out continuation)
 - Queue `system`: small internal tasks (including schedule scans)
 
 Run workers in separate terminals/processes for better throughput:
 
 ```bash
-celery -A celery_config worker -l info -n wf1@%h -Q workflow.executions,celery -c 4
-celery -A celery_config worker -l info -n wf2@%h -Q workflow.executions,celery -c 4
+celery -A celery_config worker -l info -n wf1@%h -Q workflow.executions,workflow.node.resume,celery -c 4
+celery -A celery_config worker -l info -n wf2@%h -Q workflow.executions,workflow.node.resume,celery -c 4
 celery -A celery_config worker -l info -n node@%h -Q workflow.node_tests,celery -c 2
 celery -A celery_config worker -l info -n sys@%h -Q system,celery -c 2
 celery -A celery_config beat -l info

@@ -47,7 +47,6 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
     'create_gmail_draft': ['credential_id', 'to', 'subject', 'body'],
     'add_gmail_label': ['credential_id', 'message_id', 'label_name'],
     'create_google_sheets': ['credential_id', 'title'],
-    'delay': ['amount', 'unit'],
     'file_read': ['file_path'],
     'file_write': ['file_path'],
     'create_google_docs': ['credential_id', 'title'],
@@ -174,10 +173,26 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
   }
 
   if (type === 'delay') {
-    const hasUntil = String(config.until_datetime || '').trim() !== '';
-    const hasAmount = String(config.amount || '').trim() !== '';
-    if (!hasUntil && !hasAmount) {
-      missing.push("Required field 'amount' (or 'until_datetime') is missing");
+    const waitModeRaw = String(config.wait_mode || '').trim().toLowerCase();
+    const waitMode = (
+      waitModeRaw === 'after_interval'
+      || waitModeRaw === 'until_datetime'
+    )
+      ? waitModeRaw
+      : (String(config.until_datetime || '').trim() ? 'until_datetime' : 'after_interval');
+    if (waitMode === 'after_interval') {
+      const hasAmount = String(config.amount || '').trim() !== '';
+      if (!hasAmount) {
+        missing.push("Required field 'amount' is missing for wait_mode='after_interval'");
+      }
+      const unit = String(config.unit || '').trim().toLowerCase();
+      if (!unit) {
+        missing.push("Required field 'unit' is missing for wait_mode='after_interval'");
+      }
+    } else if (waitMode === 'until_datetime') {
+      if (!String(config.until_datetime || '').trim()) {
+        missing.push("Required field 'until_datetime' is missing for wait_mode='until_datetime'");
+      }
     }
   }
 

@@ -40,6 +40,7 @@ class CredentialService:
 
     async def create_credential(self, user_id: UUID, payload: AppCredentialCreate) -> AppCredential:
         token_data = dict(payload.token_data)
+        user_description = str(payload.description or "").strip()
 
         if payload.app_name == "telegram":
             bot_token = (
@@ -166,6 +167,11 @@ class CredentialService:
             token_data["provider"] = "slack_webhook"
             if isinstance(channel, str) and channel.strip():
                 token_data["channel"] = channel.strip()
+
+        if user_description:
+            token_data["user_description"] = user_description[:300]
+        else:
+            token_data.pop("user_description", None)
 
         for key in SENSITIVE_TOKEN_FIELDS:
             value = token_data.get(key)
@@ -316,6 +322,7 @@ class CredentialService:
         token_data = dict(credential.token_data or {})
         provider = str(token_data.get("provider") or "").strip() or None
         email = self._safe_read_token_value(token_data, "email")
+        user_description = str(token_data.get("user_description") or "").strip() or None
         app_name = str(credential.app_name or "").strip().lower()
 
         display_name = None
@@ -348,6 +355,9 @@ class CredentialService:
         else:
             display_name = app_name.title() if app_name else "Credential"
             description = f"{display_name} credential"
+
+        if user_description:
+            description = user_description
 
         return {
             "provider": provider,

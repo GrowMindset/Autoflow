@@ -264,9 +264,11 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "case_sensitive": False,
     },
     "delay": {
+        "wait_mode": "after_interval",
         "amount": "1",
         "unit": "minutes",
         "until_datetime": "",
+        "timezone": "Asia/Kolkata",
     },
     "datetime_format": {
         "field": "",

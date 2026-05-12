@@ -840,9 +840,11 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
         "category": "transform",
         "description": "Pauses workflow execution for a configured time, then forwards data unchanged.",
         "rules": [
-            "Use config keys: amount, unit, until_datetime.",
+            "Use config keys: wait_mode, amount, unit, until_datetime, timezone.",
+            "wait_mode must be one of after_interval, until_datetime.",
             "Preferred unit values: seconds, minutes, hours, days, months.",
-            "until_datetime is optional ISO datetime and overrides amount/unit when provided.",
+            "For wait_mode=after_interval, provide amount and unit.",
+            "For wait_mode=until_datetime, provide until_datetime (ISO) and optional timezone.",
         ],
     },
     "datetime_format": {
@@ -9103,6 +9105,11 @@ class LLMService:
 
     @staticmethod
     def _validate_delay_configs(definition: WorkflowDefinition) -> None:
+        allowed_modes = {
+            "",
+            "after_interval",
+            "until_datetime",
+        }
         allowed_units = {
             "seconds",
             "minutes",
@@ -9118,11 +9125,30 @@ class LLMService:
         for node in definition.nodes:
             if node.type != "delay":
                 continue
+            wait_mode = str(node.config.get("wait_mode") or "").strip().lower()
+            if wait_mode not in allowed_modes:
+                raise WorkflowGenerationError(
+                    f"Delay node '{node.id}' has unsupported wait_mode '{wait_mode}'. "
+                    "Use after_interval or until_datetime."
+                )
+            normalized_mode = wait_mode or (
+                "until_datetime"
+                if str(node.config.get("until_datetime") or "").strip()
+                else "after_interval"
+            )
             unit = str(node.config.get("unit") or "").strip().lower()
-            if unit and unit not in allowed_units:
+            if normalized_mode == "after_interval" and unit and unit not in allowed_units:
                 raise WorkflowGenerationError(
                     f"Delay node '{node.id}' has unsupported unit '{unit}'. "
                     "Use seconds, minutes, hours, days, or months."
+                )
+            if normalized_mode == "after_interval" and not str(node.config.get("amount") or "").strip():
+                raise WorkflowGenerationError(
+                    f"Delay node '{node.id}' requires amount for wait_mode='after_interval'."
+                )
+            if normalized_mode == "until_datetime" and not str(node.config.get("until_datetime") or "").strip():
+                raise WorkflowGenerationError(
+                    f"Delay node '{node.id}' requires until_datetime for wait_mode='until_datetime'."
                 )
 
     @classmethod

@@ -13,6 +13,16 @@ const DELAY_UNIT_SECONDS: Record<string, number> = {
   months: 2592000,
 };
 
+const DELAY_WAIT_MODE_ALIASES: Record<string, 'after_interval' | 'until_datetime'> = {
+  after_interval: 'after_interval',
+  interval: 'after_interval',
+  after: 'after_interval',
+  until_datetime: 'until_datetime',
+  until: 'until_datetime',
+  datetime: 'until_datetime',
+  at_datetime: 'until_datetime',
+};
+
 const WEEKDAY_NAME_TO_INT: Record<string, number> = {
   SUN: 0,
   MON: 1,
@@ -160,6 +170,9 @@ const parseDelayTargetTime = (
   config: Record<string, any>,
   startedAt: string | null | undefined,
 ): number | null => {
+  const waitModeRaw = String(config?.wait_mode || '').trim().toLowerCase();
+  const waitMode = DELAY_WAIT_MODE_ALIASES[waitModeRaw]
+    || (String(config?.until_datetime || '').trim() ? 'until_datetime' : 'after_interval');
   const untilDateRaw = String(config?.until_datetime || '').trim();
   if (untilDateRaw) {
     const targetMs = Date.parse(untilDateRaw);

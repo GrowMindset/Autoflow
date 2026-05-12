@@ -236,6 +236,29 @@ const MainLayout: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key.toLowerCase() !== 'n') return;
+
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isTypingTarget =
+        tag === 'input' ||
+        tag === 'textarea' ||
+        target?.isContentEditable === true;
+      if (isTypingTarget) return;
+
+      setIsRightSidebarOpen(true);
+    };
+
+    window.addEventListener('keydown', handleKeydown);
+    return () => {
+      window.removeEventListener('keydown', handleKeydown);
+    };
+  }, []);
+
   const currentWorkflow = currentWorkflowId === 'new'
     ? { id: 'new', name: newWorkflowDraftName, is_published: false }
     : workflows.find(w => w.id === currentWorkflowId) || workflows[0] || { id: 'new', name: 'Untitled Workflow', is_published: false };

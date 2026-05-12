@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import unittest
 from collections.abc import AsyncGenerator
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, text

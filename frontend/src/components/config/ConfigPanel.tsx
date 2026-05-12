@@ -590,9 +590,34 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
 
   // Sync state if node changes externally
   const applyConfigPatch = (patch: Record<string, any>) => {
+    const safePatch = patch || {};
+    const baseConfig = configDraftRef.current || {};
+    const hasChange = Object.entries(safePatch).some(([key, value]) => {
+      const currentValue = (baseConfig as Record<string, any>)[key];
+      if (Object.is(currentValue, value)) {
+        return false;
+      }
+      if (
+        currentValue &&
+        value &&
+        typeof currentValue === "object" &&
+        typeof value === "object"
+      ) {
+        try {
+          return JSON.stringify(currentValue) !== JSON.stringify(value);
+        } catch {
+          return true;
+        }
+      }
+      return true;
+    });
+    if (!hasChange) {
+      return;
+    }
+
     const nextConfig = {
-      ...(configDraftRef.current || {}),
-      ...(patch || {}),
+      ...baseConfig,
+      ...safePatch,
     };
     configDraftRef.current = nextConfig;
     onUpdate(node.id, nextConfig);

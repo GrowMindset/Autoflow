@@ -847,6 +847,27 @@ class RunnerTests(unittest.TestCase):
         self.assertGreater(output["delay_seconds"], 0)
         self.assertIn("delay_run_at", output)
 
+    def test_delay_runner_supports_until_datetime_mode_with_timezone(self):
+        runner = DelayRunner()
+        output = runner.run(
+            config={
+                "wait_mode": "until_datetime",
+                "until_datetime": "2035-01-01T09:00:00",
+                "timezone": "Asia/Kolkata",
+            },
+            input_data={"ok": True},
+        )
+        self.assertEqual(output["wait_mode"], "until_datetime")
+        self.assertGreaterEqual(float(output["delay_seconds"]), 0.0)
+
+    def test_delay_runner_rejects_until_datetime_mode_without_datetime(self):
+        runner = DelayRunner()
+        with self.assertRaisesRegex(ValueError, "requires 'until_datetime'"):
+            runner.run(
+                config={"wait_mode": "until_datetime"},
+                input_data={"ok": True},
+            )
+
     def test_if_else_runner_raises_for_unknown_operator(self):
         runner = IfElseRunner()
         with self.assertRaises(ValueError):

@@ -8,9 +8,17 @@ interface CategorySectionProps {
   nodes: NodeDefinition[];
   isOpenDefault?: boolean;
   onSelect?: (type: string) => void;
+  customContent?: React.ReactNode;
 }
 
-const CategorySection: React.FC<CategorySectionProps> = ({ title, category, nodes, isOpenDefault = false, onSelect }) => {
+const CategorySection: React.FC<CategorySectionProps> = ({
+  title,
+  category,
+  nodes,
+  isOpenDefault = false,
+  onSelect,
+  customContent,
+}) => {
   const [isOpen, setIsOpen] = useState(isOpenDefault);
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -27,7 +35,7 @@ const CategorySection: React.FC<CategorySectionProps> = ({ title, category, node
   };
 
   const displayedNodes = isExpanded ? nodes : nodes.slice(0, 4);
-  const hasMore = nodes.length > 4;
+  const hasMore = !customContent && nodes.length > 4;
 
   return (
     <div className="flex flex-col gap-1">
@@ -57,9 +65,13 @@ const CategorySection: React.FC<CategorySectionProps> = ({ title, category, node
 
       {isOpen && (
         <div className="flex flex-col gap-1.5 pl-4 py-1 animate-in slide-in-from-top-1 duration-200">
-          {displayedNodes.map((node) => (
-            <NodeItem key={node.type} node={node} onSelect={onSelect} />
-          ))}
+          {customContent ? (
+            customContent
+          ) : (
+            displayedNodes.map((node) => (
+              <NodeItem key={node.type} node={node} onSelect={onSelect} />
+            ))
+          )}
           
           {hasMore && (
             <button 

@@ -17,6 +17,7 @@ interface CredentialListResponse {
 interface CreateCredentialPayload {
   app_name: string;
   token_data: Record<string, any>;
+  description?: string;
 }
 
 interface GoogleOAuthStartResponse {

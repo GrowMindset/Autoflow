@@ -136,6 +136,21 @@ const normalizeSheetsOperation = (rawOperation: any, upsertIfMissing: boolean): 
   return SHEETS_OPERATION_ALIASES[token] || token;
 };
 
+const normalizeDelayWaitMode = (
+  rawMode: any,
+  rawConfig?: Record<string, any>,
+): 'after_interval' | 'until_datetime' => {
+  const token = String(rawMode || '').trim().toLowerCase();
+  if (token === 'after_interval' || token === 'until_datetime') {
+    return token;
+  }
+  const fallbackConfig = rawConfig || {};
+  if (String(fallbackConfig.until_datetime || '').trim()) {
+    return 'until_datetime';
+  }
+  return 'after_interval';
+};
+
 const SWITCH_CASE_OPERATORS = [
   'equals',
   'not_equals',
@@ -832,20 +847,33 @@ export const CONFIG_SCHEMA: Record<string, any[]> = {
     },
   ],
   delay: [
+    {
+      key: 'wait_mode',
+      label: 'Wait Mode',
+      type: 'select',
+      options: ['after_interval', 'until_datetime'],
+    },
     { key: 'amount', label: 'Delay Amount', type: 'text', placeholder: 'e.g. 5' },
     {
       key: 'unit',
       label: 'Delay Unit',
       type: 'select',
       options: ['seconds', 'minutes', 'hours', 'days', 'months'],
-      helperText: 'Used when "Run At (ISO datetime)" is empty.',
+      helperText: 'Used when Wait Mode = after_interval.',
     },
     {
       key: 'until_datetime',
       label: 'Run At (ISO datetime)',
       type: 'text',
       placeholder: 'e.g. 2026-04-17T18:30:00Z',
-      helperText: 'Optional. If set, this overrides amount + unit.',
+      helperText: 'Required when Wait Mode = until_datetime.',
+    },
+    {
+      key: 'timezone',
+      label: 'Timezone (for naive datetime)',
+      type: 'text',
+      placeholder: 'e.g. Asia/Kolkata, UTC, America/New_York',
+      helperText: 'Used only when until_datetime has no timezone offset.',
     },
   ],
   linkedin: [
@@ -1440,6 +1468,33 @@ const ConfigForm: React.FC<ConfigFormProps> = ({
     }
     if (typeof config.include_empty_rows === 'undefined') {
       patch.include_empty_rows = false;
+    }
+
+    if (Object.keys(patch).length > 0) {
+      applyConfigPatch(patch);
+    }
+  }, [nodeType, config, applyConfigPatch]);
+
+  useEffect(() => {
+    if (nodeType !== 'delay') return;
+
+    const patch: Record<string, any> = {};
+    const normalizedMode = normalizeDelayWaitMode(config.wait_mode, config);
+    if (normalizedMode !== String(config.wait_mode || '').trim().toLowerCase()) {
+      patch.wait_mode = normalizedMode;
+    }
+    if (typeof config.amount === 'undefined') {
+      patch.amount = '1';
+    }
+    const normalizedUnit = String(config.unit || '').trim().toLowerCase();
+    if (!['seconds', 'minutes', 'hours', 'days', 'months'].includes(normalizedUnit)) {
+      patch.unit = 'minutes';
+    }
+    if (typeof config.until_datetime === 'undefined') {
+      patch.until_datetime = '';
+    }
+    if (!String(config.timezone || '').trim()) {
+      patch.timezone = getAppTimezone();
     }
 
     if (Object.keys(patch).length > 0) {
@@ -3133,6 +3188,17 @@ const ConfigForm: React.FC<ConfigFormProps> = ({
     if (nodeType === 'image_gen') {
       if (field.key === 'style') {
         return String(config.model || 'dall-e-3') === 'dall-e-3';
+      }
+      return true;
+    }
+
+    if (nodeType === 'delay') {
+      const mode = normalizeDelayWaitMode(config.wait_mode, config);
+      if (field.key === 'amount' || field.key === 'unit') {
+        return mode === 'after_interval';
+      }
+      if (field.key === 'until_datetime' || field.key === 'timezone') {
+        return mode === 'until_datetime';
       }
       return true;
     }

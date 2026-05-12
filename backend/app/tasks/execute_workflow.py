@@ -842,6 +842,7 @@ async def _run_execution(
 
                         target_node = nodes_by_id.get(target_node_id, {})
                         deferred_is_time_wait = safe_delay_seconds > 0
+                        payload_dict = payload if isinstance(payload, dict) else {"_default": payload}
                         target_row = _upsert_node_row(
                             node_execution_by_id=node_execution_by_id,
                             execution=execution,
@@ -850,7 +851,7 @@ async def _run_execution(
                             node_type=str(target_node.get("type") or "unknown"),
                         )
                         target_row.status = "WAITING" if deferred_is_time_wait else "QUEUED"
-                        target_row.input_data = payload if isinstance(payload, dict) else {"_default": payload}
+                        target_row.input_data = payload_dict
                         if str(target_node.get("type") or "") == "merge":
                             # Keep in-flight merge runtime state intact when late branches
                             # enqueue additional arrivals; otherwise prior arrivals can be lost.
@@ -874,7 +875,7 @@ async def _run_execution(
                         apply_async_kwargs: dict[str, Any] = {
                             "kwargs": {
                                 "execution_id": str(execution.id),
-                                "initial_payload": payload if isinstance(payload, dict) else {"_default": payload},
+                                "initial_payload": payload_dict,
                                 "start_node_id": target_node_id,
                                 "start_target_handle": target_handle,
                                 "resume": True,
@@ -965,9 +966,10 @@ async def _run_execution(
                         node_id=node_id,
                         node_type=node_def["type"] if node_def is not None else "unknown",
                     )
+                    node_output = node_outputs.get(node_id)
                     row.status = "SUCCEEDED"
                     row.input_data = node_inputs.get(node_id) if row.input_data is None else row.input_data
-                    row.output_data = node_outputs.get(node_id)
+                    row.output_data = node_output
                     row.error_message = None
                     row.started_at = row.started_at or execution.started_at
                     row.finished_at = row.finished_at or _utcnow()

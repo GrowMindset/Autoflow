@@ -550,9 +550,11 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       category: 'transform',
       description: 'Pause workflow for a duration, then continue.',
       default_config: {
+        wait_mode: 'after_interval',
         amount: '1',
         unit: 'minutes',
         until_datetime: '',
+        timezone: 'Asia/Kolkata',
       },
       is_dummy: false,
     },
