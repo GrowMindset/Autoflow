@@ -31,7 +31,7 @@ const NodeSidebar: React.FC<NodeSidebarProps> = ({ onClose, onSelect }) => {
     { id: 'whatsapp', title: 'WhatsApp', types: ['whatsapp'] },
     { id: 'slack', title: 'Slack', types: ['slack_send_message'] },
     { id: 'linkedin', title: 'LinkedIn', types: ['linkedin'] },
-    { id: 'workflow_control', title: 'Workflow Control', types: ['execute_workflow'] },
+    { id: 'workflow_control', title: 'Sub-workflow Control', types: ['execute_workflow'] },
   ];
 
   const groupedActionTypes = new Set(actionGroups.flatMap((group) => group.types));

@@ -145,7 +145,8 @@ const WorkflowFormPage: React.FC = () => {
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!workflowId) return;
+    if (!workflowId || !formNode) return;
+    const currentFormNode = formNode;
     const submittedValues = readFormValuesFromElement(event.currentTarget as HTMLFormElement, formFields, formValues);
     setFormValues(submittedValues);
     const validationErrors = validateFormValues(formFields, submittedValues);
@@ -196,7 +197,7 @@ const WorkflowFormPage: React.FC = () => {
 
       const enqueue = await executionService.runWorkflowForm(workflowId, {
         form_data: submittedValues,
-        start_node_id: formNode.id,
+        start_node_id: currentFormNode.id,
         loop_control_override: runtimeLoopOverride,
       });
       toast.success('Form submitted successfully.');
@@ -209,7 +210,7 @@ const WorkflowFormPage: React.FC = () => {
                 type: FORM_EXECUTION_MESSAGE_TYPE,
                 workflowId,
                 executionId: enqueue.execution_id,
-                nodeId: formNode.id,
+                nodeId: currentFormNode.id,
               },
               window.location.origin,
             );
