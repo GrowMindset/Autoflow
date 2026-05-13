@@ -39,7 +39,6 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
   const missing: string[] = [];
 
   const requiredFields: Record<string, string[]> = {
-    'if_else': ['field', 'operator'],
     'switch': ['field'],
     'filter': ['input_key', 'field', 'operator', 'value'],
     'get_gmail_message': ['credential_id'],
@@ -68,20 +67,37 @@ const getMissingRequirements = (type: string, config: Record<string, any>, isCha
   }
 
   if (type === 'if_else') {
-    const valueMode = String(config.value_mode || 'literal').toLowerCase() === 'field'
-      ? 'field'
-      : 'literal';
-    if (valueMode === 'field') {
-      if (!String(config.value_field || '').trim()) {
-        missing.push("Required field 'value_field' is missing for value_mode='field'");
+    const rawConditions = Array.isArray(config.conditions) && config.conditions.length > 0
+      ? config.conditions
+      : [{
+          field: config.field,
+          operator: config.operator,
+          value: config.value,
+          value_mode: config.value_mode,
+          value_field: config.value_field,
+        }];
+    rawConditions.forEach((condition: any, index: number) => {
+      if (!String(condition?.field || '').trim()) {
+        missing.push(`Condition ${index + 1}: field is required`);
       }
-    } else {
-      const value = config.value;
-      const hasLiteral = value !== undefined && value !== null && String(value).trim() !== '';
-      if (!hasLiteral) {
-        missing.push("Required field 'value' is missing for value_mode='literal'");
+      if (!String(condition?.operator || '').trim()) {
+        missing.push(`Condition ${index + 1}: operator is required`);
       }
-    }
+      const valueMode = String(condition?.value_mode || 'literal').toLowerCase() === 'field'
+        ? 'field'
+        : 'literal';
+      if (valueMode === 'field') {
+        if (!String(condition?.value_field || '').trim()) {
+          missing.push(`Condition ${index + 1}: value_field is required`);
+        }
+      } else {
+        const conditionValue = condition?.value;
+        const hasLiteral = conditionValue !== undefined && conditionValue !== null && String(conditionValue).trim() !== '';
+        if (!hasLiteral) {
+          missing.push(`Condition ${index + 1}: value is required`);
+        }
+      }
+    });
   }
 
   if (type === 'update_google_docs' && config.operation === 'replace_all_text' && !config.match_text) {

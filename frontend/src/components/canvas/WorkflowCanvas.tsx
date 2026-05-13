@@ -83,6 +83,55 @@ const stripConfigEditorMetadata = (config: Record<string, any> | undefined): Rec
   return safeConfig;
 };
 
+const normalizeIfElseNodeConfig = (config: Record<string, any> | undefined): Record<string, any> => {
+  const safeConfig = config && typeof config === 'object' && !Array.isArray(config)
+    ? { ...config }
+    : {};
+  const conditionType = String(safeConfig.condition_type || '').trim().toUpperCase() === 'OR'
+    ? 'OR'
+    : 'AND';
+  const rawConditions = Array.isArray(safeConfig.conditions) && safeConfig.conditions.length > 0
+    ? safeConfig.conditions
+    : [{
+        field: safeConfig.field,
+        operator: safeConfig.operator,
+        value: safeConfig.value,
+        value_mode: safeConfig.value_mode,
+        value_field: safeConfig.value_field,
+        case_sensitive: safeConfig.case_sensitive,
+      }];
+  const conditions = rawConditions.map((rawCondition: any, index: number) => {
+    const condition = rawCondition && typeof rawCondition === 'object' ? rawCondition : {};
+    const valueMode = String(condition.value_mode || 'literal').trim().toLowerCase() === 'field'
+      ? 'field'
+      : 'literal';
+    return {
+      id: String(condition.id || `condition_${index + 1}`),
+      field: String(condition.field || ''),
+      operator: String(condition.operator || 'equals').trim().toLowerCase() || 'equals',
+      value: valueMode === 'field' ? '' : String(condition.value ?? ''),
+      value_mode: valueMode,
+      value_field: String(condition.value_field || ''),
+      case_sensitive: parseBooleanLike(condition.case_sensitive, true),
+    };
+  });
+
+  return {
+    condition_type: conditionType,
+    conditions: conditions.length > 0
+      ? conditions
+      : [{
+          id: 'condition_1',
+          field: '',
+          operator: 'equals',
+          value: '',
+          value_mode: 'literal',
+          value_field: '',
+          case_sensitive: true,
+        }],
+  };
+};
+
 const parseBooleanLike = (rawValue: unknown, fallback = true): boolean => {
   if (rawValue === undefined || rawValue === null) return fallback;
   if (typeof rawValue === 'boolean') return rawValue;
@@ -443,6 +492,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           }
           if (node.data.type === 'switch') {
             return stripConfigEditorMetadata(normalizeSwitchNodeConfig(nextConfig));
+          }
+          if (node.data.type === 'if_else') {
+            return stripConfigEditorMetadata(normalizeIfElseNodeConfig(nextConfig));
           }
           if (node.data.type === 'merge') {
             return stripConfigEditorMetadata(pruneMergeConfigForPersistence(nextConfig));
@@ -2089,9 +2141,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       const normalizedConfig = stripConfigEditorMetadata(
         n.type === 'switch'
           ? normalizeSwitchNodeConfig(n.config)
-          : n.type === 'merge'
-            ? normalizeMergeConfigForEditor(n.config)
-            : n.config,
+          : n.type === 'if_else'
+            ? normalizeIfElseNodeConfig(n.config)
+            : n.type === 'merge'
+              ? normalizeMergeConfigForEditor(n.config)
+              : n.config,
       );
 
       return {
@@ -2389,10 +2443,14 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   ]);
 
   const updateNodeConfig = useCallback((id: string, config: Record<string, any>, output?: any) => {
-    const normalizedConfig = stripConfigEditorMetadata(config);
     setNodes((nds) =>
       nds.map((node) => {
         if (node.id === id) {
+          const normalizedConfig = stripConfigEditorMetadata(
+            node.data.type === 'if_else'
+              ? normalizeIfElseNodeConfig(config)
+              : config,
+          );
           const scheduleIsActive = isScheduleVisualActive(
             node.data.type,
             normalizedConfig,

@@ -403,12 +403,17 @@ export const NODE_LIBRARY: Record<string, NodeDefinition[]> = {
       category: 'transform',
       description: 'Split the workflow based on conditions.',
       default_config: {
-        field: '',
-        operator: 'equals',
-        value: '',
-        value_mode: 'literal',
-        value_field: '',
-        case_sensitive: true,
+        condition_type: 'AND',
+        conditions: [
+          {
+            field: '',
+            operator: 'equals',
+            value: '',
+            value_mode: 'literal',
+            value_field: '',
+            case_sensitive: true,
+          },
+        ],
       },
       is_dummy: false,
     },

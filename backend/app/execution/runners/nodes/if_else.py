@@ -1,17 +1,21 @@
 from typing import Any
-from app.execution.utils import evaluate_condition, get_nested_value
+from app.execution.condition_evaluator import (
+    evaluate_conditions,
+    normalize_condition_config,
+)
 
 
 class IfElseRunner:
     """
-    Evaluates a condition on input_data and returns the same data
+    Evaluates one or more conditions on input_data and returns the same data
     with a _branch field ('true' or 'false') added.
 
     Config shape:
     {
-        "field": "status",
-        "operator": "equals",
-        "value": "paid"
+        "condition_type": "AND",
+        "conditions": [
+            {"field": "status", "operator": "equals", "value": "paid"}
+        ]
     }
 
     Output shape:
@@ -22,45 +26,13 @@ class IfElseRunner:
     """
 
     def run(self, config: dict, input_data: dict, context: dict[str, Any] = None) -> dict:
-        # --- Step 1: Read config ---
-        field = config.get("field")
-        operator = config.get("operator")
-        value_mode = str(config.get("value_mode") or "literal").strip().lower()
-        value_field = config.get("value_field")
-        case_sensitive = bool(config.get("case_sensitive", True))
-
-        # --- Step 2: Validate config ---
-        if not field:
-            raise ValueError("IfElseRunner: 'field' is missing in config")
-        if not operator:
-            raise ValueError("IfElseRunner: 'operator' is missing in config")
-        if value_mode not in {"literal", "field"}:
-            raise ValueError("IfElseRunner: 'value_mode' must be 'literal' or 'field'")
-        if value_mode == "field" and not value_field:
-            raise ValueError("IfElseRunner: 'value_field' is required when value_mode='field'")
-
-        # --- Step 3: Get field value from input_data ---
-        # Supports dot notation: "user.status" → input_data["user"]["status"]
-        field_value = get_nested_value(input_data, field, runner_name="IfElseRunner")
-
-        if value_mode == "field":
-            compare_value = get_nested_value(
-                input_data, value_field, runner_name="IfElseRunner"
-            )
-        else:
-            compare_value = config.get("value")
-            if compare_value is None:
-                raise ValueError("IfElseRunner: 'value' is missing in config")
-
-        # --- Step 4: Evaluate condition ---
-        result = evaluate_condition(
-            field_value,
-            operator,
-            compare_value,
-            case_sensitive=case_sensitive,
+        normalized_config = normalize_condition_config(config, runner_name="IfElseRunner")
+        result = evaluate_conditions(
+            normalized_config["condition_type"],
+            normalized_config["conditions"],
+            input_data,
         )
 
-        # --- Step 5: Return original data + _branch ---
         return {
             **input_data,
             "_branch": "true" if result else "false"

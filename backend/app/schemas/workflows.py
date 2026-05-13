@@ -213,9 +213,20 @@ NODE_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
         "message": "",
     },
     "if_else": {
+        "condition_type": "AND",
+        "conditions": [
+            {
+                "field": "",
+                "operator": "equals",
+                "value": "",
+                "value_mode": "literal",
+                "value_field": "",
+                "case_sensitive": True,
+            }
+        ],
+        # Legacy single-condition keys (kept for backward compatibility).
         "field": "",
         "operator": "equals",
-        "data_type": "string",
         "value": "",
         "value_mode": "literal",
         "value_field": "",
@@ -523,6 +534,18 @@ FILTER_KNOWN_KEYS = {
     "case_sensitive",
 }
 
+IF_ELSE_CONDITION_TYPES = {"AND", "OR"}
+IF_ELSE_KNOWN_KEYS = {
+    "condition_type",
+    "conditions",
+    "field",
+    "operator",
+    "value",
+    "value_mode",
+    "value_field",
+    "case_sensitive",
+}
+
 
 def _normalize_filter_condition(raw_condition: Any, *, index: int) -> dict[str, Any] | None:
     if not isinstance(raw_condition, dict):
@@ -668,6 +691,107 @@ def _normalize_filter_config(config: dict[str, Any]) -> dict[str, Any]:
     return pruned
 
 
+def _normalize_if_else_condition(raw_condition: Any, *, index: int) -> dict[str, Any] | None:
+    if not isinstance(raw_condition, dict):
+        return None
+
+    field = str(raw_condition.get("field") or "").strip()
+    operator_raw = str(raw_condition.get("operator") or "equals").strip().lower()
+    operator = FILTER_OPERATOR_ALIASES.get(operator_raw, operator_raw)
+    if operator not in SHARED_IF_ELSE_OPERATORS:
+        operator = "equals"
+
+    value_mode_raw = str(raw_condition.get("value_mode") or "literal").strip().lower()
+    value_mode = value_mode_raw if value_mode_raw in FILTER_VALUE_MODES else "literal"
+    value_field = str(raw_condition.get("value_field") or "").strip()
+
+    normalized: dict[str, Any] = {
+        "id": str(raw_condition.get("id") or f"condition_{index}").strip() or f"condition_{index}",
+        "field": field,
+        "operator": operator,
+        "value_mode": value_mode,
+        "value_field": value_field,
+        "case_sensitive": _as_bool(raw_condition.get("case_sensitive"), default=True),
+    }
+    normalized["value"] = "" if value_mode == "field" else raw_condition.get("value", "")
+    return normalized
+
+
+SHARED_IF_ELSE_OPERATORS = {
+    "equals",
+    "not_equals",
+    "greater_than",
+    "less_than",
+    "contains",
+    "not_contains",
+}
+
+
+def _normalize_if_else_config(config: dict[str, Any]) -> dict[str, Any]:
+    safe_config = dict(config or {})
+    condition_type_raw = str(safe_config.get("condition_type") or "AND").strip().upper()
+    condition_type = condition_type_raw if condition_type_raw in IF_ELSE_CONDITION_TYPES else "AND"
+    has_legacy_signal = any(
+        [
+            str(safe_config.get("field") or "").strip(),
+            str(safe_config.get("value_field") or "").strip(),
+            "value" in safe_config and str(safe_config.get("value") or "").strip(),
+        ]
+    )
+
+    normalized_conditions: list[dict[str, Any]] = []
+    raw_conditions = safe_config.get("conditions")
+    if isinstance(raw_conditions, list):
+        for idx, raw_condition in enumerate(raw_conditions, start=1):
+            normalized = _normalize_if_else_condition(raw_condition, index=idx)
+            if normalized is not None:
+                normalized_conditions.append(normalized)
+
+    if (
+        has_legacy_signal
+        and len(normalized_conditions) == 1
+        and not str(normalized_conditions[0].get("field") or "").strip()
+    ):
+        normalized_conditions = []
+
+    if not normalized_conditions:
+        legacy_condition = _normalize_if_else_condition(
+            {
+                "field": safe_config.get("field"),
+                "operator": safe_config.get("operator"),
+                "value": safe_config.get("value", ""),
+                "value_mode": safe_config.get("value_mode"),
+                "value_field": safe_config.get("value_field"),
+                "case_sensitive": safe_config.get("case_sensitive", True),
+            },
+            index=1,
+        )
+        if legacy_condition is not None:
+            normalized_conditions.append(legacy_condition)
+
+    if not normalized_conditions:
+        normalized_conditions.append(
+            {
+                "id": "condition_1",
+                "field": "",
+                "operator": "equals",
+                "value": "",
+                "value_mode": "literal",
+                "value_field": "",
+                "case_sensitive": True,
+            }
+        )
+
+    pruned: dict[str, Any] = {
+        key: value
+        for key, value in safe_config.items()
+        if key not in IF_ELSE_KNOWN_KEYS
+    }
+    pruned["condition_type"] = condition_type
+    pruned["conditions"] = normalized_conditions
+    return pruned
+
+
 IMAGE_GEN_SIZES_BY_MODEL: dict[str, set[str]] = {
     "dall-e-3": {"1024x1024", "1792x1024", "1024x1792"},
     "dall-e-2": {"256x256", "512x512", "1024x1024"},
@@ -750,6 +874,9 @@ class WorkflowNodeDefinition(BaseModel):
 
         if self.type == "filter":
             self.config = _normalize_filter_config(self.config)
+
+        if self.type == "if_else":
+            self.config = _normalize_if_else_config(self.config)
 
         if self.type == "form_trigger":
             raw_fields = self.config.get("fields", [])

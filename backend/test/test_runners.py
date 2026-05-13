@@ -290,6 +290,62 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(result["_branch"], "true")
 
+    def test_if_else_runner_supports_and_success(self):
+        runner = IfElseRunner()
+        result = runner.run(
+            config={
+                "condition_type": "AND",
+                "conditions": [
+                    {"field": "status", "operator": "equals", "value": "active"},
+                    {"field": "priority", "operator": "greater_than", "value": 5},
+                ],
+            },
+            input_data={"status": "active", "priority": 8},
+        )
+        self.assertEqual(result["_branch"], "true")
+
+    def test_if_else_runner_supports_and_failure(self):
+        runner = IfElseRunner()
+        result = runner.run(
+            config={
+                "condition_type": "AND",
+                "conditions": [
+                    {"field": "status", "operator": "equals", "value": "active"},
+                    {"field": "priority", "operator": "greater_than", "value": 5},
+                ],
+            },
+            input_data={"status": "active", "priority": 3},
+        )
+        self.assertEqual(result["_branch"], "false")
+
+    def test_if_else_runner_supports_or_success(self):
+        runner = IfElseRunner()
+        result = runner.run(
+            config={
+                "condition_type": "OR",
+                "conditions": [
+                    {"field": "country", "operator": "equals", "value": "India"},
+                    {"field": "country", "operator": "equals", "value": "USA"},
+                ],
+            },
+            input_data={"country": "USA"},
+        )
+        self.assertEqual(result["_branch"], "true")
+
+    def test_if_else_runner_supports_or_failure(self):
+        runner = IfElseRunner()
+        result = runner.run(
+            config={
+                "condition_type": "OR",
+                "conditions": [
+                    {"field": "country", "operator": "equals", "value": "India"},
+                    {"field": "country", "operator": "equals", "value": "USA"},
+                ],
+            },
+            input_data={"country": "Canada"},
+        )
+        self.assertEqual(result["_branch"], "false")
+
     def test_send_gmail_runner_normalizes_recipient_lists(self):
         recipients = SendGmailMessageRunner._split_and_validate_emails(
             'Asha <asha@example.com>; mina@example.com\nli@example.org',
@@ -873,6 +929,27 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.run(
                 config={"field": "status", "operator": "is_empty", "value": ""},
+                input_data={"status": "paid"},
+            )
+
+    def test_if_else_runner_rejects_empty_conditions(self):
+        runner = IfElseRunner()
+        with self.assertRaisesRegex(ValueError, "missing 'field'"):
+            runner.run(
+                config={"condition_type": "AND", "conditions": []},
+                input_data={"status": "paid"},
+            )
+
+    def test_if_else_runner_rejects_invalid_condition_type(self):
+        runner = IfElseRunner()
+        with self.assertRaisesRegex(ValueError, "condition_type"):
+            runner.run(
+                config={
+                    "condition_type": "XOR",
+                    "conditions": [
+                        {"field": "status", "operator": "equals", "value": "paid"},
+                    ],
+                },
                 input_data={"status": "paid"},
             )
 

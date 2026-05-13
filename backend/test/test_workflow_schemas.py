@@ -362,6 +362,69 @@ class WorkflowSchemaTests(unittest.TestCase):
         self.assertEqual(config["conditions"][0]["data_type"], "string")
         self.assertEqual(config["conditions"][0]["value"], "paid")
 
+    def test_if_else_config_normalizes_multi_condition_shape(self):
+        definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "if1",
+                        "type": "if_else",
+                        "label": "If",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "condition_type": "OR",
+                            "conditions": [
+                                {
+                                    "field": "country",
+                                    "operator": "equals",
+                                    "value": "India",
+                                },
+                                {
+                                    "field": "country",
+                                    "operator": "equals",
+                                    "value": "USA",
+                                },
+                            ],
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        config = definition.nodes[0].config
+        self.assertEqual(config["condition_type"], "OR")
+        self.assertEqual(len(config["conditions"]), 2)
+        self.assertEqual(config["conditions"][0]["field"], "country")
+        self.assertEqual(config["conditions"][1]["value"], "USA")
+
+    def test_if_else_config_migrates_legacy_single_condition(self):
+        definition = WorkflowDefinition.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "if1",
+                        "type": "if_else",
+                        "label": "If",
+                        "position": {"x": 0, "y": 0},
+                        "config": {
+                            "field": "status",
+                            "operator": "equals",
+                            "value": "active",
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        config = definition.nodes[0].config
+        self.assertEqual(config["condition_type"], "AND")
+        self.assertEqual(len(config["conditions"]), 1)
+        self.assertEqual(config["conditions"][0]["field"], "status")
+        self.assertEqual(config["conditions"][0]["operator"], "equals")
+        self.assertEqual(config["conditions"][0]["value"], "active")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -798,12 +798,18 @@ NODE_TYPE_DETAILS: dict[str, dict[str, Any]] = {
     },
     "if_else": {
         "category": "logic",
-        "description": "Conditional branch node. Output branches are true and false.",
+        "description": "Conditional branch node. Supports one or more condition rows with AND/OR logic. Output branches are true and false.",
         "rules": [
-            "Use config keys: field, operator, value, value_mode, value_field, case_sensitive.",
+            "Use the new config shape for all newly generated workflows: condition_type and conditions.",
+            "condition_type must be AND or OR.",
+            "conditions must contain one or more objects with field, operator, and value. Optional keys: value_mode, value_field, case_sensitive.",
+            "For prompts with multiple checks joined by AND, set condition_type=AND. For prompts with alternatives joined by OR, set condition_type=OR.",
+            "Do not prefer the legacy single-condition field/operator/value shape for new workflows.",
             f"operator must be one of: {', '.join(SHARED_OPERATORS)}.",
-            "Set value_mode=literal to compare against value, or value_mode=field to compare against value_field.",
+            "Set value_mode=literal to compare against value, or value_mode=field to compare against value_field inside each condition.",
             "case_sensitive applies to equals/not_equals/contains/not_contains and defaults to true.",
+            "Example AND config: {\"condition_type\":\"AND\",\"conditions\":[{\"field\":\"status\",\"operator\":\"equals\",\"value\":\"active\"},{\"field\":\"priority\",\"operator\":\"greater_than\",\"value\":5}]}",
+            "Example OR config: {\"condition_type\":\"OR\",\"conditions\":[{\"field\":\"country\",\"operator\":\"equals\",\"value\":\"India\"},{\"field\":\"country\",\"operator\":\"equals\",\"value\":\"USA\"}]}",
             "Outgoing edges from this node must use branch values true or false.",
         ],
     },
@@ -6935,7 +6941,7 @@ class LLMService:
             "linkedin": ["credential_id", "post_text"],
             "read_google_docs": ["credential_id", "document_source_type", "document_id OR document_url"],
             "read_google_sheets": ["credential_id", "spreadsheet_source_type", "spreadsheet_id OR spreadsheet_url", "sheet_name"],
-            "if_else": ["field", "operator", "value OR value_field"],
+            "if_else": ["condition_type", "conditions with field/operator/value OR value_field"],
             "switch": ["field", "cases", "default_case"],
             "merge": ["mode", "input_count"],
             "code": ["language", "code"],
@@ -7087,7 +7093,7 @@ class LLMService:
         max_keys: int = 4,
     ) -> list[str]:
         priority_map: dict[str, tuple[str, ...]] = {
-            "if_else": ("field", "operator", "value", "case_sensitive"),
+            "if_else": ("condition_type", "conditions"),
             "switch": ("field", "cases", "default_case"),
             "webhook_trigger": ("path", "method"),
             "http_request": ("method", "url", "body_type", "body_json"),
@@ -7310,7 +7316,7 @@ class LLMService:
         lines.append("5. Ensure every branch ends in required actions (save/log/notify), then optionally merge branches.")
 
         lines.append("if_else parameters (example):")
-        lines.append(f'```json\n{{"field":"{recommended_field}","operator":"equals","value":"negative","value_mode":"literal","value_field":"","case_sensitive":false}}\n```')
+        lines.append(f'```json\n{{"condition_type":"AND","conditions":[{{"field":"{recommended_field}","operator":"equals","value":"negative","value_mode":"literal","value_field":"","case_sensitive":false}}]}}\n```')
 
         lines.append("switch parameters (example):")
         lines.append('```json\n{"field":"output.category","cases":[{"id":"billing_case","label":"Billing","operator":"equals","value":"billing"},{"id":"technical_case","label":"Technical","operator":"equals","value":"technical"}],"default_case":"general_case"}\n```')

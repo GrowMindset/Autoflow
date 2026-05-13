@@ -1,6 +1,6 @@
 import React, { useCallback, useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
-import { Plus } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import { CredentialItem, credentialService } from '../../services/credentialService';
 import { getAppTimezone } from '../../utils/dateTime';
 import { WorkflowNode } from '../../types/workflow';
@@ -299,6 +299,22 @@ const FILTER_STRING_OPERATORS = new Set([
   'does_not_match_regex',
 ]);
 
+const IF_ELSE_OPERATORS = [
+  'equals',
+  'not_equals',
+  'greater_than',
+  'less_than',
+  'contains',
+  'not_contains',
+];
+
+const IF_ELSE_STRING_OPERATORS = new Set([
+  'equals',
+  'not_equals',
+  'contains',
+  'not_contains',
+]);
+
 const getDroppedPathValue = (path: string, fieldKey: string): string =>
   PATH_STYLE_FIELD_KEYS.has(fieldKey) ? path : `{{${path}}}`;
 
@@ -369,6 +385,46 @@ const normalizeFilterCondition = (
 type FilterCondition = ReturnType<typeof normalizeFilterCondition>;
 type FilterConditionDropKey = Extract<keyof FilterCondition, 'field' | 'value_field' | 'value'>;
 
+const normalizeIfConditionId = (rawCondition: any, index: number): string => {
+  const explicitId = String(rawCondition?.id || '').trim();
+  if (explicitId) return explicitId;
+  return `condition_${index + 1}`;
+};
+
+const normalizeIfCondition = (rawCondition: any, index: number) => {
+  const rawObject = rawCondition && typeof rawCondition === 'object' ? rawCondition : {};
+  const operatorRaw = String(rawObject.operator || 'equals').trim().toLowerCase();
+  const operator = IF_ELSE_OPERATORS.includes(operatorRaw) ? operatorRaw : 'equals';
+  const valueModeRaw = String(rawObject.value_mode || 'literal').trim().toLowerCase();
+  const valueMode = valueModeRaw === 'field' ? 'field' : 'literal';
+  const caseSensitiveRaw = rawObject.case_sensitive;
+
+  let caseSensitive = true;
+  if (typeof caseSensitiveRaw === 'boolean') {
+    caseSensitive = caseSensitiveRaw;
+  } else if (typeof caseSensitiveRaw === 'number') {
+    caseSensitive = caseSensitiveRaw !== 0;
+  } else if (typeof caseSensitiveRaw === 'string') {
+    const normalized = caseSensitiveRaw.trim().toLowerCase();
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+      caseSensitive = false;
+    }
+  }
+
+  return {
+    id: normalizeIfConditionId(rawObject, index),
+    field: String(rawObject.field || ''),
+    operator,
+    value_mode: valueMode,
+    value_field: String(rawObject.value_field || ''),
+    value: valueMode === 'field' ? '' : String(rawObject.value ?? ''),
+    case_sensitive: caseSensitive,
+  };
+};
+
+type IfCondition = ReturnType<typeof normalizeIfCondition>;
+type IfConditionDropKey = Extract<keyof IfCondition, 'field' | 'value_field' | 'value'>;
+
 const normalizeScheduleRule = (rawRule: any, fallbackId?: string): ScheduleRule => {
   const rawObject: Partial<ScheduleRule> = rawRule && typeof rawRule === 'object' ? rawRule : {};
   const intervalRaw = String(rawRule?.interval || '').trim().toLowerCase();
@@ -389,10 +445,10 @@ const normalizeScheduleRule = (rawRule: any, fallbackId?: string): ScheduleRule 
 export const CONFIG_SCHEMA: Record<string, any[]> = {
   if_else: [
     {
-      key: 'condition',
-      label: 'Condition Builder',
-      type: 'if_condition',
-      helperText: 'Compare one field with a literal value or another input field.',
+      key: 'conditions',
+      label: 'Conditions',
+      type: 'if_conditions',
+      helperText: 'Add one or more condition rows. Choose whether all or any rows must pass.',
     },
   ],
   filter: [
@@ -1832,6 +1888,244 @@ const ConfigForm: React.FC<ConfigFormProps> = ({
                 </select>
               </div>
             )}
+          </div>
+        );
+      }
+
+      case 'if_conditions': {
+        const conditionType = String(config.condition_type || '').trim().toUpperCase() === 'OR'
+          ? 'OR'
+          : 'AND';
+        const rawConditions = Array.isArray(value) && value.length > 0
+          ? value
+          : [{
+              field: config.field,
+              operator: config.operator,
+              value: config.value,
+              value_mode: config.value_mode,
+              value_field: config.value_field,
+              case_sensitive: config.case_sensitive,
+            }];
+        const normalizedConditions = rawConditions.map(
+          (condition: any, idx: number) => normalizeIfCondition(condition, idx),
+        );
+
+        if (String(config.condition_type || '').trim().toUpperCase() !== conditionType) {
+          onChange('condition_type', conditionType);
+        }
+        if (JSON.stringify(value || []) !== JSON.stringify(normalizedConditions)) {
+          onChange(field.key, normalizedConditions);
+        }
+
+        const updateCondition = (index: number, patch: Record<string, any>) => {
+          const next = [...normalizedConditions];
+          const existing = next[index] || normalizeIfCondition({}, index);
+          const updated = { ...existing, ...patch };
+          if (updated.value_mode === 'field') {
+            updated.value = '';
+          }
+          next[index] = normalizeIfCondition(updated, index);
+          onChange(field.key, next);
+        };
+
+        const removeCondition = (index: number) => {
+          const next = [...normalizedConditions];
+          next.splice(index, 1);
+          onChange(field.key, next.length > 0 ? next : [normalizeIfCondition({}, 0)]);
+        };
+
+        const addCondition = () => {
+          const nextIndex = normalizedConditions.length;
+          onChange(field.key, [
+            ...normalizedConditions,
+            normalizeIfCondition(
+              {
+                id: `condition_${Math.random().toString(36).slice(2, 9)}`,
+                operator: 'equals',
+                value_mode: 'literal',
+                case_sensitive: true,
+              },
+              nextIndex,
+            ),
+          ]);
+        };
+
+        const handleIfConditionDrop = (
+          event: React.DragEvent<HTMLInputElement>,
+          index: number,
+          conditionKey: IfConditionDropKey,
+          dropFieldKey: string,
+        ) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setDragOverField(null);
+
+          const textToInsert = resolveDropInsertText({
+            fieldKey: dropFieldKey,
+            dataTransfer: event.dataTransfer,
+          });
+          if (!textToInsert) return;
+
+          const el = event.currentTarget;
+          const current = String(normalizedConditions[index]?.[conditionKey] ?? '');
+          const start = el.selectionStart ?? current.length;
+          const end = el.selectionEnd ?? start;
+          const nextValue = current.slice(0, start) + textToInsert + current.slice(end);
+          updateCondition(index, { [conditionKey]: nextValue });
+        };
+
+        return (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Match
+              </span>
+              <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900">
+                {(['AND', 'OR'] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => onChange('condition_type', option)}
+                    className={`rounded-md px-3 py-1 text-[10px] font-black uppercase tracking-wider transition-colors ${
+                      conditionType === option
+                        ? 'bg-blue-600 text-white'
+                        : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {normalizedConditions.map((condition: any, idx: number) => {
+              const operator = String(condition.operator || 'equals');
+              const valueMode = String(condition.value_mode || 'literal') === 'field'
+                ? 'field'
+                : 'literal';
+              const usesStringComparison = IF_ELSE_STRING_OPERATORS.has(operator);
+              const fieldDropKey = `if_condition_field_${idx}`;
+              const valueFieldDropKey = `if_condition_value_field_${idx}`;
+              const valueDropKey = `if_condition_value_${idx}`;
+
+              return (
+                <div key={condition.id || idx} className="space-y-2">
+                  {idx > 0 && normalizedConditions.length > 1 && (
+                    <div className="flex items-center gap-2 pl-1">
+                      <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500">
+                        {conditionType}
+                      </span>
+                      <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+                    </div>
+                  )}
+
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/40">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                        Condition {idx + 1}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeCondition(idx)}
+                        disabled={normalizedConditions.length === 1}
+                        className="rounded-md p-1 text-slate-300 transition-colors hover:bg-red-50 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-700 dark:hover:bg-red-950/30 dark:hover:text-red-400"
+                        title="Remove condition"
+                      >
+                        <Trash2 size={14} strokeWidth={2.5} />
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2">
+                      <input
+                        type="text"
+                        value={String(condition.field || '')}
+                        placeholder={dragOverField === fieldDropKey ? 'Drop to insert path…' : 'Field, e.g. status'}
+                        onChange={(event) => updateCondition(idx, { field: event.target.value })}
+                        onDragOver={(event) => handleDragOver(event, fieldDropKey)}
+                        onDragLeave={(event) => handleDragLeave(event)}
+                        onDrop={(event) => handleIfConditionDrop(event, idx, 'field', 'field')}
+                        className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all placeholder:text-slate-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === fieldDropKey
+                          ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                          : 'border-slate-200 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+                          }`}
+                      />
+
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                        <select
+                          value={operator}
+                          onChange={(event) => updateCondition(idx, { operator: event.target.value })}
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:focus:border-blue-400"
+                        >
+                          {IF_ELSE_OPERATORS.map((op) => (
+                            <option key={op} value={op}>{FILTER_OPERATOR_LABELS[op] || op}</option>
+                          ))}
+                        </select>
+
+                        <select
+                          value={valueMode}
+                          onChange={(event) => updateCondition(idx, { value_mode: event.target.value })}
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:focus:border-blue-400"
+                        >
+                          <option value="literal">Literal Value</option>
+                          <option value="field">Another Field</option>
+                        </select>
+                      </div>
+
+                      {valueMode === 'field' ? (
+                        <input
+                          type="text"
+                          value={String(condition.value_field || '')}
+                          placeholder={dragOverField === valueFieldDropKey ? 'Drop to insert path…' : 'Right field, e.g. expected_status'}
+                          onChange={(event) => updateCondition(idx, { value_field: event.target.value })}
+                          onDragOver={(event) => handleDragOver(event, valueFieldDropKey)}
+                          onDragLeave={(event) => handleDragLeave(event)}
+                          onDrop={(event) => handleIfConditionDrop(event, idx, 'value_field', 'value_field')}
+                          className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all placeholder:text-slate-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === valueFieldDropKey
+                            ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                            : 'border-slate-200 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+                            }`}
+                        />
+                      ) : (
+                        <input
+                          type={['greater_than', 'less_than'].includes(operator) ? 'number' : 'text'}
+                          value={String(condition.value ?? '')}
+                          placeholder={dragOverField === valueDropKey ? 'Drop to insert {{path}}…' : 'Value, e.g. active'}
+                          onChange={(event) => updateCondition(idx, { value: event.target.value })}
+                          onDragOver={(event) => handleDragOver(event, valueDropKey)}
+                          onDragLeave={(event) => handleDragLeave(event)}
+                          onDrop={(event) => handleIfConditionDrop(event, idx, 'value', 'value')}
+                          className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all placeholder:text-slate-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:placeholder:text-slate-700 ${dragOverField === valueDropKey
+                            ? 'border-blue-400 ring-2 ring-blue-500/30 bg-blue-50/40 dark:bg-blue-900/10 dark:border-blue-500'
+                            : 'border-slate-200 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400'
+                            }`}
+                        />
+                      )}
+
+                      {usesStringComparison && (
+                        <select
+                          value={String(Boolean(condition.case_sensitive ?? true))}
+                          onChange={(event) => updateCondition(idx, { case_sensitive: event.target.value === 'true' })}
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:focus:border-blue-400"
+                        >
+                          <option value="true">Case sensitive</option>
+                          <option value="false">Case insensitive</option>
+                        </select>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            <button
+              type="button"
+              onClick={addCondition}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-200 py-2 text-xs font-bold text-slate-400 transition-all hover:border-blue-300 hover:text-blue-500 dark:border-slate-800 dark:text-slate-600 dark:hover:border-blue-900 dark:hover:text-blue-400"
+            >
+              <Plus size={12} strokeWidth={3} />
+              Add Condition
+            </button>
           </div>
         );
       }
