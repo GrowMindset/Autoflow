@@ -66,18 +66,28 @@ class WorkflowService:
         user_id: UUID,
         limit: int,
         offset: int,
-    ) -> tuple[int, list[Workflow]]:
+    ) -> tuple[int, list[dict[str, Any]]]:
         total = await self.db.scalar(
             select(func.count()).select_from(Workflow).where(Workflow.user_id == user_id)
         )
-        result = await self.db.scalars(
-            select(Workflow)
+        result = await self.db.execute(
+            select(
+                Workflow.id.label("id"),
+                Workflow.user_id.label("user_id"),
+                Workflow.name.label("name"),
+                Workflow.description.label("description"),
+                Workflow.is_published.label("is_published"),
+                Workflow.is_active.label("is_active"),
+                Workflow.created_at.label("created_at"),
+                Workflow.updated_at.label("updated_at"),
+            )
             .where(Workflow.user_id == user_id)
             .order_by(Workflow.updated_at.desc(), Workflow.id.desc())
             .limit(limit)
             .offset(offset)
         )
-        return int(total or 0), list(result.all())
+        rows = result.mappings().all()
+        return int(total or 0), [dict(row) for row in rows]
 
     async def get_workflow(self, *, workflow_id: UUID, user_id: UUID) -> Workflow | None:
         result = await self.db.scalar(

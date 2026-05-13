@@ -24,6 +24,7 @@ type ConversationStateByWorkflow = Record<string, ConversationState>;
 
 const AI_CHAT_HISTORY_SESSION_KEY = 'autoflow_ai_chat_history_v2';
 const AI_CONVERSATION_STATE_SESSION_KEY = 'autoflow_ai_conversation_state_v1';
+const LAST_ACTIVE_WORKFLOW_STORAGE_KEY = 'autoflow_last_active_workflow_v1';
 const AUTO_SAVE_DEBOUNCE_MS = 1200;
 const AI_HISTORY_SAVE_DEBOUNCE_MS = 500;
 
@@ -79,6 +80,7 @@ const MainLayout: React.FC = () => {
   const queuedAutoSaveRef = useRef(false);
   const lastSavedDefinitionRef = useRef<string>('');
   const skipNextPublishedUrlReloadRef = useRef<string | null>(null);
+  const workflowLoadRequestIdRef = useRef(0);
 
   // Logs Panel State
   const [logsExpanded, setLogsExpanded] = useState(false);
@@ -163,6 +165,46 @@ const MainLayout: React.FC = () => {
   const [executionState, setExecutionState] = useState<string>('idle');
   const [lastExecutionDuration, setLastExecutionDuration] = useState<number | undefined>(undefined);
 
+  const loadCanvasDefinitionWithRetry = useCallback(async (definition: any): Promise<boolean> => {
+    const safeDefinition = definition || { nodes: [], edges: [] };
+    const maxAttempts = 20;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const loadFn = (window as any).loadCanvasWorkflowData;
+      if (typeof loadFn === 'function') {
+        loadFn(safeDefinition);
+        return true;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 40));
+    }
+    return false;
+  }, []);
+
+  const loadWorkflowIntoCanvas = useCallback(async (workflowId: string) => {
+    if (!workflowId || workflowId === 'new') return;
+
+    const requestId = workflowLoadRequestIdRef.current + 1;
+    workflowLoadRequestIdRef.current = requestId;
+    setIsLoading(true);
+    try {
+      const fullWorkflow = await workflowService.getWorkflow(workflowId);
+      if (workflowLoadRequestIdRef.current !== requestId) return;
+      if (!fullWorkflow) return;
+
+      const definition = fullWorkflow.definition || { nodes: [], edges: [] };
+      setCurrentDescription(fullWorkflow.description || '');
+      lastSavedDefinitionRef.current = JSON.stringify(definition);
+      const loaded = await loadCanvasDefinitionWithRetry(definition);
+      if (!loaded) {
+        console.warn(`Canvas loader was not ready for workflow ${workflowId}.`);
+      }
+    } finally {
+      if (workflowLoadRequestIdRef.current === requestId) {
+        setIsLoading(false);
+      }
+    }
+  }, [loadCanvasDefinitionWithRetry]);
+
   // Initial fetch
   useEffect(() => {
     const fetchWorkflows = async () => {
@@ -171,7 +213,20 @@ const MainLayout: React.FC = () => {
         const data = await workflowService.getWorkflows();
         setWorkflows(data);
         if (data.length > 0) {
-          setCurrentWorkflowId(data[0].id);
+          let preferredWorkflowId = '';
+          try {
+            preferredWorkflowId = localStorage.getItem(LAST_ACTIVE_WORKFLOW_STORAGE_KEY) || '';
+          } catch (_error) {
+            preferredWorkflowId = '';
+          }
+          const selectedId = data.some((workflow) => workflow.id === preferredWorkflowId)
+            ? preferredWorkflowId
+            : data[0].id;
+          setCurrentWorkflowId(selectedId);
+        } else {
+          setCurrentWorkflowId('new');
+          setCurrentDescription('');
+          lastSavedDefinitionRef.current = JSON.stringify({ nodes: [], edges: [] });
         }
       } catch (error) {
         console.error('Failed to load workflows');
@@ -181,6 +236,20 @@ const MainLayout: React.FC = () => {
     };
     fetchWorkflows();
   }, []);
+
+  useEffect(() => {
+    if (!currentWorkflowId) return;
+    try {
+      localStorage.setItem(LAST_ACTIVE_WORKFLOW_STORAGE_KEY, currentWorkflowId);
+    } catch (_error) {
+      // Ignore storage write failures.
+    }
+  }, [currentWorkflowId]);
+
+  useEffect(() => {
+    if (!currentWorkflowId || currentWorkflowId === 'new') return;
+    void loadWorkflowIntoCanvas(currentWorkflowId);
+  }, [currentWorkflowId, loadWorkflowIntoCanvas]);
 
   useEffect(() => {
     const raw = sessionStorage.getItem(AI_CHAT_HISTORY_SESSION_KEY);
@@ -455,19 +524,7 @@ const MainLayout: React.FC = () => {
     setLastExecutionDuration(undefined);
     clearAutoSaveTimeout();
     setSaveStatus('idle');
-    setIsLoading(true);
-    try {
-      const fullWorkflow = await workflowService.getWorkflow(id);
-      if (fullWorkflow) {
-        setCurrentDescription(fullWorkflow.description || '');
-        lastSavedDefinitionRef.current = JSON.stringify(fullWorkflow.definition || { nodes: [], edges: [] });
-        if ((window as any).loadCanvasWorkflowData) {
-          (window as any).loadCanvasWorkflowData(fullWorkflow.definition);
-        }
-      }
-    } finally {
-      setIsLoading(false);
-    }
+    setCurrentDescription('');
   }, [createNewWorkflowDraft, clearAutoSaveTimeout, clearAiReviewState]);
   const saveWorkflow = useCallback(async ({ silent = false, force = false }: { silent?: boolean; force?: boolean } = {}) => {
     if (!(window as any).getCanvasWorkflowData) return;
@@ -567,9 +624,6 @@ const MainLayout: React.FC = () => {
         })();
 
         setCurrentWorkflowId(savedResult.id);
-        window.setTimeout(() => {
-          (window as any).loadCanvasWorkflowData?.(definition);
-        }, 0);
       }
 
       lastSavedDefinitionRef.current = JSON.stringify(definition);
@@ -871,10 +925,6 @@ const MainLayout: React.FC = () => {
     if (currentWorkflowId === id) {
       if (updatedWorkflows.length > 0) {
         setCurrentWorkflowId(updatedWorkflows[0].id);
-        const full = await workflowService.getWorkflow(updatedWorkflows[0].id);
-        if (full && (window as any).loadCanvasWorkflowData) {
-          (window as any).loadCanvasWorkflowData(full.definition);
-        }
       } else {
         createNewWorkflowDraft();
       }

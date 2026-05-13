@@ -2673,7 +2673,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, []);
 
   const loadWorkflowVersions = useCallback(async (options?: { silent?: boolean }) => {
-    if (workflowId === 'new') {
+    if (!workflowId || workflowId === 'new') {
       setIsVersionsLoading(false);
       setWorkflowVersions([]);
       setCurrentVersionId(null);
@@ -2731,7 +2731,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [loadWorkflowData, reactFlowInstance]);
 
   const previewWorkflowVersion = useCallback(async (versionId: string) => {
-    if (workflowId === 'new') {
+    if (!workflowId || workflowId === 'new') {
       toast.error('Save workflow first to preview versions.');
       return;
     }
@@ -2779,7 +2779,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [buildWorkflowDefinition, isAiPreviewMode, loadWorkflowData, reactFlowInstance, workflowId]);
 
   const restoreWorkflowVersion = useCallback(async (versionId: string) => {
-    if (workflowId === 'new') {
+    if (!workflowId || workflowId === 'new') {
       toast.error('Save workflow first to restore versions.');
       return;
     }
@@ -2833,14 +2833,14 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setWorkflowVersions([]);
     setCurrentVersionId(null);
 
-    if (workflowId !== 'new') {
+    if (workflowId && workflowId !== 'new') {
       void loadWorkflowVersions();
     }
   }, [workflowId, loadWorkflowVersions]);
 
   useEffect(() => {
     if (activeTab !== 'versions') return;
-    if (workflowId === 'new') return;
+    if (!workflowId || workflowId === 'new') return;
     void loadWorkflowVersions({ silent: false });
   }, [activeTab, loadWorkflowVersions, workflowId]);
 
@@ -4504,7 +4504,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                   <button
                     type="button"
                     onClick={() => void loadWorkflowVersions()}
-                    disabled={isVersionsLoading || workflowId === 'new'}
+                    disabled={isVersionsLoading || !workflowId || workflowId === 'new'}
                     className="rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Refresh
@@ -4512,7 +4512,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 </div>
               </div>
 
-              {workflowId === 'new' ? (
+              {!workflowId || workflowId === 'new' ? (
                 <div className="rounded-3xl border border-dashed border-slate-200 dark:border-slate-800 p-8 text-center text-slate-500 dark:text-slate-400">
                   Save this workflow once to start creating and restoring versions.
                 </div>
