@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from app.models.executions import Execution
     from app.models.user import User
     from app.models.webhook import WebhookEndpoint
+    from app.models.workflow_versions import WorkflowVersion
 
 
 class Workflow(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -71,4 +72,7 @@ class Workflow(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     webhook_endpoints: Mapped[list["WebhookEndpoint"]] = relationship(
         "WebhookEndpoint", back_populates="workflow", cascade="all, delete-orphan"
+    )
+    versions: Mapped[list["WorkflowVersion"]] = relationship(
+        "WorkflowVersion", back_populates="workflow", cascade="all, delete-orphan"
     )

@@ -71,6 +71,7 @@ const MainLayout: React.FC = () => {
 
   // Save Status State
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [isSaveActionInFlight, setIsSaveActionInFlight] = useState(false);
   const [currentDescription, setCurrentDescription] = useState<string>('');
   const [publishedRunUrl, setPublishedRunUrl] = useState<string | null>(null);
   const autoSaveTimeoutRef = useRef<number | null>(null);
@@ -468,6 +469,12 @@ const MainLayout: React.FC = () => {
       }
       return;
     }
+    if ((window as any).isVersionWorkflowPreviewActive?.()) {
+      if (!silent) {
+        toast.error('Exit version preview before saving.');
+      }
+      return;
+    }
 
     const workflowData = (window as any).getCanvasWorkflowData(currentWorkflow.name);
     const savePayload = {
@@ -567,6 +574,34 @@ const MainLayout: React.FC = () => {
     currentDescription,
   ]);
 
+  useEffect(() => {
+    const handleWorkflowRestored = (event: Event) => {
+      const customEvent = event as CustomEvent<any>;
+      const restoredWorkflow = customEvent.detail;
+      if (!restoredWorkflow?.id) return;
+
+      setWorkflows((prev) =>
+        prev.map((workflow) =>
+          workflow.id === restoredWorkflow.id
+            ? {
+                ...workflow,
+                name: restoredWorkflow.name || workflow.name,
+                description: restoredWorkflow.description ?? workflow.description,
+              }
+            : workflow
+        )
+      );
+      if (restoredWorkflow.id === currentWorkflowId) {
+        setCurrentDescription(restoredWorkflow.description || '');
+      }
+    };
+
+    window.addEventListener('autoflow:workflow-restored', handleWorkflowRestored as EventListener);
+    return () => {
+      window.removeEventListener('autoflow:workflow-restored', handleWorkflowRestored as EventListener);
+    };
+  }, [currentWorkflowId]);
+
   const runAutoSave = useCallback(async () => {
     if (isAutoSaveInFlightRef.current) {
       queuedAutoSaveRef.current = true;
@@ -608,11 +643,46 @@ const MainLayout: React.FC = () => {
     scheduleAutoSave();
   }, [scheduleAutoSave]);
 
-  const handleSave = useCallback(async () => {
+  const handleSaveOnly = useCallback(async () => {
+    if (isSaveActionInFlight) return;
+    setIsSaveActionInFlight(true);
     clearAutoSaveTimeout();
     queuedAutoSaveRef.current = false;
-    await saveWorkflow({ silent: false, force: true });
-  }, [clearAutoSaveTimeout, saveWorkflow]);
+    try {
+      const saved = await saveWorkflow({ silent: false, force: true });
+      return saved;
+    } finally {
+      setIsSaveActionInFlight(false);
+    }
+  }, [clearAutoSaveTimeout, isSaveActionInFlight, saveWorkflow]);
+
+  const handleSaveAndCreateVersion = useCallback(async (note?: string) => {
+    if (isSaveActionInFlight) return;
+    setIsSaveActionInFlight(true);
+    clearAutoSaveTimeout();
+    queuedAutoSaveRef.current = false;
+
+    try {
+      const saved = await saveWorkflow({ silent: false, force: true });
+      if (!saved?.id) {
+        toast.error('Could not create version because workflow save failed.');
+        return;
+      }
+
+      await toast.promise(
+        workflowService.createWorkflowVersion(saved.id, note),
+        {
+          loading: 'Creating workflow version...',
+          success: (version) => <b>Version v{version.version_number} created successfully!</b>,
+          error: <b>Could not create workflow version.</b>,
+        }
+      );
+    } catch (error) {
+      console.error('Version creation failed:', error);
+    } finally {
+      setIsSaveActionInFlight(false);
+    }
+  }, [clearAutoSaveTimeout, isSaveActionInFlight, saveWorkflow]);
 
   const ensureWorkflowSaved = useCallback(async (): Promise<boolean> => {
     if (currentWorkflowId === 'new') {
@@ -1178,7 +1248,9 @@ const MainLayout: React.FC = () => {
           }}
           onToggleNodePalette={() => setIsRightSidebarOpen(!isRightSidebarOpen)}
           isNodePaletteOpen={isRightSidebarOpen}
-          onSave={handleSave}
+          onSaveOnly={handleSaveOnly}
+          onSaveAndCreateVersion={handleSaveAndCreateVersion}
+          isSaveActionInFlight={isSaveActionInFlight}
           isPublished={isPublished}
           onTogglePublish={handleTogglePublish}
           onCopyPublishedUrl={handleCopyPublishedUrl}

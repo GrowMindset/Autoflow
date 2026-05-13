@@ -14,7 +14,9 @@ interface TopbarProps {
   onDescribeWorkflow: (desc: string) => void;
   onToggleNodePalette: () => void;
   isNodePaletteOpen: boolean;
-  onSave: () => void;
+  onSaveOnly: () => void;
+  onSaveAndCreateVersion: (note?: string) => void;
+  isSaveActionInFlight?: boolean;
   onImport: (data: any) => void;
   isPublished?: boolean;
   onTogglePublish?: () => void;
@@ -32,7 +34,9 @@ const Topbar: React.FC<TopbarProps> = ({
   onDescribeWorkflow,
   onToggleNodePalette,
   isNodePaletteOpen,
-  onSave,
+  onSaveOnly,
+  onSaveAndCreateVersion,
+  isSaveActionInFlight = false,
   onImport,
   isPublished = false,
   onTogglePublish,
@@ -50,9 +54,13 @@ const Topbar: React.FC<TopbarProps> = ({
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isCredentialModalOpen, setIsCredentialModalOpen] = useState(false);
+  const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
+  const [isSaveVersionMode, setIsSaveVersionMode] = useState(false);
+  const [versionNote, setVersionNote] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const descRef = useRef<HTMLInputElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const saveMenuRef = useRef<HTMLDivElement>(null);
 
   const user = useAuthStore((state) => state.user);
   const clearAuth = useAuthStore((state) => state.clearAuth);
@@ -86,10 +94,16 @@ const Topbar: React.FC<TopbarProps> = ({
       if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
         setIsUserMenuOpen(false);
       }
+      if (saveMenuRef.current && !saveMenuRef.current.contains(event.target as Node)) {
+        setIsSaveMenuOpen(false);
+        setIsSaveVersionMode(false);
+      }
     };
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setIsUserMenuOpen(false);
+        setIsSaveMenuOpen(false);
+        setIsSaveVersionMode(false);
       }
     };
     document.addEventListener('pointerdown', handlePointerDownOutside);
@@ -99,6 +113,13 @@ const Topbar: React.FC<TopbarProps> = ({
       document.removeEventListener('keydown', handleEscape);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isSaveMenuOpen) {
+      setIsSaveVersionMode(false);
+      setVersionNote('');
+    }
+  }, [isSaveMenuOpen]);
 
   const handleBlur = () => {
     setIsEditing(false);
@@ -296,14 +317,80 @@ const Topbar: React.FC<TopbarProps> = ({
           />
         )}
 
-        <button
-          onClick={onSave}
-          disabled={saveStatus === 'saving'}
-          className={`${saveStatus === 'saving' ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed shadow-none' : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-500/20'
-            } px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all active:scale-95`}
-        >
-          {saveStatus === 'saving' ? 'Saving...' : 'Save Changes'}
-        </button>
+        <div className="relative" ref={saveMenuRef}>
+          <button
+            onClick={() => {
+              if (saveStatus === 'saving' || isSaveActionInFlight) return;
+              setIsSaveMenuOpen((prev) => !prev);
+            }}
+            disabled={saveStatus === 'saving' || isSaveActionInFlight}
+            className={`${saveStatus === 'saving' || isSaveActionInFlight ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed shadow-none' : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-500/20'
+              } px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.1em] transition-all active:scale-95`}
+          >
+            {saveStatus === 'saving' || isSaveActionInFlight ? 'Saving...' : 'Save Changes'}
+          </button>
+
+          {isSaveMenuOpen && (
+            <div className="absolute right-0 top-full mt-2 w-80 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-[0_20px_50px_rgba(0,0,0,0.2)] p-3 z-[1200]">
+              {!isSaveVersionMode ? (
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSaveMenuOpen(false);
+                      onSaveOnly();
+                    }}
+                    className="w-full text-left rounded-xl px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  >
+                    Save Workflow
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsSaveVersionMode(true)}
+                    className="w-full text-left rounded-xl px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  >
+                    Save + Create Version
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 px-1">
+                    Add version note (optional)
+                  </div>
+                  <textarea
+                    value={versionNote}
+                    onChange={(event) => setVersionNote(event.target.value)}
+                    maxLength={500}
+                    placeholder="What changed in this version..."
+                    className="w-full h-20 resize-none rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2 text-xs text-slate-700 dark:text-slate-200 outline-none focus:border-blue-500"
+                  />
+                  <div className="text-right text-[10px] font-semibold text-slate-400 dark:text-slate-500">
+                    {versionNote.length}/500
+                  </div>
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsSaveVersionMode(false)}
+                      className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSaveMenuOpen(false);
+                        onSaveAndCreateVersion(versionNote);
+                      }}
+                      className="rounded-lg bg-blue-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-blue-700"
+                    >
+                      Create Version
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         <button
           onClick={onTogglePublish}

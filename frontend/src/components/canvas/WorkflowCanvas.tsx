@@ -23,6 +23,7 @@ import { NODE_LIBRARY } from '../../constants/nodeLibrary';
 import { createNode } from '../../utils/nodeFactory';
 import ConfigPanel from '../config/ConfigPanel';
 import { executionService, ExecutionDetail } from '../../services/executionService';
+import { workflowService, WorkflowVersion } from '../../services/workflowService';
 import toast from 'react-hot-toast';
 import { useTheme } from '../../context/ThemeContext';
 import { Play, Square, LayoutGrid, Sparkles, Search, Undo2, Redo2, Loader2, Plus } from 'lucide-react';
@@ -66,6 +67,10 @@ const UNDO_REDO_HISTORY_LIMIT = 100;
 const UNDO_REDO_COMMIT_DEBOUNCE_MS = 180;
 const AI_APPLY_PROCESS_MS = 950;
 const AI_APPLY_HIGHLIGHT_MS = 2200;
+const WORKFLOW_CLIPBOARD_VERSION = 1;
+const WORKFLOW_CLIPBOARD_STORAGE_KEY = `autoflow:workflow-clipboard:v${WORKFLOW_CLIPBOARD_VERSION}`;
+const DUPLICATE_NODE_OFFSET_X = 60;
+const DUPLICATE_NODE_OFFSET_Y = 40;
 const TRIGGER_NODE_TYPES = ['manual_trigger', 'form_trigger', 'schedule_trigger', 'webhook_trigger', 'workflow_trigger'] as const;
 const WORKFLOW_INACTIVE_ERROR_MESSAGE = 'Workflow is inactive. Please activate workflow first.';
 const DEFAULT_LOOP_CONTROL = {
@@ -143,6 +148,76 @@ const parseBooleanLike = (rawValue: unknown, fallback = true): boolean => {
     if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
   }
   return fallback;
+};
+
+const cloneNodeConfig = (config: Record<string, any> | undefined): Record<string, any> => {
+  if (!config || typeof config !== 'object') return {};
+  try {
+    if (typeof structuredClone === 'function') {
+      return structuredClone(config);
+    }
+  } catch (_error) {
+    // Fallback to JSON clone below.
+  }
+  try {
+    return JSON.parse(JSON.stringify(config));
+  } catch (_error) {
+    return { ...config };
+  }
+};
+
+const buildCopiedLabel = (label: string, fallbackType: string): string => {
+  const normalized = String(label || '').trim() || fallbackType.replace(/_/g, ' ');
+  return /\(copy\)$/i.test(normalized) ? normalized : `${normalized} (Copy)`;
+};
+
+const sanitizeIdPrefix = (rawPrefix: string, fallback: string, maxLength = 32): string => {
+  const normalized = String(rawPrefix || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  const candidate = normalized || fallback;
+  return candidate.slice(0, maxLength) || fallback;
+};
+
+const generateUniqueNodeId = (existingIds: Set<string>, nodeType: string): string => {
+  const safeType = sanitizeIdPrefix(nodeType, 'node', 32);
+  let attempt = 0;
+  let nextId = '';
+  do {
+    const timestampToken = Date.now().toString(36);
+    const randomToken = Math.random().toString(36).slice(2, 8);
+    const attemptToken = attempt > 0 ? `_${attempt.toString(36)}` : '';
+    nextId = `${safeType}_${timestampToken}_${randomToken}${attemptToken}`;
+    if (nextId.length > 100) {
+      nextId = nextId.slice(0, 100);
+    }
+    attempt += 1;
+  } while (existingIds.has(nextId));
+  existingIds.add(nextId);
+  return nextId;
+};
+
+const generateUniqueEdgeId = (existingIds: Set<string>): string => {
+  let attempt = 0;
+  let nextId = '';
+  do {
+    const timestampToken = Date.now().toString(36);
+    const randomToken = Math.random().toString(36).slice(2, 8);
+    const attemptToken = attempt > 0 ? `_${attempt.toString(36)}` : '';
+    nextId = `e_${timestampToken}_${randomToken}${attemptToken}`;
+    attempt += 1;
+  } while (existingIds.has(nextId));
+  existingIds.add(nextId);
+  return nextId;
+};
+
+const readEdgeBranch = (edge: WorkflowEdge | any): string | undefined => {
+  if (!edge || typeof edge !== 'object') return undefined;
+  if (!Object.prototype.hasOwnProperty.call(edge, 'branch')) return undefined;
+  const raw = (edge as any).branch;
+  if (raw === null || raw === undefined) return undefined;
+  return String(raw);
 };
 
 const isScheduleVisualActive = (
@@ -386,6 +461,95 @@ interface AiPreviewGraph {
   name: string;
 }
 
+interface WorkflowClipboardNode {
+  id: string;
+  type: WorkflowNode['type'];
+  position: XYPosition;
+  data: Omit<WorkflowNodeData, 'onToggleActive'>;
+}
+
+interface WorkflowClipboardEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+  branch?: string;
+  type?: string;
+  animated?: boolean;
+  style?: Record<string, any>;
+  markerEnd?: any;
+}
+
+interface WorkflowClipboardPayload {
+  version: number;
+  sourceWorkflowId: string;
+  copiedAtMs: number;
+  nodes: WorkflowClipboardNode[];
+  edges: WorkflowClipboardEdge[];
+}
+
+interface CanvasContextMenuState {
+  x: number;
+  y: number;
+  flowPosition: XYPosition;
+  nodeId: string | null;
+  alignRight: boolean;
+  alignBottom: boolean;
+}
+
+interface WorkflowVersionDetail extends WorkflowVersion {
+  snapshot_json: {
+    name: string;
+    description?: string | null;
+    definition: {
+      nodes: any[];
+      edges: any[];
+      loop_control?: {
+        enabled?: boolean;
+        max_node_executions?: number;
+        max_total_node_executions?: number;
+      };
+    };
+  };
+}
+
+const isWorkflowClipboardPayload = (value: any): value is WorkflowClipboardPayload => {
+  if (!value || typeof value !== 'object') return false;
+  if (value.version !== WORKFLOW_CLIPBOARD_VERSION) return false;
+  if (typeof value.sourceWorkflowId !== 'string') return false;
+  if (!Array.isArray(value.nodes) || !Array.isArray(value.edges)) return false;
+  return value.nodes.every((node: any) => (
+    node
+    && typeof node === 'object'
+    && typeof node.id === 'string'
+    && node.position
+    && Number.isFinite(Number(node.position.x))
+    && Number.isFinite(Number(node.position.y))
+    && node.data
+    && typeof node.data === 'object'
+  ));
+};
+
+const persistWorkflowClipboard = (payload: WorkflowClipboardPayload) => {
+  try {
+    window.localStorage.setItem(WORKFLOW_CLIPBOARD_STORAGE_KEY, JSON.stringify(payload));
+  } catch (_error) {
+    // Ignore storage write failures (private mode / quota / unavailable storage).
+  }
+};
+
+const readWorkflowClipboardFromStorage = (): WorkflowClipboardPayload | null => {
+  try {
+    const raw = window.localStorage.getItem(WORKFLOW_CLIPBOARD_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return isWorkflowClipboardPayload(parsed) ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+};
+
 interface WorkflowCanvasProps {
   workflowId: string;
   isPollingEnabled?: boolean;
@@ -423,9 +587,21 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<WorkflowEdge>(initialEdges);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
   const { isDark } = useTheme();
-  const [activeTab, setActiveTab] = useState<'editor' | 'executions'>('editor');
+  const [activeTab, setActiveTab] = useState<'editor' | 'executions' | 'versions'>('editor');
   const [executionHistory, setExecutionHistory] = useState<ExecutionHistoryEntry[]>([]);
+  const [workflowVersions, setWorkflowVersions] = useState<WorkflowVersion[]>([]);
+  const [isVersionsLoading, setIsVersionsLoading] = useState(false);
+  const [versionsError, setVersionsError] = useState<string | null>(null);
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  const [selectedVersionDetail, setSelectedVersionDetail] = useState<WorkflowVersionDetail | null>(null);
+  const [isVersionDetailLoading, setIsVersionDetailLoading] = useState(false);
+  const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
+  const [versionPreviewMeta, setVersionPreviewMeta] = useState<{
+    versionId: string;
+    versionNumber: number;
+  } | null>(null);
   const executionHistoryRef = useRef<ExecutionHistoryEntry[]>([]);
+  const versionPreviewBaseDefinitionRef = useRef<CanvasHistoryEntry['definition'] | null>(null);
   const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(null);
   const [selectedExecutionDetail, setSelectedExecutionDetail] = useState<ExecutionDetail | null>(null);
   const [isExecutionDetailLoading, setIsExecutionDetailLoading] = useState(false);
@@ -443,12 +619,20 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const historyCommitTimeoutRef = useRef<number | null>(null);
   const aiApplyTimeoutRef = useRef<number | null>(null);
   const aiHighlightTimeoutRef = useRef<number | null>(null);
+  const clipboardHighlightTimeoutRef = useRef<number | null>(null);
+  const lastPointerFlowPositionRef = useRef<XYPosition | null>(null);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [isAiApplyingChanges, setIsAiApplyingChanges] = useState(false);
   const [recentAiNodeIds, setRecentAiNodeIds] = useState<string[]>([]);
   const [recentAiEdgeIds, setRecentAiEdgeIds] = useState<string[]>([]);
+  const [recentClipboardNodeIds, setRecentClipboardNodeIds] = useState<string[]>([]);
+  const [recentClipboardEdgeIds, setRecentClipboardEdgeIds] = useState<string[]>([]);
+  const [contextMenuState, setContextMenuState] = useState<CanvasContextMenuState | null>(null);
+  const [hasClipboardData, setHasClipboardData] = useState<boolean>(() => Boolean(readWorkflowClipboardFromStorage()));
   const workflowLoopControlRef = useRef<Record<string, any>>({ ...DEFAULT_LOOP_CONTROL });
+  const workflowClipboardRef = useRef<WorkflowClipboardPayload | null>(null);
+  const clipboardPasteCountRef = useRef(0);
 
   const buildWorkflowDefinition = useCallback((sourceNodes: WorkflowNode[], sourceEdges: WorkflowEdge[]) => {
     return {
@@ -555,6 +739,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
   }, []);
 
+  const clearClipboardHighlightTimer = useCallback(() => {
+    if (clipboardHighlightTimeoutRef.current !== null) {
+      window.clearTimeout(clipboardHighlightTimeoutRef.current);
+      clipboardHighlightTimeoutRef.current = null;
+    }
+  }, []);
+
   const triggerAiApplyFeedback = useCallback((nodeIds: string[], edgeIds: string[]) => {
     clearAiApplyTimers();
     setIsAiApplyingChanges(true);
@@ -572,6 +763,17 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       aiHighlightTimeoutRef.current = null;
     }, AI_APPLY_PROCESS_MS + AI_APPLY_HIGHLIGHT_MS);
   }, [clearAiApplyTimers]);
+
+  const triggerClipboardMutationFeedback = useCallback((nodeIds: string[], edgeIds: string[]) => {
+    clearClipboardHighlightTimer();
+    setRecentClipboardNodeIds(nodeIds);
+    setRecentClipboardEdgeIds(edgeIds);
+    clipboardHighlightTimeoutRef.current = window.setTimeout(() => {
+      setRecentClipboardNodeIds([]);
+      setRecentClipboardEdgeIds([]);
+      clipboardHighlightTimeoutRef.current = null;
+    }, 1700);
+  }, [clearClipboardHighlightTimer]);
 
   const resetUndoRedoHistory = useCallback((definition?: CanvasHistoryEntry['definition']) => {
     const nextDefinition = definition || buildWorkflowDefinition(nodesRef.current, edgesRef.current);
@@ -684,6 +886,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   useEffect(() => {
     clearPendingHistoryCommit();
     clearAiApplyTimers();
+    clearClipboardHighlightTimer();
     historyStackRef.current = [];
     historyIndexRef.current = -1;
     setCanUndo(false);
@@ -691,6 +894,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setIsAiApplyingChanges(false);
     setRecentAiNodeIds([]);
     setRecentAiEdgeIds([]);
+    setRecentClipboardNodeIds([]);
+    setRecentClipboardEdgeIds([]);
     setAiPreviewGraph(null);
     setSelectedExecutionId(null);
     setSelectedExecutionDetail(null);
@@ -705,7 +910,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setRunFlowOptions([]);
     setIsStartingSelectedFlow(false);
     workflowLoopControlRef.current = { ...DEFAULT_LOOP_CONTROL };
-  }, [workflowId, clearPendingHistoryCommit, clearAiApplyTimers]);
+    workflowClipboardRef.current = readWorkflowClipboardFromStorage();
+    setHasClipboardData(Boolean(workflowClipboardRef.current));
+    clipboardPasteCountRef.current = 0;
+    setContextMenuState(null);
+    lastPointerFlowPositionRef.current = null;
+  }, [workflowId, clearPendingHistoryCommit, clearAiApplyTimers, clearClipboardHighlightTimer]);
 
   useEffect(() => {
     if (workflowId === 'new') {
@@ -740,6 +950,18 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       window.clearInterval(intervalId);
     };
   }, [isPollingEnabled, toExecutionHistoryEntry, workflowId]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key && event.key !== WORKFLOW_CLIPBOARD_STORAGE_KEY) return;
+      const payload = readWorkflowClipboardFromStorage();
+      workflowClipboardRef.current = payload;
+      setHasClipboardData(Boolean(payload));
+    };
+
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
 
   useEffect(() => {
     setNodes((nds) =>
@@ -855,6 +1077,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [aiPreviewGraph, setAiPreviewGraph] = useState<AiPreviewGraph | null>(null);
   const isAiPreviewMode = aiPreviewGraph !== null;
+  const isVersionPreviewMode = versionPreviewMeta !== null;
+  const isCanvasReadOnlyPreviewMode = isAiPreviewMode || isVersionPreviewMode;
+  const previewEditBlockMessage = isAiPreviewMode
+    ? 'Accept or discard the AI preview before editing.'
+    : 'Exit version preview before editing.';
 
   // Alignment Detection
   const [isAligned, setIsAligned] = useState(true);
@@ -865,8 +1092,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   useEffect(() => {
     const handleQuickAdd = (e: any) => {
-      if (isAiPreviewMode) {
-        toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+      if (isCanvasReadOnlyPreviewMode) {
+        toast(previewEditBlockMessage, { icon: 'ℹ️' });
         return;
       }
       const {
@@ -896,7 +1123,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       window.removeEventListener('rf-quick-add', handleQuickAdd);
       setMenuSearchTerm('');
     };
-  }, [isAiPreviewMode, nodes, reactFlowInstance]);
+  }, [isCanvasReadOnlyPreviewMode, nodes, previewEditBlockMessage, reactFlowInstance]);
 
   useEffect(() => {
     if (menuVisible && menuSearchRef.current) {
@@ -923,8 +1150,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [onCanvasMutated, scheduleHistorySnapshot]);
 
   const toggleNodeActive = useCallback((nodeId: string) => {
-    if (isAiPreviewMode) {
-      toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+    if (isCanvasReadOnlyPreviewMode) {
+      toast(previewEditBlockMessage, { icon: 'ℹ️' });
       return;
     }
 
@@ -951,7 +1178,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     if (!changed) return;
     emitCanvasMutation('node_active_toggle');
     toast.success(nextActiveState ? 'Node activated' : 'Node deactivated');
-  }, [emitCanvasMutation, isAiPreviewMode, setNodes]);
+  }, [emitCanvasMutation, isCanvasReadOnlyPreviewMode, previewEditBlockMessage, setNodes]);
 
   const onNodesChange = useCallback((changes: any[]) => {
     onNodesChangeBase(changes);
@@ -1178,14 +1405,24 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       data: n.data,
     }));
 
-    const graphEdges: WorkflowEdge[] = (definition?.edges || []).map((e: any, index: number) => ({
-      ...e,
-      id: e.id || `e_${e.source}_${e.target}_${index}`,
-      type: 'deletable',
-      animated: false,
-      markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
-      style: { stroke: '#94a3b8', strokeWidth: 2 },
-    }));
+    const usedEdgeIds = new Set<string>();
+    const graphEdges: WorkflowEdge[] = (definition?.edges || []).map((e: any) => {
+      const incomingId = typeof e?.id === 'string' ? e.id.trim() : '';
+      const nextId = incomingId && incomingId.length <= 100 && !usedEdgeIds.has(incomingId)
+        ? incomingId
+        : generateUniqueEdgeId(usedEdgeIds);
+      if (incomingId && incomingId.length <= 100 && !usedEdgeIds.has(incomingId)) {
+        usedEdgeIds.add(incomingId);
+      }
+      return {
+        ...e,
+        id: nextId,
+        type: 'deletable',
+        animated: false,
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8' },
+        style: { stroke: '#94a3b8', strokeWidth: 2 },
+      };
+    });
 
     return {
       nodes: graphNodes,
@@ -1211,8 +1448,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [emitCanvasMutation, reactFlowInstance, triggerAiApplyFeedback]);
 
   const alignNodes = useCallback(() => {
-    if (isAiPreviewMode) {
-      toast('Accept or discard the AI preview before aligning nodes.', { icon: 'ℹ️' });
+    if (isCanvasReadOnlyPreviewMode) {
+      toast(previewEditBlockMessage, { icon: 'ℹ️' });
       return;
     }
     const positionedNodes = autoLayout(nodes, edges);
@@ -1226,7 +1463,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
 
     toast.success('Workflow perfectly aligned');
-  }, [isAiPreviewMode, nodes, edges, setNodes, autoLayout, reactFlowInstance, emitCanvasMutation]);
+  }, [isCanvasReadOnlyPreviewMode, nodes, edges, setNodes, autoLayout, reactFlowInstance, emitCanvasMutation, previewEditBlockMessage]);
 
   const stopPolling = useCallback(() => {
     if (pollingIntervalRef.current !== null) {
@@ -1742,8 +1979,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [startExecutionFromTrigger]);
 
   const handleRunWorkflow = useCallback(async () => {
-    if (isAiPreviewMode) {
-      toast('Accept or discard the AI preview before executing workflow.', { icon: 'ℹ️' });
+    if (isCanvasReadOnlyPreviewMode) {
+      if (isVersionPreviewMode) {
+        toast('Exit version preview before executing workflow.', { icon: 'ℹ️' });
+      } else {
+        toast('Accept or discard the AI preview before executing workflow.', { icon: 'ℹ️' });
+      }
       return;
     }
 
@@ -1795,7 +2036,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
     const trigger = rootTriggers[0];
     await startExecutionFromTrigger(trigger);
-  }, [isAiPreviewMode, workflowId, isPollingEnabled, nodes, edges, selectedNodeId, startExecutionFromTrigger]);
+  }, [isCanvasReadOnlyPreviewMode, isVersionPreviewMode, workflowId, isPollingEnabled, nodes, edges, selectedNodeId, startExecutionFromTrigger]);
 
   useEffect(() => {
     stopPolling();
@@ -1903,8 +2144,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [edges]);
 
   const onConnect = useCallback((params: Connection) => {
-    if (isAiPreviewMode) return;
+    if (isCanvasReadOnlyPreviewMode) return;
     if (!params.source || !params.target) return;
+    const existingEdgeIds = new Set(edgesRef.current.map((edge) => edge.id));
 
     const newEdge: WorkflowEdge = {
       ...params,
@@ -1913,7 +2155,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       sourceHandle: params.sourceHandle,
       targetHandle: params.targetHandle,
       branch: params.sourceHandle ?? undefined,
-      id: `e_${params.source}_${params.target}_${params.sourceHandle || 'def'}_${Date.now()}`,
+      id: generateUniqueEdgeId(existingEdgeIds),
       type: 'deletable',
       animated: false,
       style: { stroke: '#94a3b8', strokeWidth: 2 },
@@ -1923,7 +2165,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     emitCanvasMutation('connect_nodes');
     connectingNode.current = null; // Clear connection state after successful connection
     toast.success('Nodes connected');
-  }, [isAiPreviewMode, setEdges, emitCanvasMutation]);
+  }, [isCanvasReadOnlyPreviewMode, setEdges, emitCanvasMutation]);
 
   const onConnectStart = useCallback((_: any, {
     nodeId,
@@ -1934,7 +2176,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     handleId?: string | null;
     handleType?: 'source' | 'target' | null;
   }) => {
-    if (isAiPreviewMode) {
+    if (isCanvasReadOnlyPreviewMode) {
       connectingNode.current = null;
       return;
     }
@@ -1947,11 +2189,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       handleId: handleId ?? null,
       connectionType: handleType === 'target' ? 'target' : 'source',
     };
-  }, [isAiPreviewMode]);
+  }, [isCanvasReadOnlyPreviewMode]);
 
   const onConnectEnd = useCallback(
     (event: any) => {
-      if (isAiPreviewMode) return;
+      if (isCanvasReadOnlyPreviewMode) return;
       if (!connectingNode.current || !reactFlowInstance) return;
 
       const targetIsPane = event.target.classList.contains('react-flow__pane');
@@ -1968,13 +2210,61 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         setMenuVisible(true);
       }
     },
-    [isAiPreviewMode, reactFlowInstance]
+    [isCanvasReadOnlyPreviewMode, reactFlowInstance]
   );
 
   const onPaneClick = useCallback(() => {
     setMenuVisible(false);
+    setContextMenuState(null);
     connectingNode.current = null; // Clear connection state when clicking on pane
   }, []);
+
+  const updateLastPointerFlowPosition = useCallback((clientX: number, clientY: number) => {
+    if (!reactFlowInstance) return;
+    lastPointerFlowPositionRef.current = reactFlowInstance.screenToFlowPosition({
+      x: clientX,
+      y: clientY,
+    });
+  }, [reactFlowInstance]);
+
+  const openContextMenuAtClientPoint = useCallback((clientX: number, clientY: number, nodeId: string | null) => {
+    if (!reactFlowInstance || !reactFlowWrapper.current) return;
+    const wrapperRect = reactFlowWrapper.current.getBoundingClientRect();
+    const localX = clientX - wrapperRect.left;
+    const localY = clientY - wrapperRect.top;
+    const menuWidth = 200;
+    const menuHeight = 150;
+    const alignRight = localX > wrapperRect.width - menuWidth;
+    const alignBottom = localY > wrapperRect.height - menuHeight;
+
+    const flowPosition = reactFlowInstance.screenToFlowPosition({ x: clientX, y: clientY });
+    lastPointerFlowPositionRef.current = flowPosition;
+
+    setContextMenuState({
+      x: localX,
+      y: localY,
+      flowPosition,
+      nodeId,
+      alignRight,
+      alignBottom,
+    });
+    setMenuVisible(false);
+    connectingNode.current = null;
+  }, [reactFlowInstance]);
+
+  const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    openContextMenuAtClientPoint(event.clientX, event.clientY, null);
+  }, [openContextMenuAtClientPoint]);
+
+  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: WorkflowNode) => {
+    event.preventDefault();
+    openContextMenuAtClientPoint(event.clientX, event.clientY, node.id);
+  }, [openContextMenuAtClientPoint]);
+
+  const onPaneMouseMove = useCallback((event: React.MouseEvent) => {
+    updateLastPointerFlowPosition(event.clientX, event.clientY);
+  }, [updateLastPointerFlowPosition]);
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
@@ -1983,8 +2273,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   const onDrop = useCallback(
     (event: React.DragEvent) => {
-      if (isAiPreviewMode) {
-        toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+      if (isCanvasReadOnlyPreviewMode) {
+        toast(previewEditBlockMessage, { icon: 'ℹ️' });
         return;
       }
       event.preventDefault();
@@ -2001,12 +2291,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
       addNodeAtPosition(nodeType, position);
     },
-    [isAiPreviewMode, reactFlowInstance]
+    [isCanvasReadOnlyPreviewMode, previewEditBlockMessage, reactFlowInstance]
   );
 
   const addNodeAtPosition = useCallback((type: string, position: XYPosition) => {
-    if (isAiPreviewMode) {
-      toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+    if (isCanvasReadOnlyPreviewMode) {
+      toast(previewEditBlockMessage, { icon: 'ℹ️' });
       return;
     }
     if (
@@ -2027,12 +2317,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       toast.success(`${newNode.data.label} added`);
 
       if (connectingNode.current) {
+        const existingEdgeIds = new Set(edgesRef.current.map((edge) => edge.id));
         const { nodeId: anchorNodeId, handleId, connectionType } = connectingNode.current;
         const sourceHandle = handleId ?? undefined;
         const newEdge: WorkflowEdge =
           connectionType === 'target'
             ? {
-                id: `e_${newNodeId}_${anchorNodeId}_${handleId || 'def'}`,
+                id: generateUniqueEdgeId(existingEdgeIds),
                 source: newNodeId,
                 target: anchorNodeId,
                 sourceHandle: null,
@@ -2047,7 +2338,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 },
               }
             : {
-                id: `e_${anchorNodeId}_${newNodeId}_${handleId || 'def'}`,
+                id: generateUniqueEdgeId(existingEdgeIds),
                 source: anchorNodeId,
                 target: newNodeId,
                 sourceHandle,
@@ -2070,12 +2361,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     } catch (error) {
       console.error(error);
     }
-  }, [isAiPreviewMode, setNodes, setEdges, emitCanvasMutation, toggleNodeActive]);
+  }, [isCanvasReadOnlyPreviewMode, setNodes, setEdges, emitCanvasMutation, toggleNodeActive, previewEditBlockMessage]);
 
   const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: any) => {
-    if (isAiPreviewMode) return;
+    if (isCanvasReadOnlyPreviewMode) return;
     setSelectedNodeId(node.id);
-  }, [isAiPreviewMode]);
+  }, [isCanvasReadOnlyPreviewMode]);
 
   const openQuickAddAtCenter = useCallback(() => {
     if (!reactFlowInstance || !reactFlowWrapper.current) return;
@@ -2269,6 +2560,526 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     }
   }, [applyHistoryEntry, flushPendingHistoryCommit, onCanvasMutated, updateUndoRedoAvailability]);
 
+  const markDefinitionAsClean = useCallback((definition: any) => {
+    if (!definition) return;
+    setInitialData(JSON.stringify({
+      nodes: (definition.nodes || []).map((node: any) => ({ ...node, position: node.position })),
+      edges: definition.edges || [],
+    }));
+  }, []);
+
+  const loadWorkflowVersions = useCallback(async (options?: { silent?: boolean }) => {
+    if (workflowId === 'new') {
+      setIsVersionsLoading(false);
+      setWorkflowVersions([]);
+      setCurrentVersionId(null);
+      setSelectedVersionId(null);
+      setSelectedVersionDetail(null);
+      setVersionsError(null);
+      return;
+    }
+
+    if (!options?.silent) {
+      setIsVersionsLoading(true);
+    }
+    setVersionsError(null);
+    try {
+      const versions = await workflowService.listWorkflowVersions(workflowId);
+      setWorkflowVersions(versions);
+      setCurrentVersionId((previous) => {
+        if (previous && versions.some((version) => version.id === previous)) {
+          return previous;
+        }
+        return versions[0]?.id || null;
+      });
+      if (versions.length === 0) {
+        setSelectedVersionId(null);
+        setSelectedVersionDetail(null);
+      }
+    } catch (error: any) {
+      console.error('Failed to load workflow versions:', error);
+      const message = toUserFriendlyErrorMessage(
+        error?.response?.data?.detail,
+        'Failed to load versions.',
+      );
+      setVersionsError(message);
+    } finally {
+      if (!options?.silent) {
+        setIsVersionsLoading(false);
+      }
+    }
+  }, [workflowId]);
+
+  const exitVersionPreview = useCallback((options?: { silent?: boolean }) => {
+    const baseDefinition = versionPreviewBaseDefinitionRef.current;
+    setVersionPreviewMeta(null);
+    versionPreviewBaseDefinitionRef.current = null;
+    setSelectedNodeId(null);
+    if (baseDefinition) {
+      loadWorkflowData(baseDefinition, { resetHistory: false });
+      window.setTimeout(() => {
+        reactFlowInstance?.fitView({ duration: 450, padding: 0.2 });
+      }, 20);
+    }
+    if (!options?.silent) {
+      toast('Exited version preview.', { icon: 'ℹ️' });
+    }
+  }, [loadWorkflowData, reactFlowInstance]);
+
+  const previewWorkflowVersion = useCallback(async (versionId: string) => {
+    if (workflowId === 'new') {
+      toast.error('Save workflow first to preview versions.');
+      return;
+    }
+    if (isAiPreviewMode) {
+      toast('Accept or discard the AI preview first.', { icon: 'ℹ️' });
+      return;
+    }
+
+    setSelectedVersionId(versionId);
+    setVersionsError(null);
+    setIsVersionDetailLoading(true);
+    try {
+      const detail = await workflowService.getWorkflowVersion(workflowId, versionId) as WorkflowVersionDetail;
+      if (!detail?.snapshot_json?.definition) {
+        toast.error('Selected version has no previewable snapshot.');
+        return;
+      }
+
+      if (!versionPreviewBaseDefinitionRef.current) {
+        versionPreviewBaseDefinitionRef.current = buildWorkflowDefinition(nodesRef.current, edgesRef.current);
+      }
+      setSelectedVersionDetail(detail);
+      setVersionPreviewMeta({
+        versionId: detail.id,
+        versionNumber: detail.version_number,
+      });
+      setSelectedNodeId(null);
+      loadWorkflowData(detail.snapshot_json.definition, { resetHistory: false });
+      setActiveTab('editor');
+      window.setTimeout(() => {
+        reactFlowInstance?.fitView({ duration: 550, padding: 0.22 });
+      }, 20);
+      toast(`Previewing version v${detail.version_number}.`, { icon: 'ℹ️' });
+    } catch (error: any) {
+      console.error('Failed to preview workflow version:', error);
+      const message = toUserFriendlyErrorMessage(
+        error?.response?.data?.detail,
+        'Failed to preview selected version.',
+      );
+      setVersionsError(message);
+      toast.error(message);
+    } finally {
+      setIsVersionDetailLoading(false);
+    }
+  }, [buildWorkflowDefinition, isAiPreviewMode, loadWorkflowData, reactFlowInstance, workflowId]);
+
+  const restoreWorkflowVersion = useCallback(async (versionId: string) => {
+    if (workflowId === 'new') {
+      toast.error('Save workflow first to restore versions.');
+      return;
+    }
+    const targetVersion = workflowVersions.find((version) => version.id === versionId) || null;
+    const versionLabel = targetVersion ? `v${targetVersion.version_number}` : 'this version';
+    const confirmed = window.confirm(
+      `Restore ${versionLabel} as current workflow? Your current draft on canvas will be replaced.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      const restoredWorkflow = await toast.promise(
+        workflowService.restoreWorkflowVersion(workflowId, versionId),
+        {
+          loading: `Restoring ${versionLabel}...`,
+          success: <b>Workflow restored successfully.</b>,
+          error: <b>Could not restore selected version.</b>,
+        }
+      );
+      setCurrentVersionId(versionId);
+      setSelectedVersionId(versionId);
+      setVersionPreviewMeta(null);
+      versionPreviewBaseDefinitionRef.current = null;
+      setSelectedVersionDetail(null);
+      setSelectedNodeId(null);
+
+      loadWorkflowData(restoredWorkflow.definition);
+      markDefinitionAsClean(restoredWorkflow.definition);
+      window.dispatchEvent(new CustomEvent('autoflow:workflow-restored', {
+        detail: restoredWorkflow,
+      }));
+      await loadWorkflowVersions({ silent: true });
+      setActiveTab('editor');
+      window.setTimeout(() => {
+        reactFlowInstance?.fitView({ duration: 550, padding: 0.22 });
+      }, 20);
+    } catch (error) {
+      console.error('Failed to restore workflow version:', error);
+    }
+  }, [loadWorkflowData, loadWorkflowVersions, markDefinitionAsClean, reactFlowInstance, workflowId, workflowVersions]);
+
+  useEffect(() => {
+    setIsVersionsLoading(false);
+    setVersionPreviewMeta(null);
+    versionPreviewBaseDefinitionRef.current = null;
+    setSelectedVersionId(null);
+    setSelectedVersionDetail(null);
+    setVersionsError(null);
+    setWorkflowVersions([]);
+    setCurrentVersionId(null);
+
+    if (workflowId !== 'new') {
+      void loadWorkflowVersions();
+    }
+  }, [workflowId, loadWorkflowVersions]);
+
+  useEffect(() => {
+    if (activeTab !== 'versions') return;
+    if (workflowId === 'new') return;
+    void loadWorkflowVersions({ silent: false });
+  }, [activeTab, loadWorkflowVersions, workflowId]);
+
+  const getSelectedCanvasNodes = useCallback((preferredNodeId?: string | null): WorkflowNode[] => {
+    const currentNodes = nodesRef.current;
+    if (preferredNodeId) {
+      const preferredNode = currentNodes.find((node) => node.id === preferredNodeId) || null;
+      if (!preferredNode) return [];
+      const selected = currentNodes.filter((node) => Boolean(node.selected));
+      if (selected.length > 0 && selected.some((node) => node.id === preferredNodeId)) {
+        return selected;
+      }
+      return [preferredNode];
+    }
+
+    const selected = currentNodes.filter((node) => Boolean(node.selected));
+    if (selected.length > 0) return selected;
+    if (!selectedNodeId) return [];
+    const focusedNode = currentNodes.find((node) => node.id === selectedNodeId);
+    return focusedNode ? [focusedNode] : [];
+  }, [selectedNodeId]);
+
+  const copySelectedNodesToClipboard = useCallback((preferredNodeId?: string | null): boolean => {
+    if (activeTab !== 'editor') return false;
+    if (isCanvasReadOnlyPreviewMode) {
+      toast(previewEditBlockMessage, { icon: 'ℹ️' });
+      return false;
+    }
+
+    const selectedNodes = getSelectedCanvasNodes(preferredNodeId);
+    if (selectedNodes.length === 0) {
+      toast('Select at least one node to copy.', { icon: 'ℹ️' });
+      return false;
+    }
+
+    const selectedIds = new Set(selectedNodes.map((node) => node.id));
+    const copiedNodes: WorkflowClipboardNode[] = selectedNodes.map((node) => {
+      const { onToggleActive: _ignoredToggle, ...dataWithoutHandlers } = node.data;
+      return {
+        id: node.id,
+        type: node.type,
+        position: { ...node.position },
+        data: {
+          ...dataWithoutHandlers,
+          config: cloneNodeConfig(node.data.config),
+        },
+      };
+    });
+
+    const copiedEdges: WorkflowClipboardEdge[] = edgesRef.current
+      .filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target))
+      .map((edge: WorkflowEdge) => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle ?? null,
+        targetHandle: edge.targetHandle ?? null,
+        branch: readEdgeBranch(edge),
+        type: edge.type,
+        animated: edge.animated,
+        style: edge.style ? { ...edge.style } : undefined,
+        markerEnd: edge.markerEnd ?? undefined,
+      }));
+
+    const nextPayload: WorkflowClipboardPayload = {
+      version: WORKFLOW_CLIPBOARD_VERSION,
+      sourceWorkflowId: workflowId,
+      copiedAtMs: Date.now(),
+      nodes: copiedNodes,
+      edges: copiedEdges,
+    };
+    workflowClipboardRef.current = nextPayload;
+    persistWorkflowClipboard(nextPayload);
+    setHasClipboardData(true);
+    clipboardPasteCountRef.current = 0;
+
+    toast.success(`Copied ${copiedNodes.length} nodes, ${copiedEdges.length} edges.`);
+    return true;
+  }, [activeTab, getSelectedCanvasNodes, isCanvasReadOnlyPreviewMode, previewEditBlockMessage, workflowId]);
+
+  const pasteWorkflowClipboard = useCallback((options?: { anchorPosition?: XYPosition | null }): boolean => {
+    if (activeTab !== 'editor') return false;
+    if (isCanvasReadOnlyPreviewMode) {
+      toast(previewEditBlockMessage, { icon: 'ℹ️' });
+      return false;
+    }
+
+    const payload = workflowClipboardRef.current || readWorkflowClipboardFromStorage();
+    if (payload) {
+      workflowClipboardRef.current = payload;
+      setHasClipboardData(true);
+    }
+    if (!payload || payload.version !== WORKFLOW_CLIPBOARD_VERSION || payload.nodes.length === 0) {
+      setHasClipboardData(false);
+      toast('Copy some nodes first.', { icon: 'ℹ️' });
+      return false;
+    }
+
+    const currentNodes = nodesRef.current;
+    const currentEdges = edgesRef.current;
+    const existingNodeIds = new Set(currentNodes.map((node) => node.id));
+    const existingEdgeIds = new Set(currentEdges.map((edge) => edge.id));
+
+    const hasWorkflowTrigger = currentNodes.some((node) => node.data.type === 'workflow_trigger');
+    let canPasteWorkflowTrigger = !hasWorkflowTrigger;
+    const nodesToPaste = payload.nodes.filter((node) => {
+      if (node.data.type !== 'workflow_trigger') return true;
+      if (!canPasteWorkflowTrigger) return false;
+      canPasteWorkflowTrigger = false;
+      return true;
+    });
+    const skippedWorkflowTriggerCount = payload.nodes.length - nodesToPaste.length;
+
+    if (nodesToPaste.length === 0) {
+      toast.error('Cannot paste: Workflow Trigger already exists in this workflow.');
+      return false;
+    }
+
+    clipboardPasteCountRef.current += 1;
+    const pasteOffsetX = DUPLICATE_NODE_OFFSET_X * clipboardPasteCountRef.current;
+    const pasteOffsetY = DUPLICATE_NODE_OFFSET_Y * clipboardPasteCountRef.current;
+    const isCrossWorkflowPaste = payload.sourceWorkflowId !== workflowId;
+    const preferredAnchor = options?.anchorPosition
+      || lastPointerFlowPositionRef.current
+      || null;
+
+    const sourceMinX = Math.min(...nodesToPaste.map((node) => Number(node.position.x || 0)));
+    const sourceMinY = Math.min(...nodesToPaste.map((node) => Number(node.position.y || 0)));
+    const sourceMaxX = Math.max(...nodesToPaste.map((node) => Number(node.position.x || 0)));
+    const sourceMaxY = Math.max(...nodesToPaste.map((node) => Number(node.position.y || 0)));
+    const sourceWidth = Math.max(0, sourceMaxX - sourceMinX);
+    const sourceHeight = Math.max(0, sourceMaxY - sourceMinY);
+    let pasteAnchor: XYPosition | null = null;
+    if (preferredAnchor) {
+      pasteAnchor = preferredAnchor;
+    } else if (isCrossWorkflowPaste && reactFlowInstance) {
+      const rect = reactFlowWrapper.current?.getBoundingClientRect();
+      const screenCenter = rect
+        ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+        : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+      const flowCenter = reactFlowInstance.screenToFlowPosition(screenCenter);
+      pasteAnchor = {
+        x: flowCenter.x - sourceWidth / 2,
+        y: flowCenter.y - sourceHeight / 2,
+      };
+    }
+
+    const nodeIdMap = new Map<string, string>();
+    const pastedNodes: WorkflowNode[] = nodesToPaste.map((node, index) => {
+      const newId = generateUniqueNodeId(existingNodeIds, node.data.type || String(node.type || 'node'));
+      nodeIdMap.set(node.id, newId);
+      const copiedConfig = cloneNodeConfig(node.data.config);
+      const position = pasteAnchor
+        ? {
+            x: pasteAnchor.x + (node.position.x - sourceMinX) + pasteOffsetX,
+            y: pasteAnchor.y + (node.position.y - sourceMinY) + pasteOffsetY,
+          }
+        : {
+            x: node.position.x + pasteOffsetX,
+            y: node.position.y + pasteOffsetY,
+          };
+      return {
+        ...node,
+        id: newId,
+        position,
+        selected: index === 0,
+        data: {
+          ...node.data,
+          label: buildCopiedLabel(String(node.data.label || ''), String(node.data.type || 'node')),
+          config: copiedConfig,
+          is_active: isNodeActive(node.data.is_active),
+          onToggleActive: toggleNodeActive,
+          status: 'PENDING',
+          last_execution_result: null,
+          last_output: undefined,
+          schedule_is_active: isScheduleVisualActive(
+            node.data.type,
+            copiedConfig,
+            isPublished,
+          ),
+        },
+      };
+    });
+
+    const pastedEdges: WorkflowEdge[] = payload.edges
+      .filter((edge) => nodeIdMap.has(edge.source) && nodeIdMap.has(edge.target))
+      .map((edge) => {
+        const mappedSource = nodeIdMap.get(edge.source) as string;
+        const mappedTarget = nodeIdMap.get(edge.target) as string;
+        return {
+          ...edge,
+          id: generateUniqueEdgeId(existingEdgeIds),
+          source: mappedSource,
+          target: mappedTarget,
+          sourceHandle: edge.sourceHandle ?? null,
+          targetHandle: edge.targetHandle ?? null,
+          branch: edge.branch ?? undefined,
+          type: edge.type || 'deletable',
+          animated: false,
+          style: edge.style ? { ...edge.style } : { stroke: '#94a3b8', strokeWidth: 2 },
+          markerEnd: edge.markerEnd ? { ...edge.markerEnd } : { type: MarkerType.ArrowClosed, color: '#94a3b8' },
+        };
+      });
+
+    setNodes((nds) => {
+      const deselectedExisting: WorkflowNode[] = nds.map((node) => ({ ...node, selected: false }));
+      return deselectedExisting.concat(pastedNodes);
+    });
+    if (pastedEdges.length > 0) {
+      setEdges((eds) => eds.concat(pastedEdges));
+    }
+    setSelectedNodeId(null);
+    triggerClipboardMutationFeedback(
+      pastedNodes.map((node) => node.id),
+      pastedEdges.map((edge) => edge.id),
+    );
+    emitCanvasMutation('paste_nodes');
+
+    if (skippedWorkflowTriggerCount > 0) {
+      const skippedTriggerLabel = skippedWorkflowTriggerCount === 1 ? 'Workflow Trigger' : 'Workflow Triggers';
+      toast(`Pasted ${pastedNodes.length} nodes, ${pastedEdges.length} edges. Skipped ${skippedWorkflowTriggerCount} ${skippedTriggerLabel}.`, {
+        icon: '⚠️',
+      });
+      return true;
+    }
+    toast.success(`Pasted ${pastedNodes.length} nodes, ${pastedEdges.length} edges.`);
+    return true;
+  }, [activeTab, emitCanvasMutation, isCanvasReadOnlyPreviewMode, isPublished, previewEditBlockMessage, reactFlowInstance, setEdges, setNodes, toggleNodeActive, triggerClipboardMutationFeedback, workflowId]);
+
+  const duplicateSelectedNodes = useCallback((preferredNodeId?: string | null) => {
+    if (activeTab !== 'editor') return;
+    if (isCanvasReadOnlyPreviewMode) {
+      toast(previewEditBlockMessage, { icon: 'ℹ️' });
+      return;
+    }
+
+    const currentNodes = nodesRef.current;
+    const currentEdges = edgesRef.current;
+    const selectedNodes = getSelectedCanvasNodes(preferredNodeId);
+
+    if (selectedNodes.length === 0) {
+      toast('Select at least one node to duplicate.', { icon: 'ℹ️' });
+      return;
+    }
+
+    const selectedIds = new Set(selectedNodes.map((node) => node.id));
+    const duplicateableNodes = selectedNodes.filter((node) => node.data.type !== 'workflow_trigger');
+    const skippedWorkflowTriggerCount = selectedNodes.length - duplicateableNodes.length;
+
+    if (duplicateableNodes.length === 0) {
+      toast.error('Workflow Trigger node cannot be duplicated.');
+      return;
+    }
+
+    const existingNodeIds = new Set(currentNodes.map((node) => node.id));
+
+    const nodeIdMap = new Map<string, string>();
+    const duplicatedNodes: WorkflowNode[] = duplicateableNodes.map((node, index) => {
+      const newId = generateUniqueNodeId(existingNodeIds, String(node.data.type || node.type || 'node'));
+      nodeIdMap.set(node.id, newId);
+      const copiedConfig = cloneNodeConfig(node.data.config);
+      const normalizedIsActive = isNodeActive(node.data.is_active);
+
+      return {
+        ...node,
+        id: newId,
+        position: {
+          x: node.position.x + DUPLICATE_NODE_OFFSET_X,
+          y: node.position.y + DUPLICATE_NODE_OFFSET_Y,
+        },
+        selected: index === 0,
+        data: {
+          ...node.data,
+          label: buildCopiedLabel(String(node.data.label || ''), String(node.data.type || 'node')),
+          config: copiedConfig,
+          is_active: normalizedIsActive,
+          onToggleActive: toggleNodeActive,
+          status: 'PENDING',
+          last_execution_result: null,
+          last_output: undefined,
+          schedule_is_active: isScheduleVisualActive(
+            node.data.type,
+            copiedConfig,
+            isPublished,
+          ),
+          workflow_execution_visual_active: node.data.workflow_execution_visual_active,
+        },
+      };
+    });
+
+    const existingEdgeIds = new Set(currentEdges.map((edge) => edge.id));
+
+    const duplicatedEdges: WorkflowEdge[] = currentEdges
+      .filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target))
+      .filter((edge) => nodeIdMap.has(edge.source) && nodeIdMap.has(edge.target))
+      .map((edge) => {
+        const mappedSource = nodeIdMap.get(edge.source) as string;
+        const mappedTarget = nodeIdMap.get(edge.target) as string;
+
+        return {
+          ...edge,
+          id: generateUniqueEdgeId(existingEdgeIds),
+          source: mappedSource,
+          target: mappedTarget,
+          animated: false,
+        };
+      });
+
+    setNodes((nds) => {
+      const deselectedExisting: WorkflowNode[] = nds.map((node) => ({ ...node, selected: false }));
+      return deselectedExisting.concat(duplicatedNodes);
+    });
+    if (duplicatedEdges.length > 0) {
+      setEdges((eds) => eds.concat(duplicatedEdges));
+    }
+    setSelectedNodeId(null);
+    triggerClipboardMutationFeedback(
+      duplicatedNodes.map((node) => node.id),
+      duplicatedEdges.map((edge) => edge.id),
+    );
+    emitCanvasMutation('duplicate_nodes');
+
+    if (skippedWorkflowTriggerCount > 0) {
+      const skippedMessage = skippedWorkflowTriggerCount === 1 ? '1 Workflow Trigger' : `${skippedWorkflowTriggerCount} Workflow Triggers`;
+      toast(`Duplicated ${duplicatedNodes.length} nodes, ${duplicatedEdges.length} edges. Skipped ${skippedMessage}.`, {
+        icon: '⚠️',
+      });
+      return;
+    }
+    toast.success(`Duplicated ${duplicatedNodes.length} nodes, ${duplicatedEdges.length} edges.`);
+  }, [
+    activeTab,
+    emitCanvasMutation,
+    getSelectedCanvasNodes,
+    isCanvasReadOnlyPreviewMode,
+    isPublished,
+    previewEditBlockMessage,
+    setEdges,
+    setNodes,
+    toggleNodeActive,
+    triggerClipboardMutationFeedback,
+  ]);
+
   useEffect(() => {
     const isTextInputTarget = (target: EventTarget | null) => {
       const element = target as HTMLElement | null;
@@ -2295,6 +3106,16 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       const key = event.key.toLowerCase();
       const isUndo = key === 'z' && !event.shiftKey;
       const isRedo = (key === 'z' && event.shiftKey) || key === 'y';
+      const isDuplicate = key === 'd' && !event.shiftKey;
+      const isCopy = key === 'c' && !event.shiftKey;
+      const isPaste = key === 'v' && !event.shiftKey;
+      const isEditShortcut = isUndo || isRedo || isDuplicate || isCopy || isPaste;
+
+      if (isVersionPreviewMode && isEditShortcut) {
+        event.preventDefault();
+        toast('Exit version preview before editing.', { icon: 'ℹ️' });
+        return;
+      }
 
       if (isUndo) {
         event.preventDefault();
@@ -2302,19 +3123,31 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       } else if (isRedo) {
         event.preventDefault();
         redoCanvas();
+      } else if (isDuplicate) {
+        event.preventDefault();
+        duplicateSelectedNodes();
+      } else if (isCopy) {
+        if (copySelectedNodesToClipboard()) {
+          event.preventDefault();
+        }
+      } else if (isPaste) {
+        if (pasteWorkflowClipboard()) {
+          event.preventDefault();
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undoCanvas, redoCanvas]);
+  }, [undoCanvas, redoCanvas, duplicateSelectedNodes, copySelectedNodesToClipboard, pasteWorkflowClipboard, isVersionPreviewMode]);
 
   useEffect(() => {
     return () => {
       clearPendingHistoryCommit();
       clearAiApplyTimers();
+      clearClipboardHighlightTimer();
     };
-  }, [clearPendingHistoryCommit, clearAiApplyTimers]);
+  }, [clearPendingHistoryCommit, clearAiApplyTimers, clearClipboardHighlightTimer]);
 
   // Unsaved changes tracking
   const [initialData, setInitialData] = useState<string>('');
@@ -2346,10 +3179,19 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }));
     };
     (window as any).applyAiWorkflow = (definition: any) => {
+      if (isVersionPreviewMode) {
+        toast('Exit version preview before applying AI workflow.', { icon: 'ℹ️' });
+        return false;
+      }
       const graph = buildAiGraphFromDefinition(definition);
       applyAiGraphToCanvas(graph);
+      return true;
     };
     (window as any).previewAiWorkflow = (definition: any, options?: { name?: string }) => {
+      if (isVersionPreviewMode) {
+        toast('Exit version preview before starting AI preview.', { icon: 'ℹ️' });
+        return false;
+      }
       const graph = buildAiGraphFromDefinition(definition);
       setSelectedNodeId(null);
       setAiPreviewGraph({
@@ -2381,13 +3223,19 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       setAiPreviewGraph(null);
       setSelectedNodeId(null);
     };
+    (window as any).isVersionWorkflowPreviewActive = () => Boolean(versionPreviewMeta);
+    (window as any).exitVersionWorkflowPreview = () => {
+      if (!versionPreviewMeta) return false;
+      exitVersionPreview({ silent: true });
+      return true;
+    };
     (window as any).isCanvasDirty = () => isDirty;
     (window as any).undoCanvas = undoCanvas;
     (window as any).redoCanvas = redoCanvas;
 
     (window as any).addNodeAtCenter = (type: string) => {
-      if (aiPreviewGraph) {
-        toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+      if (isCanvasReadOnlyPreviewMode) {
+        toast(previewEditBlockMessage, { icon: 'ℹ️' });
         return;
       }
       if (!reactFlowInstance) return;
@@ -2425,6 +3273,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       delete (window as any).isAiWorkflowPreviewActive;
       delete (window as any).getAiWorkflowPreviewName;
       delete (window as any).clearAiWorkflowPreview;
+      delete (window as any).isVersionWorkflowPreviewActive;
+      delete (window as any).exitVersionWorkflowPreview;
       delete (window as any).isCanvasDirty;
       delete (window as any).undoCanvas;
       delete (window as any).redoCanvas;
@@ -2437,6 +3287,11 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     undoCanvas,
     redoCanvas,
     aiPreviewGraph,
+    isCanvasReadOnlyPreviewMode,
+    isVersionPreviewMode,
+    exitVersionPreview,
+    versionPreviewMeta,
+    previewEditBlockMessage,
     addNodeAtPosition,
     applyAiGraphToCanvas,
     buildAiGraphFromDefinition,
@@ -2561,10 +3416,26 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     });
   }, []);
 
-  const selectedNode = isAiPreviewMode ? null : nodes.find(n => n.id === selectedNodeId);
-  const upstreamData = isAiPreviewMode ? null : (selectedNodeId ? getUpstreamData(selectedNodeId) : null);
+  const selectedNode = isCanvasReadOnlyPreviewMode ? null : nodes.find(n => n.id === selectedNodeId);
+  const upstreamData = isCanvasReadOnlyPreviewMode ? null : (selectedNodeId ? getUpstreamData(selectedNodeId) : null);
+  const contextMenuTargetNodes = useMemo(
+    () => getSelectedCanvasNodes(contextMenuState?.nodeId),
+    [contextMenuState?.nodeId, getSelectedCanvasNodes],
+  );
+  const canContextCopyOrDuplicate = activeTab === 'editor' && !isCanvasReadOnlyPreviewMode && contextMenuTargetNodes.length > 0;
+  const canContextPaste = activeTab === 'editor' && !isCanvasReadOnlyPreviewMode && hasClipboardData;
+  const contextCopyDisabledReason = isCanvasReadOnlyPreviewMode
+    ? (isVersionPreviewMode ? 'Disabled in version preview mode' : 'Disabled in AI preview mode')
+    : contextMenuTargetNodes.length < 1
+      ? 'No nodes available to copy'
+      : '';
+  const contextPasteDisabledReason = isCanvasReadOnlyPreviewMode
+    ? (isVersionPreviewMode ? 'Disabled in version preview mode' : 'Disabled in AI preview mode')
+    : !hasClipboardData
+      ? 'Clipboard is empty'
+      : '';
   const previousNodes = useMemo(() => {
-    if (isAiPreviewMode) return [] as WorkflowNode[];
+    if (isCanvasReadOnlyPreviewMode) return [] as WorkflowNode[];
     if (!selectedNodeId) return [] as WorkflowNode[];
     const uniqueIds = Array.from(new Set(
       edges
@@ -2575,10 +3446,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       .map((nodeId) => getNodeById(nodeId))
       .filter((node): node is WorkflowNode => Boolean(node));
     return sortNavigationNodes(connectedNodes);
-  }, [isAiPreviewMode, selectedNodeId, edges, getNodeById, sortNavigationNodes]);
+  }, [isCanvasReadOnlyPreviewMode, selectedNodeId, edges, getNodeById, sortNavigationNodes]);
 
   const nextNodes = useMemo(() => {
-    if (isAiPreviewMode) return [] as WorkflowNode[];
+    if (isCanvasReadOnlyPreviewMode) return [] as WorkflowNode[];
     if (!selectedNodeId) return [] as WorkflowNode[];
     const uniqueIds = Array.from(new Set(
       edges
@@ -2589,20 +3460,30 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       .map((nodeId) => getNodeById(nodeId))
       .filter((node): node is WorkflowNode => Boolean(node));
     return sortNavigationNodes(connectedNodes);
-  }, [isAiPreviewMode, selectedNodeId, edges, getNodeById, sortNavigationNodes]);
+  }, [isCanvasReadOnlyPreviewMode, selectedNodeId, edges, getNodeById, sortNavigationNodes]);
 
   const graphNodes = aiPreviewGraph?.nodes || nodes;
   const graphEdges = aiPreviewGraph?.edges || edges;
   const recentAiNodeIdSet = useMemo(() => new Set(recentAiNodeIds), [recentAiNodeIds]);
   const recentAiEdgeIdSet = useMemo(() => new Set(recentAiEdgeIds), [recentAiEdgeIds]);
+  const recentClipboardNodeIdSet = useMemo(() => new Set(recentClipboardNodeIds), [recentClipboardNodeIds]);
+  const recentClipboardEdgeIdSet = useMemo(() => new Set(recentClipboardEdgeIds), [recentClipboardEdgeIds]);
+  const highlightedNodeIdSet = useMemo(
+    () => new Set([...recentAiNodeIdSet, ...recentClipboardNodeIdSet]),
+    [recentAiNodeIdSet, recentClipboardNodeIdSet],
+  );
+  const highlightedEdgeIdSet = useMemo(
+    () => new Set([...recentAiEdgeIdSet, ...recentClipboardEdgeIdSet]),
+    [recentAiEdgeIdSet, recentClipboardEdgeIdSet],
+  );
 
   const displayNodes = useMemo(() => {
-    if (recentAiNodeIdSet.size === 0) {
+    if (highlightedNodeIdSet.size === 0) {
       return graphNodes;
     }
 
     return graphNodes.map((node) => {
-      if (!recentAiNodeIdSet.has(node.id)) {
+      if (!highlightedNodeIdSet.has(node.id)) {
         return node;
       }
       const existingClass = node.className ? `${node.className} ` : '';
@@ -2611,15 +3492,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         className: `${existingClass}ai-node-updated`,
       };
     });
-  }, [graphNodes, recentAiNodeIdSet]);
+  }, [graphNodes, highlightedNodeIdSet]);
 
   const displayEdges = useMemo(() => {
-    if (recentAiEdgeIdSet.size === 0) {
+    if (highlightedEdgeIdSet.size === 0) {
       return graphEdges;
     }
 
     return graphEdges.map((edge) => {
-      if (!recentAiEdgeIdSet.has(edge.id)) {
+      if (!highlightedEdgeIdSet.has(edge.id)) {
         return edge;
       }
       return {
@@ -2633,13 +3514,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         },
       };
     });
-  }, [graphEdges, recentAiEdgeIdSet]);
+  }, [graphEdges, highlightedEdgeIdSet]);
 
   const showNewWorkflowStarter =
     activeTab === 'editor' &&
     workflowId === 'new' &&
     nodes.length === 0 &&
-    !isAiPreviewMode &&
+    !isCanvasReadOnlyPreviewMode &&
     !hasPickedNewWorkflowStarter &&
     !isAiApplyingChanges;
 
@@ -2676,8 +3557,24 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           >
             Executions
           </button>
+          <button
+            onClick={() => setActiveTab('versions')}
+            className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${activeTab === 'versions'
+              ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
+              : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+              }`}
+          >
+            Versions
+          </button>
           <div className="text-xs text-slate-500 dark:text-slate-400 ml-3">
-            {executionHistory.length > 0 ? `${executionHistory.length} execution${executionHistory.length > 1 ? 's' : ''} recorded` : 'No executions yet'}
+            {activeTab === 'versions'
+              ? (workflowVersions.length > 0
+                ? `${workflowVersions.length} version${workflowVersions.length > 1 ? 's' : ''} recorded`
+                : 'No versions yet')
+              : (executionHistory.length > 0
+                ? `${executionHistory.length} execution${executionHistory.length > 1 ? 's' : ''} recorded`
+                : 'No executions yet')
+            }
           </div>
           <div className="w-px h-6 bg-slate-200 dark:bg-slate-700 mx-1" />
           <button
@@ -2717,17 +3614,20 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             onInit={setReactFlowInstance}
             onDrop={onDrop}
             onDragOver={onDragOver}
+            onPaneMouseMove={onPaneMouseMove}
+            onPaneContextMenu={onPaneContextMenu}
+            onNodeContextMenu={onNodeContextMenu}
             onNodeDoubleClick={onNodeDoubleClick}
             onPaneClick={onPaneClick}
             isValidConnection={isValidConnection}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             deleteKeyCode={['Delete', 'Backspace']}
-            nodesDraggable={!isAiPreviewMode}
-            nodesConnectable={!isAiPreviewMode}
-            elementsSelectable={!isAiPreviewMode}
-            nodesFocusable={!isAiPreviewMode}
-            edgesFocusable={!isAiPreviewMode}
+            nodesDraggable={!isCanvasReadOnlyPreviewMode}
+            nodesConnectable={!isCanvasReadOnlyPreviewMode}
+            elementsSelectable={!isCanvasReadOnlyPreviewMode}
+            nodesFocusable={!isCanvasReadOnlyPreviewMode}
+            edgesFocusable={!isCanvasReadOnlyPreviewMode}
             fitView
           >
             {showNewWorkflowStarter && (
@@ -2767,6 +3667,32 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             {isAiPreviewMode && (
               <div className="pointer-events-none absolute left-1/2 top-20 z-[920] -translate-x-1/2 rounded-2xl border border-amber-300/90 bg-amber-50/95 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.11em] text-amber-700 shadow-[0_14px_38px_rgba(217,119,6,0.2)] dark:border-amber-700/70 dark:bg-amber-900/35 dark:text-amber-200">
                 Preview Mode{aiPreviewGraph?.name ? ` · ${aiPreviewGraph.name}` : ''} · accept or discard from AI panel
+              </div>
+            )}
+
+            {isVersionPreviewMode && (
+              <div className="absolute left-1/2 top-20 z-[920] -translate-x-1/2 rounded-2xl border border-cyan-300/90 bg-cyan-50/95 px-4 py-2 shadow-[0_14px_38px_rgba(8,145,178,0.22)] dark:border-cyan-700/70 dark:bg-cyan-900/35">
+                <div className="flex items-center gap-3 text-[11px] font-bold uppercase tracking-[0.11em] text-cyan-700 dark:text-cyan-200">
+                  <span>
+                    Version Preview · v{versionPreviewMeta?.versionNumber}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => exitVersionPreview()}
+                    className="rounded-lg border border-cyan-300/80 bg-white/80 px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-cyan-700 hover:bg-white dark:border-cyan-600/70 dark:bg-cyan-950/40 dark:text-cyan-100 dark:hover:bg-cyan-950/70"
+                  >
+                    Exit Preview
+                  </button>
+                  {versionPreviewMeta?.versionId && versionPreviewMeta.versionId !== currentVersionId && (
+                    <button
+                      type="button"
+                      onClick={() => void restoreWorkflowVersion(versionPreviewMeta.versionId)}
+                      className="rounded-lg border border-cyan-500/80 bg-cyan-600 px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-white hover:bg-cyan-700 dark:border-cyan-500/70 dark:bg-cyan-500 dark:hover:bg-cyan-400"
+                    >
+                      Restore Workflow
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -2844,6 +3770,59 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 )}
               </button>
             </div>
+
+            {contextMenuState && (
+              <div
+                className="absolute z-[1200] min-w-[190px] rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-[0_18px_50px_rgba(15,23,42,0.25)] p-2"
+                style={{
+                  left: contextMenuState.x,
+                  top: contextMenuState.y,
+                  transform: `translate(${contextMenuState.alignRight ? '-100%' : '0%'}, ${contextMenuState.alignBottom ? '-100%' : '0%'})`,
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+                onContextMenu={(event) => event.preventDefault()}
+              >
+                <button
+                  type="button"
+                  disabled={!canContextCopyOrDuplicate}
+                  title={canContextCopyOrDuplicate ? 'Copy (Ctrl/Cmd+C)' : contextCopyDisabledReason}
+                  onClick={() => {
+                    if (!canContextCopyOrDuplicate) return;
+                    copySelectedNodesToClipboard(contextMenuState.nodeId);
+                    setContextMenuState(null);
+                  }}
+                  className="w-full text-left rounded-xl px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-45 disabled:cursor-not-allowed"
+                >
+                  Copy
+                </button>
+                <button
+                  type="button"
+                  disabled={!canContextPaste}
+                  title={canContextPaste ? 'Paste here (Ctrl/Cmd+V)' : contextPasteDisabledReason}
+                  onClick={() => {
+                    if (!canContextPaste) return;
+                    pasteWorkflowClipboard({ anchorPosition: contextMenuState.flowPosition });
+                    setContextMenuState(null);
+                  }}
+                  className="w-full text-left rounded-xl px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-45 disabled:cursor-not-allowed"
+                >
+                  Paste Here
+                </button>
+                <button
+                  type="button"
+                  disabled={!canContextCopyOrDuplicate}
+                  title={canContextCopyOrDuplicate ? 'Duplicate (Ctrl/Cmd+D)' : contextCopyDisabledReason}
+                  onClick={() => {
+                    if (!canContextCopyOrDuplicate) return;
+                    duplicateSelectedNodes(contextMenuState.nodeId);
+                    setContextMenuState(null);
+                  }}
+                  className="w-full text-left rounded-xl px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-45 disabled:cursor-not-allowed"
+                >
+                  Duplicate
+                </button>
+              </div>
+            )}
 
             <Background
               variant={BackgroundVariant.Dots}
@@ -3151,7 +4130,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           </ReactFlow>
         </div>
       </ReactFlowProvider>
-      ) : (
+      ) : activeTab === 'executions' ? (
         <div className="flex-1 overflow-y-auto p-6 pt-20">
           <div className="max-w-4xl mx-auto space-y-6">
             <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm p-6">
@@ -3275,6 +4254,150 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-6 pt-20">
+          <div className="max-w-4xl mx-auto space-y-6">
+            <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm p-6">
+              <div className="flex items-center justify-between gap-6 mb-4">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">Version history</h3>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Preview and restore saved workflow versions.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center rounded-full bg-slate-100 dark:bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
+                    {workflowVersions.length} version{workflowVersions.length === 1 ? '' : 's'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void loadWorkflowVersions()}
+                    disabled={isVersionsLoading || workflowId === 'new'}
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Refresh
+                  </button>
+                </div>
+              </div>
+
+              {workflowId === 'new' ? (
+                <div className="rounded-3xl border border-dashed border-slate-200 dark:border-slate-800 p-8 text-center text-slate-500 dark:text-slate-400">
+                  Save this workflow once to start creating and restoring versions.
+                </div>
+              ) : isVersionsLoading ? (
+                <div className="rounded-3xl border border-dashed border-slate-200 dark:border-slate-800 p-8 text-center text-slate-500 dark:text-slate-400">
+                  Loading versions...
+                </div>
+              ) : workflowVersions.length === 0 ? (
+                <div className="rounded-3xl border border-dashed border-slate-200 dark:border-slate-800 p-8 text-center text-slate-500 dark:text-slate-400">
+                  No versions yet. Use Save + Create Version to add your first snapshot.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {versionsError && (
+                    <div className="rounded-xl border border-rose-200 dark:border-rose-900/40 bg-rose-50 dark:bg-rose-900/20 px-4 py-3 text-sm text-rose-700 dark:text-rose-300">
+                      {versionsError}
+                    </div>
+                  )}
+
+                  {workflowVersions.map((version) => {
+                    const isCurrent = currentVersionId === version.id;
+                    const isPreviewing = versionPreviewMeta?.versionId === version.id;
+                    return (
+                      <div
+                        key={version.id}
+                        className={`rounded-2xl border p-4 transition ${
+                          isPreviewing
+                            ? 'border-cyan-400 bg-cyan-50/50 dark:bg-cyan-500/10'
+                            : isCurrent
+                              ? 'border-emerald-300 bg-emerald-50/40 dark:bg-emerald-500/10'
+                              : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                                Version v{version.version_number}
+                              </h4>
+                              {isCurrent && (
+                                <span className="rounded-full bg-emerald-100 dark:bg-emerald-900/40 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                                  Current
+                                </span>
+                              )}
+                              {isPreviewing && (
+                                <span className="rounded-full bg-cyan-100 dark:bg-cyan-900/40 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-cyan-700 dark:text-cyan-300">
+                                  Previewing
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                              Created {formatDateTime(version.created_at || null)}
+                            </p>
+                            {version.note && (
+                              <p className="mt-2 text-xs text-slate-700 dark:text-slate-300">
+                                {version.note}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void previewWorkflowVersion(version.id)}
+                              disabled={isVersionDetailLoading}
+                              className="rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Preview
+                            </button>
+                            {!isCurrent && (
+                              <button
+                                type="button"
+                                onClick={() => void restoreWorkflowVersion(version.id)}
+                                className="rounded-xl bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+                              >
+                                Restore Workflow
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {selectedVersionId && (
+              <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm p-6">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">Selected version preview</h3>
+                {isVersionDetailLoading ? (
+                  <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Loading version snapshot...</p>
+                ) : selectedVersionDetail && selectedVersionDetail.id === selectedVersionId ? (
+                  <div className="mt-3 space-y-2 text-sm text-slate-600 dark:text-slate-300">
+                    <p>
+                      <span className="font-semibold text-slate-800 dark:text-slate-100">Name:</span>{' '}
+                      {selectedVersionDetail.snapshot_json?.name || 'Untitled Workflow'}
+                    </p>
+                    <p>
+                      <span className="font-semibold text-slate-800 dark:text-slate-100">Description:</span>{' '}
+                      {selectedVersionDetail.snapshot_json?.description || 'No description'}
+                    </p>
+                    <p>
+                      <span className="font-semibold text-slate-800 dark:text-slate-100">Nodes:</span>{' '}
+                      {selectedVersionDetail.snapshot_json?.definition?.nodes?.length || 0}
+                    </p>
+                    <p>
+                      <span className="font-semibold text-slate-800 dark:text-slate-100">Edges:</span>{' '}
+                      {selectedVersionDetail.snapshot_json?.definition?.edges?.length || 0}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                    Select a version to load its snapshot details.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

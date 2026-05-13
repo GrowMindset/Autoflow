@@ -23,6 +23,24 @@ export interface WorkflowPublicRunUrl {
   url: string;
 }
 
+export interface WorkflowVersion {
+  id: string;
+  workflow_id: string;
+  created_by: string;
+  version_number: number;
+  note?: string | null;
+  created_at: string;
+  snapshot_json?: {
+    name: string;
+    description?: string | null;
+    definition: WorkflowDefinition;
+  };
+}
+
+export interface WorkflowVersionListResponse {
+  versions: WorkflowVersion[];
+}
+
 export interface PublicFormField {
   id?: string;
   name: string;
@@ -139,6 +157,39 @@ export const workflowService = {
    */
   getPublicRunUrl: async (id: string): Promise<WorkflowPublicRunUrl> => {
     const response = await api.get(`/workflows/${id}/public-run-url`);
+    return response.data;
+  },
+
+  /**
+   * Create immutable workflow snapshot version.
+   */
+  createWorkflowVersion: async (workflowId: string, note?: string): Promise<WorkflowVersion> => {
+    const payload = note?.trim() ? { note: note.trim() } : {};
+    const response = await api.post(`/workflows/${workflowId}/versions`, payload);
+    return response.data;
+  },
+
+  /**
+   * List versions for a workflow.
+   */
+  listWorkflowVersions: async (workflowId: string): Promise<WorkflowVersion[]> => {
+    const response = await api.get<WorkflowVersionListResponse>(`/workflows/${workflowId}/versions`);
+    return Array.isArray(response.data?.versions) ? response.data.versions : [];
+  },
+
+  /**
+   * Get a specific workflow version including snapshot payload.
+   */
+  getWorkflowVersion: async (workflowId: string, versionId: string): Promise<WorkflowVersion> => {
+    const response = await api.get<WorkflowVersion>(`/workflows/${workflowId}/versions/${versionId}`);
+    return response.data;
+  },
+
+  /**
+   * Restore workflow to a selected version snapshot.
+   */
+  restoreWorkflowVersion: async (workflowId: string, versionId: string): Promise<any> => {
+    const response = await api.post(`/workflows/${workflowId}/restore/${versionId}`);
     return response.data;
   },
 

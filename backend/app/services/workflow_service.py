@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 from secrets import token_urlsafe
 from typing import Any
@@ -7,9 +8,11 @@ from uuid import UUID
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.models.webhook import WebhookEndpoint
 from app.models.workflows import Workflow
+from app.models.workflow_versions import WorkflowVersion
 from app.schemas.workflows import WorkflowCreate, WorkflowUpdate
 
 PUBLISHED_RUN_NODE_ID = "__published_run__"
@@ -116,6 +119,118 @@ class WorkflowService:
         await self.db.delete(workflow)
         await self.db.commit()
         return True
+
+    async def create_workflow_version(
+        self,
+        *,
+        workflow_id: UUID,
+        user_id: UUID,
+        note: str | None = None,
+    ) -> WorkflowVersion | None:
+        workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
+        if workflow is None:
+            return None
+
+        normalized_note = note.strip() if isinstance(note, str) and note.strip() else None
+        for _ in range(3):
+            current_max_version = await self.db.scalar(
+                select(func.max(WorkflowVersion.version_number)).where(
+                    WorkflowVersion.workflow_id == workflow.id
+                )
+            )
+            next_version_number = int(current_max_version or 0) + 1
+
+            version = WorkflowVersion(
+                workflow_id=workflow.id,
+                created_by=user_id,
+                version_number=next_version_number,
+                snapshot_json=self._build_version_snapshot(workflow),
+                note=normalized_note,
+            )
+            self.db.add(version)
+            try:
+                await self.db.commit()
+            except IntegrityError:
+                await self.db.rollback()
+                continue
+            await self.db.refresh(version)
+            return version
+
+        raise RuntimeError("Failed to allocate workflow version number after retries")
+
+    async def list_workflow_versions(
+        self,
+        *,
+        workflow_id: UUID,
+        user_id: UUID,
+    ) -> list[WorkflowVersion] | None:
+        workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
+        if workflow is None:
+            return None
+
+        result = await self.db.scalars(
+            select(WorkflowVersion)
+            .where(WorkflowVersion.workflow_id == workflow.id)
+            .order_by(WorkflowVersion.version_number.desc(), WorkflowVersion.created_at.desc())
+        )
+        return list(result.all())
+
+    async def get_workflow_version(
+        self,
+        *,
+        workflow_id: UUID,
+        version_id: UUID,
+        user_id: UUID,
+    ) -> WorkflowVersion | None:
+        workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
+        if workflow is None:
+            return None
+
+        return await self.db.scalar(
+            select(WorkflowVersion).where(
+                WorkflowVersion.id == version_id,
+                WorkflowVersion.workflow_id == workflow.id,
+            )
+        )
+
+    async def restore_workflow_version(
+        self,
+        *,
+        workflow_id: UUID,
+        version_id: UUID,
+        user_id: UUID,
+    ) -> Workflow | None:
+        workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
+        if workflow is None:
+            return None
+
+        version = await self.db.scalar(
+            select(WorkflowVersion).where(
+                WorkflowVersion.id == version_id,
+                WorkflowVersion.workflow_id == workflow.id,
+            )
+        )
+        if version is None:
+            return None
+
+        snapshot = version.snapshot_json if isinstance(version.snapshot_json, dict) else {}
+        snapshot_name = snapshot.get("name")
+        snapshot_definition = snapshot.get("definition")
+        if isinstance(snapshot_name, str) and snapshot_name.strip():
+            workflow.name = snapshot_name.strip()
+        snapshot_description = snapshot.get("description")
+        workflow.description = (
+            snapshot_description if isinstance(snapshot_description, str) else None
+        )
+        if isinstance(snapshot_definition, dict):
+            workflow.definition = self._sanitize_definition_for_storage(
+                copy.deepcopy(snapshot_definition)
+            )
+
+        await self.db.commit()
+        await self._ensure_webhook_endpoints(workflow)
+        await self.db.refresh(workflow)
+        return workflow
 
     async def get_webhook_endpoints(
         self,
@@ -295,6 +410,14 @@ class WorkflowService:
             if node_id and indegree.get(node_id, 0) == 0:
                 return node
         return form_nodes[0]
+
+    @staticmethod
+    def _build_version_snapshot(workflow: Workflow) -> dict[str, Any]:
+        return {
+            "name": workflow.name,
+            "description": workflow.description,
+            "definition": copy.deepcopy(workflow.definition),
+        }
 
     @staticmethod
     def _sanitize_definition_for_storage(definition: dict[str, Any]) -> dict[str, Any]:

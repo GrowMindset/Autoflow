@@ -6,6 +6,7 @@ from app.models.nodes_executions import NodeExecution
 from app.models.user import User
 from app.models.webhook import WebhookEndpoint
 from app.models.workflows import Workflow
+from app.models.workflow_versions import WorkflowVersion
 
 __all__ = [
     "AppCredential",
@@ -17,4 +18,5 @@ __all__ = [
     "User",
     "WebhookEndpoint",
     "Workflow",
+    "WorkflowVersion",
 ]

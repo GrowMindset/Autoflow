@@ -17,6 +17,7 @@ from app.models.executions import Execution
 from app.models.nodes_executions import NodeExecution
 from app.models.user import User
 from app.models.workflows import Workflow
+from app.models.workflow_versions import WorkflowVersion
 from app.tasks import execute_workflow as execute_workflow_tasks
 from test.asgi_client import ASGITestClient
 
@@ -118,6 +119,7 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_auth_required_for_all_workflow_endpoints(self) -> None:
         workflow_id = uuid4()
+        version_id = uuid4()
 
         for method, path, body in [
             ("POST", "/workflows", {"name": "A", "definition": {"nodes": [], "edges": []}}),
@@ -126,6 +128,10 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
             ("PUT", f"/workflows/{workflow_id}", {"name": "B"}),
             ("POST", f"/workflows/{workflow_id}/publish", None),
             ("POST", f"/workflows/{workflow_id}/unpublish", None),
+            ("POST", f"/workflows/{workflow_id}/versions", None),
+            ("GET", f"/workflows/{workflow_id}/versions", None),
+            ("GET", f"/workflows/{workflow_id}/versions/{version_id}", None),
+            ("POST", f"/workflows/{workflow_id}/restore/{version_id}", None),
             ("GET", f"/workflows/{workflow_id}/public-run-url", None),
             ("DELETE", f"/workflows/{workflow_id}", None),
         ]:
@@ -973,3 +979,206 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(status_code, 400)
         self.assertEqual(payload.get("detail"), "Workflow is inactive. Please activate workflow first.")
+
+    async def test_create_and_list_workflow_versions(self) -> None:
+        user = await self._create_user(email="versions@example.com", username="versions-user")
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Versioned Workflow",
+            definition={
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "manual_trigger",
+                        "label": "Start",
+                        "position": {"x": 0, "y": 0},
+                        "config": {},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "dummy",
+                        "label": "Step A",
+                        "position": {"x": 220, "y": 0},
+                        "config": {},
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+            },
+        )
+
+        first_status, first_payload = await self.client.post(
+            f"/workflows/{workflow.id}/versions",
+            json_body={"note": "Initial stable version"},
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(first_status, 201)
+        self.assertEqual(first_payload["version_number"], 1)
+        self.assertEqual(first_payload["note"], "Initial stable version")
+        self.assertEqual(
+            first_payload["snapshot_json"]["definition"]["nodes"][1]["label"],
+            "Step A",
+        )
+
+        update_status, _update_payload = await self.client.put(
+            f"/workflows/{workflow.id}",
+            json_body={
+                "definition": {
+                    "nodes": [
+                        {
+                            "id": "n1",
+                            "type": "manual_trigger",
+                            "label": "Start",
+                            "position": {"x": 0, "y": 0},
+                            "config": {},
+                        },
+                        {
+                            "id": "n2",
+                            "type": "dummy",
+                            "label": "Step B",
+                            "position": {"x": 220, "y": 0},
+                            "config": {},
+                        },
+                    ],
+                    "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+                }
+            },
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(update_status, 200)
+
+        second_status, second_payload = await self.client.post(
+            f"/workflows/{workflow.id}/versions",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(second_status, 201)
+        self.assertEqual(second_payload["version_number"], 2)
+        self.assertIsNone(second_payload["note"])
+
+        list_status, list_payload = await self.client.get(
+            f"/workflows/{workflow.id}/versions",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(list_status, 200)
+        self.assertEqual([item["version_number"] for item in list_payload["versions"]], [2, 1])
+
+    async def test_get_and_restore_workflow_version(self) -> None:
+        user = await self._create_user(email="restore@example.com", username="restore-user")
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Draft Name",
+            description="Draft Description",
+            definition={
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "manual_trigger",
+                        "label": "Start",
+                        "position": {"x": 0, "y": 0},
+                        "config": {},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "dummy",
+                        "label": "Original Node",
+                        "position": {"x": 220, "y": 0},
+                        "config": {},
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+            },
+        )
+
+        create_status, create_payload = await self.client.post(
+            f"/workflows/{workflow.id}/versions",
+            json_body={"note": "Snapshot before edits"},
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(create_status, 201)
+        version_id = create_payload["id"]
+
+        update_status, _update_payload = await self.client.put(
+            f"/workflows/{workflow.id}",
+            json_body={
+                "name": "Edited Name",
+                "description": "Edited Description",
+                "definition": {
+                    "nodes": [
+                        {
+                            "id": "n1",
+                            "type": "manual_trigger",
+                            "label": "Start",
+                            "position": {"x": 0, "y": 0},
+                            "config": {},
+                        },
+                        {
+                            "id": "n2",
+                            "type": "dummy",
+                            "label": "Edited Node",
+                            "position": {"x": 220, "y": 0},
+                            "config": {},
+                        },
+                    ],
+                    "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+                },
+            },
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(update_status, 200)
+
+        get_status, get_payload = await self.client.get(
+            f"/workflows/{workflow.id}/versions/{version_id}",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(get_status, 200)
+        self.assertEqual(get_payload["version_number"], 1)
+        self.assertEqual(
+            get_payload["snapshot_json"]["definition"]["nodes"][1]["label"],
+            "Original Node",
+        )
+
+        restore_status, restore_payload = await self.client.post(
+            f"/workflows/{workflow.id}/restore/{version_id}",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(restore_status, 200)
+        self.assertEqual(restore_payload["name"], "Draft Name")
+        self.assertEqual(restore_payload["description"], "Draft Description")
+        self.assertEqual(
+            restore_payload["definition"]["nodes"][1]["label"],
+            "Original Node",
+        )
+
+    async def test_workflow_version_endpoints_enforce_ownership(self) -> None:
+        owner = await self._create_user(email="owner-versions@example.com", username="owner-versions")
+        other = await self._create_user(email="other-versions@example.com", username="other-versions")
+        workflow = await self._create_workflow(user_id=owner.id, name="Private Workflow")
+
+        create_status, create_payload = await self.client.post(
+            f"/workflows/{workflow.id}/versions",
+            headers=_auth_headers(owner.id),
+        )
+        self.assertEqual(create_status, 201)
+        version_id = create_payload["id"]
+
+        for path in [
+            f"/workflows/{workflow.id}/versions",
+            f"/workflows/{workflow.id}/versions/{version_id}",
+        ]:
+            status_code, payload = await self.client.get(path, headers=_auth_headers(other.id))
+            self.assertEqual(status_code, 404)
+            self.assertEqual(payload["detail"], "Workflow not found")
+
+        restore_status, restore_payload = await self.client.post(
+            f"/workflows/{workflow.id}/restore/{version_id}",
+            headers=_auth_headers(other.id),
+        )
+        self.assertEqual(restore_status, 404)
+        self.assertEqual(restore_payload["detail"], "Workflow not found")
+
+        async with self.session_factory() as session:
+            total_versions = await session.scalar(
+                select(func.count())
+                .select_from(WorkflowVersion)
+                .where(WorkflowVersion.workflow_id == workflow.id)
+            )
+        self.assertEqual(int(total_versions or 0), 1)

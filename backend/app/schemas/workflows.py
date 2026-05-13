@@ -1071,3 +1071,32 @@ class WorkflowWebhookEndpoint(BaseModel):
 
 class WorkflowWebhookListResponse(BaseModel):
     webhooks: list[WorkflowWebhookEndpoint]
+
+
+class WorkflowVersionCreate(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+class WorkflowVersionSnapshot(BaseModel):
+    name: str
+    description: str | None
+    definition: WorkflowDefinition
+
+
+class WorkflowVersionListItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    workflow_id: UUID
+    created_by: UUID
+    version_number: int
+    note: str | None
+    created_at: datetime
+
+
+class WorkflowVersionResponse(WorkflowVersionListItem):
+    snapshot_json: WorkflowVersionSnapshot
+
+
+class WorkflowVersionListResponse(BaseModel):
+    versions: list[WorkflowVersionListItem]

@@ -12,8 +12,9 @@ function Layout() {
         onDescribeWorkflow={() => {}} 
         onToggleNodePalette={() => {}} 
         isNodePaletteOpen={false} 
-        onNewWorkflow={() => {}} 
-        onSave={() => {}} 
+        onSaveOnly={() => {}}
+        onSaveAndCreateVersion={() => {}}
+        onImport={() => {}}
         saveStatus="idle"
       />
       <div className="flex min-h-0 flex-1">

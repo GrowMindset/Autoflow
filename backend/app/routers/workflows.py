@@ -14,6 +14,10 @@ from app.schemas.workflows import (
     WorkflowDeleteResponse,
     WorkflowListItem,
     WorkflowListResponse,
+    WorkflowVersionCreate,
+    WorkflowVersionListItem,
+    WorkflowVersionListResponse,
+    WorkflowVersionResponse,
     WorkflowWebhookEndpoint,
     WorkflowWebhookListResponse,
     WorkflowResponse,
@@ -150,6 +154,106 @@ async def delete_workflow(
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     return WorkflowDeleteResponse(message="Workflow deleted successfully")
+
+
+@router.post(
+    "/{workflow_id}/versions",
+    response_model=WorkflowVersionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_workflow_version(
+    workflow_id: UUID,
+    payload: WorkflowVersionCreate | None = None,
+    current_user: User = Depends(get_current_user),
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowVersionResponse:
+    version = await workflow_service.create_workflow_version(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+        note=payload.note if payload else None,
+    )
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    return WorkflowVersionResponse.model_validate(version)
+
+
+@router.get("/{workflow_id}/versions", response_model=WorkflowVersionListResponse)
+async def list_workflow_versions(
+    workflow_id: UUID,
+    current_user: User = Depends(get_current_user),
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowVersionListResponse:
+    versions = await workflow_service.list_workflow_versions(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+    )
+    if versions is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    return WorkflowVersionListResponse(
+        versions=[WorkflowVersionListItem.model_validate(version) for version in versions]
+    )
+
+
+@router.get("/{workflow_id}/versions/{version_id}", response_model=WorkflowVersionResponse)
+async def get_workflow_version(
+    workflow_id: UUID,
+    version_id: UUID,
+    current_user: User = Depends(get_current_user),
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowVersionResponse:
+    workflow = await workflow_service.get_workflow(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+    )
+    if workflow is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+
+    version = await workflow_service.get_workflow_version(
+        workflow_id=workflow_id,
+        version_id=version_id,
+        user_id=current_user.id,
+    )
+    if version is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workflow version not found",
+        )
+    return WorkflowVersionResponse.model_validate(version)
+
+
+@router.post("/{workflow_id}/restore/{version_id}", response_model=WorkflowResponse)
+async def restore_workflow_version(
+    workflow_id: UUID,
+    version_id: UUID,
+    current_user: User = Depends(get_current_user),
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowResponse:
+    workflow = await workflow_service.get_workflow(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+    )
+    if workflow is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+
+    version = await workflow_service.get_workflow_version(
+        workflow_id=workflow_id,
+        version_id=version_id,
+        user_id=current_user.id,
+    )
+    if version is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workflow version not found",
+        )
+
+    restored = await workflow_service.restore_workflow_version(
+        workflow_id=workflow_id,
+        version_id=version_id,
+        user_id=current_user.id,
+    )
+    if restored is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    return WorkflowResponse.model_validate(restored)
 
 
 @router.get("/{workflow_id}/webhooks", response_model=WorkflowWebhookListResponse)
