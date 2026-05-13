@@ -399,15 +399,23 @@ const MainLayout: React.FC = () => {
   }, [clearAutoSaveTimeout, clearAiReviewState]);
 
   const onRenameWorkflow = useCallback((id: string, newName: string) => {
+    if (isPublished) {
+      toast.error('Workflow is published. Unpublish to edit.');
+      return;
+    }
     if (id === 'new') {
       setNewWorkflowDraftName(newName);
     } else {
       setWorkflows(prev => prev.map(w => w.id === id ? { ...w, name: newName } : w));
     }
     toast.success(`Workflow renamed to "${newName}"`);
-  }, []);
+  }, [isPublished]);
 
   const handleImportWorkflow = useCallback((data: any) => {
+    if (isPublished) {
+      toast.error('Workflow is published. Unpublish to edit.');
+      return;
+    }
     if (!data || !data.definition) {
       toast.error('Invalid workflow file');
       return;
@@ -431,7 +439,7 @@ const MainLayout: React.FC = () => {
     }
 
     toast.success('Workflow data loaded. Click "Save Changes" to persist.');
-  }, [currentWorkflowId, setWorkflows, clearAutoSaveTimeout, clearAiReviewState]);
+  }, [clearAiReviewState, clearAutoSaveTimeout, currentWorkflowId, isPublished, setWorkflows]);
 
   const onSelectWorkflow = useCallback(async (id: string) => {
     if (id === 'new') {
@@ -463,6 +471,12 @@ const MainLayout: React.FC = () => {
   }, [createNewWorkflowDraft, clearAutoSaveTimeout, clearAiReviewState]);
   const saveWorkflow = useCallback(async ({ silent = false, force = false }: { silent?: boolean; force?: boolean } = {}) => {
     if (!(window as any).getCanvasWorkflowData) return;
+    if (isPublished) {
+      if (!silent) {
+        toast.error('Workflow is published. Unpublish to edit.');
+      }
+      return;
+    }
     if ((window as any).isAiWorkflowPreviewActive?.()) {
       if (!silent) {
         toast.error('Accept or discard AI preview before saving.');
@@ -572,6 +586,7 @@ const MainLayout: React.FC = () => {
     currentWorkflow.name,
     currentWorkflowId,
     currentDescription,
+    isPublished,
   ]);
 
   useEffect(() => {
@@ -611,6 +626,9 @@ const MainLayout: React.FC = () => {
     if (!(window as any).isCanvasDirty?.()) {
       return;
     }
+    if (isPublished) {
+      return;
+    }
 
     const snapshot = getCurrentDefinitionSnapshot();
     if (!snapshot || snapshot === lastSavedDefinitionRef.current) {
@@ -626,7 +644,7 @@ const MainLayout: React.FC = () => {
       queuedAutoSaveRef.current = false;
       void runAutoSave();
     }
-  }, [getCurrentDefinitionSnapshot, saveWorkflow]);
+  }, [getCurrentDefinitionSnapshot, isPublished, saveWorkflow]);
 
   const scheduleAutoSave = useCallback(() => {
     clearAutoSaveTimeout();
@@ -636,12 +654,16 @@ const MainLayout: React.FC = () => {
   }, [clearAutoSaveTimeout, runAutoSave]);
 
   const handleCanvasMutated = useCallback((_reason: string) => {
+    if (isPublished) {
+      toast.error('Workflow is published. Unpublish to edit.');
+      return;
+    }
     if (!(window as any).isCanvasDirty?.()) {
       return;
     }
     setSaveStatus((prev) => (prev === 'saving' ? prev : 'idle'));
     scheduleAutoSave();
-  }, [scheduleAutoSave]);
+  }, [isPublished, scheduleAutoSave]);
 
   const handleSaveOnly = useCallback(async () => {
     if (isSaveActionInFlight) return;
@@ -689,6 +711,9 @@ const MainLayout: React.FC = () => {
       toast.error('Please save your workflow before running');
       return false;
     }
+    if (isPublished) {
+      return true;
+    }
     if (!(window as any).isCanvasDirty?.()) {
       return true;
     }
@@ -701,7 +726,7 @@ const MainLayout: React.FC = () => {
       return false;
     }
     return true;
-  }, [clearAutoSaveTimeout, currentWorkflowId, saveWorkflow]);
+  }, [clearAutoSaveTimeout, currentWorkflowId, isPublished, saveWorkflow]);
 
   useEffect(() => {
     return () => {
@@ -774,8 +799,19 @@ const MainLayout: React.FC = () => {
     }
 
     const newStatus = !isPublished;
+    if (newStatus && !isCurrentWorkflowPollingActive) {
+      toast.error('Inactive workflows cannot be published. Activate workflow first.');
+      return;
+    }
+    if (newStatus) {
+      const saved = await saveWorkflow({ silent: true, force: true });
+      if (!saved) {
+        toast.error('Save workflow before publishing.');
+        return;
+      }
+    }
     try {
-      await toast.promise(
+      const updatedWorkflow = await toast.promise(
         workflowService.updatePublishStatus(currentWorkflowId, newStatus),
         {
           loading: newStatus ? 'Publishing...' : 'Unpublishing...',
@@ -791,7 +827,7 @@ const MainLayout: React.FC = () => {
         skipNextPublishedUrlReloadRef.current = null;
       }
       setWorkflows(prev => prev.map(w =>
-        w.id === currentWorkflowId ? { ...w, is_published: newStatus } : w
+        w.id === currentWorkflowId ? { ...w, ...updatedWorkflow, is_published: newStatus } : w
       ));
 
       if (newStatus) {
@@ -814,7 +850,7 @@ const MainLayout: React.FC = () => {
       skipNextPublishedUrlReloadRef.current = null;
       console.error('Failed to toggle publish status:', error);
     }
-  }, [currentWorkflowId, isPublished, loadPublishedRunUrl]);
+  }, [currentWorkflowId, isCurrentWorkflowPollingActive, isPublished, loadPublishedRunUrl, saveWorkflow]);
 
   const handleDeleteWorkflow = async (id: string) => {
     if (id === currentWorkflowId) {
@@ -846,6 +882,10 @@ const MainLayout: React.FC = () => {
   };
 
   const handleToggleWorkflowActive = useCallback(async (workflowId: string) => {
+    if (isPublished) {
+      toast.error('Workflow is published. Unpublish to edit.');
+      return;
+    }
     if (!workflowId || workflowId === 'new') {
       toast('Save workflow first, then control polling.', { icon: 'ℹ️' });
       return;
@@ -869,7 +909,7 @@ const MainLayout: React.FC = () => {
       console.error('Failed to update workflow active status:', error);
       toast.error('Failed to update workflow status.');
     }
-  }, [workflows]);
+  }, [isPublished, workflows]);
 
   const handleSendMessage = useCallback(async (content: string, conversationStateOverride?: ConversationState) => {
     if (isAiLoading) return;
@@ -1074,6 +1114,10 @@ const MainLayout: React.FC = () => {
 
   const applyWorkflowName = useCallback((suggestedName: string) => {
     if (!suggestedName) return;
+    if (isPublished) {
+      toast.error('Unpublish workflow before modifying it.');
+      return;
+    }
     if (currentWorkflowId === 'new') {
       setNewWorkflowDraftName(suggestedName);
       return;
@@ -1083,9 +1127,13 @@ const MainLayout: React.FC = () => {
         workflow.id === currentWorkflowId ? { ...workflow, name: suggestedName } : workflow
       )
     );
-  }, [currentWorkflowId]);
+  }, [currentWorkflowId, isPublished]);
 
   const handleApplyAiWorkflow = useCallback((workflowPayload: any) => {
+    if (isPublished) {
+      toast.error('Unpublish workflow before modifying it.');
+      return;
+    }
     pendingDiscardRefinementRef.current = null;
     const isDirty = (window as any).isCanvasDirty?.();
 
@@ -1107,9 +1155,13 @@ const MainLayout: React.FC = () => {
           : 'AI Workflow applied! Review and save your changes.'
       );
     }
-  }, [normalizeAiWorkflowPayload, applyWorkflowName, clearAiReviewState]);
+  }, [applyWorkflowName, clearAiReviewState, isPublished, normalizeAiWorkflowPayload]);
 
   const handleReviewAiWorkflow = useCallback((workflowPayload: any) => {
+    if (isPublished) {
+      toast.error('Unpublish workflow before modifying it.');
+      return;
+    }
     pendingDiscardRefinementRef.current = null;
     const { workflowDefinition, suggestedName, signature } = normalizeAiWorkflowPayload(workflowPayload);
     if (!workflowDefinition) {
@@ -1127,9 +1179,13 @@ const MainLayout: React.FC = () => {
     }
     setReviewedWorkflowSignature(signature);
     toast.success('Preview loaded on canvas. Accept to apply changes.');
-  }, [normalizeAiWorkflowPayload]);
+  }, [isPublished, normalizeAiWorkflowPayload]);
 
   const handleAcceptReviewedWorkflow = useCallback((workflowPayload: any) => {
+    if (isPublished) {
+      toast.error('Unpublish workflow before modifying it.');
+      return;
+    }
     pendingDiscardRefinementRef.current = null;
     const { workflowDefinition, suggestedName, signature } = normalizeAiWorkflowPayload(workflowPayload);
     if (!workflowDefinition) {
@@ -1172,7 +1228,7 @@ const MainLayout: React.FC = () => {
         ? `Workflow accepted as "${suggestedName}". Review and save your changes.`
         : 'Workflow accepted. Review and save your changes.'
     );
-  }, [normalizeAiWorkflowPayload, reviewedWorkflowSignature, handleApplyAiWorkflow, applyWorkflowName, currentWorkflowId]);
+  }, [normalizeAiWorkflowPayload, reviewedWorkflowSignature, handleApplyAiWorkflow, applyWorkflowName, currentWorkflowId, isPublished]);
 
   const handleDiscardReviewedWorkflow = useCallback((workflowPayload?: any) => {
     (window as any).discardAiWorkflowPreview?.();
@@ -1243,6 +1299,10 @@ const MainLayout: React.FC = () => {
           workflowDescription={currentDescription}
           onRename={(newName) => onRenameWorkflow(currentWorkflow.id, newName)}
           onDescribeWorkflow={(desc) => {
+            if (isPublished) {
+              toast.error('Workflow is published. Unpublish to edit.');
+              return;
+            }
             setCurrentDescription(desc);
             toast.success('Description updated');
           }}

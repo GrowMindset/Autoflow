@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+from datetime import datetime, timezone
 from secrets import token_urlsafe
 from typing import Any
 from uuid import UUID
@@ -24,6 +25,17 @@ WORKFLOW_TRIGGER_NODE_TYPES = {
     "webhook_trigger",
     "workflow_trigger",
 }
+
+PUBLISHED_WORKFLOW_EDIT_ERROR = "Published workflows cannot be edited. Unpublish first."
+INACTIVE_WORKFLOW_PUBLISH_ERROR = "Inactive workflows cannot be published. Activate workflow first."
+
+
+class PublishedWorkflowEditError(ValueError):
+    """Raised when a locked published workflow receives a normal update."""
+
+
+class InactiveWorkflowPublishError(ValueError):
+    """Raised when an inactive workflow is sent to the publish endpoint."""
 
 
 class WorkflowService:
@@ -83,8 +95,13 @@ class WorkflowService:
         workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
         if workflow is None:
             return None
+        if workflow.is_published:
+            raise PublishedWorkflowEditError(PUBLISHED_WORKFLOW_EDIT_ERROR)
 
         updates = payload.model_dump(exclude_unset=True, mode="python")
+        # Publish state is controlled exclusively by publish/unpublish endpoints so
+        # locking, timestamps, and webhook activation stay consistent.
+        updates.pop("is_published", None)
         if "definition" in updates and updates["definition"] is not None:
             updates["definition"] = self._sanitize_definition_for_storage(
                 payload.definition.model_dump(mode="python")
@@ -93,19 +110,44 @@ class WorkflowService:
         for field, value in updates.items():
             setattr(workflow, field, value)
 
-        if updates.get("is_published") is False:
-            await self.db.execute(
-                update(WebhookEndpoint)
-                .where(WebhookEndpoint.workflow_id == workflow.id)
-                .values(is_active=False)
-            )
-        elif updates.get("is_published") is True:
-            await self.db.execute(
-                update(WebhookEndpoint)
-                .where(WebhookEndpoint.workflow_id == workflow.id)
-                .values(is_active=True)
-            )
+        await self.db.commit()
+        await self._ensure_webhook_endpoints(workflow)
+        await self.db.refresh(workflow)
+        return workflow
 
+    async def publish_workflow(self, *, workflow_id: UUID, user_id: UUID) -> Workflow | None:
+        workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
+        if workflow is None:
+            return None
+        if not bool(getattr(workflow, "is_active", True)):
+            raise InactiveWorkflowPublishError(INACTIVE_WORKFLOW_PUBLISH_ERROR)
+
+        if not workflow.is_published:
+            workflow.is_published = True
+            workflow.published_at = datetime.now(timezone.utc)
+
+        await self.db.execute(
+            update(WebhookEndpoint)
+            .where(WebhookEndpoint.workflow_id == workflow.id)
+            .values(is_active=True)
+        )
+        await self.db.commit()
+        await self._ensure_webhook_endpoints(workflow)
+        await self.db.refresh(workflow)
+        return workflow
+
+    async def unpublish_workflow(self, *, workflow_id: UUID, user_id: UUID) -> Workflow | None:
+        workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
+        if workflow is None:
+            return None
+
+        workflow.is_published = False
+        workflow.published_at = None
+        await self.db.execute(
+            update(WebhookEndpoint)
+            .where(WebhookEndpoint.workflow_id == workflow.id)
+            .values(is_active=False)
+        )
         await self.db.commit()
         await self._ensure_webhook_endpoints(workflow)
         await self.db.refresh(workflow)

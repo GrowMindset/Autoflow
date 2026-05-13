@@ -6,6 +6,7 @@ import {
   BaseEdge,
   useReactFlow,
 } from 'reactflow';
+import toast from 'react-hot-toast';
 
 const DeletableEdge: React.FC<EdgeProps> = ({
   id,
@@ -32,6 +33,10 @@ const DeletableEdge: React.FC<EdgeProps> = ({
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (data?.isReadOnly) {
+      toast.error('Workflow is published. Unpublish to edit.');
+      return;
+    }
     deleteElements({ edges: [{ id }] });
   };
 
@@ -79,7 +84,12 @@ const DeletableEdge: React.FC<EdgeProps> = ({
             id={`delete-edge-${id}`}
             onClick={handleDelete}
             title="Remove connection"
-            className="w-5 h-5 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 hover:border-red-300 dark:hover:border-red-900 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all flex items-center justify-center shadow-sm opacity-0 group-hover/edge:opacity-100"
+            disabled={Boolean(data?.isReadOnly)}
+            className={`w-5 h-5 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-300 dark:text-slate-600 transition-all flex items-center justify-center shadow-sm opacity-0 group-hover/edge:opacity-100 ${
+              data?.isReadOnly
+                ? 'cursor-not-allowed'
+                : 'hover:text-red-500 dark:hover:text-red-400 hover:border-red-300 dark:hover:border-red-900 hover:bg-red-50 dark:hover:bg-red-900/20'
+            }`}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"

@@ -73,6 +73,7 @@ const DUPLICATE_NODE_OFFSET_X = 60;
 const DUPLICATE_NODE_OFFSET_Y = 40;
 const TRIGGER_NODE_TYPES = ['manual_trigger', 'form_trigger', 'schedule_trigger', 'webhook_trigger', 'workflow_trigger'] as const;
 const WORKFLOW_INACTIVE_ERROR_MESSAGE = 'Workflow is inactive. Please activate workflow first.';
+const PUBLISHED_WORKFLOW_EDIT_MESSAGE = 'Workflow is published. Unpublish to edit.';
 const DEFAULT_LOOP_CONTROL = {
   enabled: false,
   max_node_executions: 3,
@@ -630,9 +631,14 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const [recentClipboardEdgeIds, setRecentClipboardEdgeIds] = useState<string[]>([]);
   const [contextMenuState, setContextMenuState] = useState<CanvasContextMenuState | null>(null);
   const [hasClipboardData, setHasClipboardData] = useState<boolean>(() => Boolean(readWorkflowClipboardFromStorage()));
-  const workflowLoopControlRef = useRef<Record<string, any>>({ ...DEFAULT_LOOP_CONTROL });
   const workflowClipboardRef = useRef<WorkflowClipboardPayload | null>(null);
   const clipboardPasteCountRef = useRef(0);
+  const workflowLoopControlRef = useRef<Record<string, any>>({ ...DEFAULT_LOOP_CONTROL });
+  const isReadOnly = isPublished;
+
+  const notifyReadOnlyEdit = useCallback(() => {
+    toast.error(PUBLISHED_WORKFLOW_EDIT_MESSAGE);
+  }, []);
 
   const buildWorkflowDefinition = useCallback((sourceNodes: WorkflowNode[], sourceEdges: WorkflowEdge[]) => {
     return {
@@ -1096,6 +1102,16 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         toast(previewEditBlockMessage, { icon: 'ℹ️' });
         return;
       }
+
+      if (isReadOnly) {
+        notifyReadOnlyEdit();
+        return;
+      }
+      if (isAiPreviewMode) {
+        toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+        return;
+      }
+
       const {
         nodeId,
         handleId,
@@ -1123,7 +1139,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       window.removeEventListener('rf-quick-add', handleQuickAdd);
       setMenuSearchTerm('');
     };
-  }, [isCanvasReadOnlyPreviewMode, nodes, previewEditBlockMessage, reactFlowInstance]);
+
+  }, [isCanvasReadOnlyPreviewMode, nodes, previewEditBlockMessage, reactFlowInstance, isAiPreviewMode, isReadOnly, notifyReadOnlyEdit]);
+
 
   useEffect(() => {
     if (menuVisible && menuSearchRef.current) {
@@ -1150,8 +1168,18 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [onCanvasMutated, scheduleHistorySnapshot]);
 
   const toggleNodeActive = useCallback((nodeId: string) => {
+
     if (isCanvasReadOnlyPreviewMode) {
       toast(previewEditBlockMessage, { icon: 'ℹ️' });
+      return;
+    }
+
+    if (isReadOnly) {
+      notifyReadOnlyEdit();
+      return;
+    }
+    if (isAiPreviewMode) {
+      toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
       return;
     }
 
@@ -1178,9 +1206,18 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     if (!changed) return;
     emitCanvasMutation('node_active_toggle');
     toast.success(nextActiveState ? 'Node activated' : 'Node deactivated');
-  }, [emitCanvasMutation, isCanvasReadOnlyPreviewMode, previewEditBlockMessage, setNodes]);
+
+  }, [emitCanvasMutation, isCanvasReadOnlyPreviewMode, previewEditBlockMessage, setNodes, isAiPreviewMode, isReadOnly, notifyReadOnlyEdit,]);
 
   const onNodesChange = useCallback((changes: any[]) => {
+    const hasReadOnlyMutation = changes.some((change) =>
+      ['add', 'remove', 'reset', 'position'].includes(change?.type)
+    );
+    if (isReadOnly && hasReadOnlyMutation) {
+      notifyReadOnlyEdit();
+      return;
+    }
+
     onNodesChangeBase(changes);
 
     if (isHydratingCanvasRef.current) return;
@@ -1196,9 +1233,17 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     if (hasMeaningfulChange) {
       emitCanvasMutation('nodes_change');
     }
-  }, [onNodesChangeBase, emitCanvasMutation]);
+  }, [emitCanvasMutation, isReadOnly, notifyReadOnlyEdit, onNodesChangeBase]);
 
   const onEdgesChange = useCallback((changes: any[]) => {
+    const hasReadOnlyMutation = changes.some((change) =>
+      ['add', 'remove', 'reset'].includes(change?.type)
+    );
+    if (isReadOnly && hasReadOnlyMutation) {
+      notifyReadOnlyEdit();
+      return;
+    }
+
     onEdgesChangeBase(changes);
 
     if (isHydratingCanvasRef.current) return;
@@ -1208,7 +1253,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     if (hasMeaningfulChange) {
       emitCanvasMutation('edges_change');
     }
-  }, [onEdgesChangeBase, emitCanvasMutation]);
+  }, [emitCanvasMutation, isReadOnly, notifyReadOnlyEdit, onEdgesChangeBase]);
 
   useEffect(() => {
     const misaligned = nodes.some(
@@ -2120,6 +2165,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [isStoppingExecution, onExecutionUpdate, selectedExecutionId, setNodes, stopPolling]);
 
   const isValidConnection = useCallback((connection: Connection) => {
+    if (isReadOnly) {
+      return false;
+    }
     if (!connection.source || !connection.target) {
       return false;
     }
@@ -2141,10 +2189,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         (edge.targetHandle ?? null) === targetHandle
     );
     return !duplicateEdge;
-  }, [edges]);
+  }, [edges, isReadOnly]);
 
   const onConnect = useCallback((params: Connection) => {
     if (isCanvasReadOnlyPreviewMode) return;
+    if (isReadOnly) {
+      notifyReadOnlyEdit();
+      return;
+    }
+    if (isAiPreviewMode) return;
     if (!params.source || !params.target) return;
     const existingEdgeIds = new Set(edgesRef.current.map((edge) => edge.id));
 
@@ -2165,7 +2218,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     emitCanvasMutation('connect_nodes');
     connectingNode.current = null; // Clear connection state after successful connection
     toast.success('Nodes connected');
-  }, [isCanvasReadOnlyPreviewMode, setEdges, emitCanvasMutation]);
+  }, [isCanvasReadOnlyPreviewMode, setEdges, emitCanvasMutation, isAiPreviewMode, isReadOnly, notifyReadOnlyEdit]);
 
   const onConnectStart = useCallback((_: any, {
     nodeId,
@@ -2176,10 +2229,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     handleId?: string | null;
     handleType?: 'source' | 'target' | null;
   }) => {
-    if (isCanvasReadOnlyPreviewMode) {
-      connectingNode.current = null;
-      return;
-    }
+  if (isReadOnly || isCanvasReadOnlyPreviewMode || isAiPreviewMode) {
+    connectingNode.current = null;
+    return;
+  }
     if (!nodeId) {
       connectingNode.current = null;
       return;
@@ -2189,11 +2242,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       handleId: handleId ?? null,
       connectionType: handleType === 'target' ? 'target' : 'source',
     };
-  }, [isCanvasReadOnlyPreviewMode]);
+  }, [isReadOnly, isCanvasReadOnlyPreviewMode, isAiPreviewMode]);
 
   const onConnectEnd = useCallback(
     (event: any) => {
-      if (isCanvasReadOnlyPreviewMode) return;
+      if (isReadOnly || isCanvasReadOnlyPreviewMode || isAiPreviewMode) return;
+
       if (!connectingNode.current || !reactFlowInstance) return;
 
       const targetIsPane = event.target.classList.contains('react-flow__pane');
@@ -2210,7 +2264,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         setMenuVisible(true);
       }
     },
-    [isCanvasReadOnlyPreviewMode, reactFlowInstance]
+    [isReadOnly, isCanvasReadOnlyPreviewMode, isAiPreviewMode, reactFlowInstance]
   );
 
   const onPaneClick = useCallback(() => {
@@ -2268,16 +2322,24 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-  }, []);
+    event.dataTransfer.dropEffect = isReadOnly ? 'none' : 'move';
+  }, [isReadOnly]);
 
   const onDrop = useCallback(
-    (event: React.DragEvent) => {
-      if (isCanvasReadOnlyPreviewMode) {
-        toast(previewEditBlockMessage, { icon: 'ℹ️' });
-        return;
-      }
-      event.preventDefault();
+  (event: React.DragEvent) => {
+    if (isReadOnly) {
+      notifyReadOnlyEdit();
+      return;
+    }
+
+    if (isCanvasReadOnlyPreviewMode || isAiPreviewMode) {
+      toast('Accept or discard the AI preview before editing.', {
+        icon: 'ℹ️',
+      });
+      return;
+    }
+
+    event.preventDefault();
 
       if (!reactFlowWrapper.current || !reactFlowInstance) return;
 
@@ -2291,14 +2353,27 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
       addNodeAtPosition(nodeType, position);
     },
-    [isCanvasReadOnlyPreviewMode, previewEditBlockMessage, reactFlowInstance]
-  );
+    [
+      isCanvasReadOnlyPreviewMode,
+      isAiPreviewMode,
+      isReadOnly,
+      notifyReadOnlyEdit,
+      reactFlowInstance,
+    ]
+    );
 
-  const addNodeAtPosition = useCallback((type: string, position: XYPosition) => {
-    if (isCanvasReadOnlyPreviewMode) {
-      toast(previewEditBlockMessage, { icon: 'ℹ️' });
-      return;
-    }
+    const addNodeAtPosition = useCallback((type: string, position: XYPosition) => {
+      if (isReadOnly) {
+        notifyReadOnlyEdit();
+        return;
+      }
+
+    if (isCanvasReadOnlyPreviewMode || isAiPreviewMode) {
+      toast('Accept or discard the AI preview before editing.', {
+        icon: 'ℹ️',
+      });
+        return;
+      }
     if (
       type === 'workflow_trigger'
       && nodesRef.current.some((node) => node.data.type === 'workflow_trigger')
@@ -2361,14 +2436,39 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     } catch (error) {
       console.error(error);
     }
-  }, [isCanvasReadOnlyPreviewMode, setNodes, setEdges, emitCanvasMutation, toggleNodeActive, previewEditBlockMessage]);
+  }, [
+    emitCanvasMutation,
+    isCanvasReadOnlyPreviewMode,
+    isAiPreviewMode,
+    isReadOnly,
+    notifyReadOnlyEdit,
+    setEdges,
+    setNodes,
+    toggleNodeActive,
+    previewEditBlockMessage
+  ]);
 
   const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: any) => {
-    if (isCanvasReadOnlyPreviewMode) return;
+    if (isReadOnly) {
+      notifyReadOnlyEdit();
+      return;
+    }
+
+    if (isCanvasReadOnlyPreviewMode || isAiPreviewMode) return;
+
     setSelectedNodeId(node.id);
-  }, [isCanvasReadOnlyPreviewMode]);
+  }, [
+    isCanvasReadOnlyPreviewMode,
+    isAiPreviewMode,
+    isReadOnly,
+    notifyReadOnlyEdit,
+  ]);
 
   const openQuickAddAtCenter = useCallback(() => {
+    if (isReadOnly) {
+      notifyReadOnlyEdit();
+      return;
+    }
     if (!reactFlowInstance || !reactFlowWrapper.current) return;
     const rect = reactFlowWrapper.current.getBoundingClientRect();
     const centerPosition = reactFlowInstance.screenToFlowPosition({
@@ -2378,16 +2478,20 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     connectingNode.current = null;
     setMenuPosition(centerPosition);
     setMenuVisible(true);
-  }, [reactFlowInstance]);
+  }, [isReadOnly, notifyReadOnlyEdit, reactFlowInstance]);
 
   const handleAddFirstStepFromStarter = useCallback(() => {
+    if (isReadOnly) {
+      notifyReadOnlyEdit();
+      return;
+    }
     setHasPickedNewWorkflowStarter(true);
     if (typeof (window as any).openNodePalette === 'function') {
       (window as any).openNodePalette();
       return;
     }
     openQuickAddAtCenter();
-  }, [openQuickAddAtCenter]);
+  }, [isReadOnly, notifyReadOnlyEdit, openQuickAddAtCenter]);
 
   const handleBuildWithAiFromStarter = useCallback(() => {
     setHasPickedNewWorkflowStarter(true);
@@ -3179,19 +3283,33 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       }));
     };
     (window as any).applyAiWorkflow = (definition: any) => {
-      if (isVersionPreviewMode) {
-        toast('Exit version preview before applying AI workflow.', { icon: 'ℹ️' });
-        return false;
-      }
+    if (isReadOnly) {
+      notifyReadOnlyEdit();
+      return false;
+    }
+
+    if (isVersionPreviewMode) {
+      toast('Exit version preview before applying AI workflow.', {
+        icon: 'ℹ️',
+      });
+      return false;
+    }
       const graph = buildAiGraphFromDefinition(definition);
       applyAiGraphToCanvas(graph);
       return true;
     };
     (window as any).previewAiWorkflow = (definition: any, options?: { name?: string }) => {
-      if (isVersionPreviewMode) {
-        toast('Exit version preview before starting AI preview.', { icon: 'ℹ️' });
-        return false;
-      }
+    if (isReadOnly) {
+      notifyReadOnlyEdit();
+      return false;
+    }
+
+    if (isVersionPreviewMode) {
+      toast('Exit version preview before starting AI preview.', {
+        icon: 'ℹ️',
+      });
+      return false;
+    }
       const graph = buildAiGraphFromDefinition(definition);
       setSelectedNodeId(null);
       setAiPreviewGraph({
@@ -3204,6 +3322,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       return true;
     };
     (window as any).acceptAiWorkflowPreview = () => {
+      if (isReadOnly) {
+        notifyReadOnlyEdit();
+        return false;
+      }
       if (!aiPreviewGraph) return false;
       applyAiGraphToCanvas(aiPreviewGraph);
       return true;
@@ -3234,8 +3356,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     (window as any).redoCanvas = redoCanvas;
 
     (window as any).addNodeAtCenter = (type: string) => {
-      if (isCanvasReadOnlyPreviewMode) {
-        toast(previewEditBlockMessage, { icon: 'ℹ️' });
+      if (isReadOnly) {
+        notifyReadOnlyEdit();
+        return;
+      }
+
+      if (isCanvasReadOnlyPreviewMode || aiPreviewGraph) {
+        toast('Accept or discard the AI preview before editing.', {
+          icon: 'ℹ️',
+        });
         return;
       }
       if (!reactFlowInstance) return;
@@ -3295,9 +3424,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     addNodeAtPosition,
     applyAiGraphToCanvas,
     buildAiGraphFromDefinition,
+    isReadOnly,
+    notifyReadOnlyEdit,
   ]);
 
   const updateNodeConfig = useCallback((id: string, config: Record<string, any>, output?: any) => {
+    if (isReadOnly) {
+      notifyReadOnlyEdit();
+      return;
+    }
     setNodes((nds) =>
       nds.map((node) => {
         if (node.id === id) {
@@ -3327,9 +3462,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       })
     );
     emitCanvasMutation('node_config_change');
-  }, [setNodes, emitCanvasMutation, isPublished]);
+  }, [emitCanvasMutation, isPublished, isReadOnly, notifyReadOnlyEdit, setNodes]);
 
   const updateNodeLabel = useCallback((id: string, label: string) => {
+    if (isReadOnly) {
+      notifyReadOnlyEdit();
+      return;
+    }
     setNodes((nds) =>
       nds.map((node) => {
         if (node.id !== id) return node;
@@ -3343,7 +3482,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       })
     );
     emitCanvasMutation('node_label_change');
-  }, [setNodes, emitCanvasMutation]);
+  }, [emitCanvasMutation, isReadOnly, notifyReadOnlyEdit, setNodes]);
 
   const getUpstreamData = (nodeId: string) => {
     const upstreamEdges = edges
@@ -3416,24 +3555,56 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     });
   }, []);
 
-  const selectedNode = isCanvasReadOnlyPreviewMode ? null : nodes.find(n => n.id === selectedNodeId);
-  const upstreamData = isCanvasReadOnlyPreviewMode ? null : (selectedNodeId ? getUpstreamData(selectedNodeId) : null);
+  const selectedNode =
+    isCanvasReadOnlyPreviewMode || isAiPreviewMode || isReadOnly
+      ? null
+      : nodes.find(n => n.id === selectedNodeId);
+
+  const upstreamData =
+    isCanvasReadOnlyPreviewMode || isAiPreviewMode || isReadOnly
+      ? null
+      : (selectedNodeId ? getUpstreamData(selectedNodeId) : null);
+
   const contextMenuTargetNodes = useMemo(
     () => getSelectedCanvasNodes(contextMenuState?.nodeId),
     [contextMenuState?.nodeId, getSelectedCanvasNodes],
   );
-  const canContextCopyOrDuplicate = activeTab === 'editor' && !isCanvasReadOnlyPreviewMode && contextMenuTargetNodes.length > 0;
-  const canContextPaste = activeTab === 'editor' && !isCanvasReadOnlyPreviewMode && hasClipboardData;
-  const contextCopyDisabledReason = isCanvasReadOnlyPreviewMode
-    ? (isVersionPreviewMode ? 'Disabled in version preview mode' : 'Disabled in AI preview mode')
-    : contextMenuTargetNodes.length < 1
-      ? 'No nodes available to copy'
-      : '';
-  const contextPasteDisabledReason = isCanvasReadOnlyPreviewMode
-    ? (isVersionPreviewMode ? 'Disabled in version preview mode' : 'Disabled in AI preview mode')
-    : !hasClipboardData
-      ? 'Clipboard is empty'
-      : '';
+
+  const canContextCopyOrDuplicate =
+    activeTab === 'editor' &&
+    !isCanvasReadOnlyPreviewMode &&
+    !isAiPreviewMode &&
+    !isReadOnly &&
+    contextMenuTargetNodes.length > 0;
+
+  const canContextPaste =
+    activeTab === 'editor' &&
+    !isCanvasReadOnlyPreviewMode &&
+    !isAiPreviewMode &&
+    !isReadOnly &&
+    hasClipboardData;
+
+  const contextCopyDisabledReason =
+    isReadOnly
+      ? 'Workflow is published and read-only'
+      : isCanvasReadOnlyPreviewMode
+        ? (isVersionPreviewMode
+            ? 'Disabled in version preview mode'
+            : 'Disabled in AI preview mode')
+        : contextMenuTargetNodes.length < 1
+          ? 'No nodes available to copy'
+          : '';
+
+  const contextPasteDisabledReason =
+    isReadOnly
+      ? 'Workflow is published and read-only'
+      : isCanvasReadOnlyPreviewMode
+        ? (isVersionPreviewMode
+            ? 'Disabled in version preview mode'
+            : 'Disabled in AI preview mode')
+        : !hasClipboardData
+          ? 'Clipboard is empty'
+          : '';
   const previousNodes = useMemo(() => {
     if (isCanvasReadOnlyPreviewMode) return [] as WorkflowNode[];
     if (!selectedNodeId) return [] as WorkflowNode[];
@@ -3479,32 +3650,68 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   const displayNodes = useMemo(() => {
     if (highlightedNodeIdSet.size === 0) {
-      return graphNodes;
+      return graphNodes.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          is_read_only: isReadOnly,
+        },
+      }));
     }
 
     return graphNodes.map((node) => {
-      if (!highlightedNodeIdSet.has(node.id)) {
-        return node;
+      const withReadOnly = {
+        ...node,
+        data: {
+          ...node.data,
+          is_read_only: isReadOnly,
+        },
+      };
+
+      if (
+        recentAiNodeIdSet.size === 0 ||
+        !recentAiNodeIdSet.has(node.id) ||
+        !highlightedNodeIdSet.has(node.id)
+      ) {
+        return withReadOnly;
       }
       const existingClass = node.className ? `${node.className} ` : '';
       return {
-        ...node,
+        ...withReadOnly,
         className: `${existingClass}ai-node-updated`,
       };
     });
-  }, [graphNodes, highlightedNodeIdSet]);
+  }, [graphNodes, highlightedNodeIdSet, isReadOnly, recentAiNodeIdSet]);
 
   const displayEdges = useMemo(() => {
     if (highlightedEdgeIdSet.size === 0) {
-      return graphEdges;
+      return graphEdges.map((edge) => ({
+        ...edge,
+        data: {
+          ...(edge.data || {}),
+          isReadOnly,
+        },
+      }));
     }
 
     return graphEdges.map((edge) => {
-      if (!highlightedEdgeIdSet.has(edge.id)) {
-        return edge;
+      const withReadOnly = {
+        ...edge,
+        data: {
+          ...(edge.data || {}),
+          isReadOnly,
+        },
+      };
+
+      if (
+        recentAiEdgeIdSet.size === 0 ||
+        !recentAiEdgeIdSet.has(edge.id) ||
+        !highlightedEdgeIdSet.has(edge.id)
+      ) {
+        return withReadOnly;
       }
       return {
-        ...edge,
+        ...withReadOnly,
         animated: true,
         style: {
           ...(edge.style || {}),
@@ -3514,7 +3721,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         },
       };
     });
-  }, [graphEdges, highlightedEdgeIdSet]);
+  }, [graphEdges, highlightedEdgeIdSet, isReadOnly, recentAiEdgeIdSet]);
 
   const showNewWorkflowStarter =
     activeTab === 'editor' &&
@@ -3579,9 +3786,17 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           <div className="w-px h-6 bg-slate-200 dark:bg-slate-700 mx-1" />
           <button
             type="button"
-            onClick={onTogglePollingEnabled}
-            className="group flex items-center gap-2 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-            title={isPollingEnabled ? 'Set workflow inactive' : 'Set workflow active'}
+            onClick={() => {
+              if (isReadOnly) {
+                notifyReadOnlyEdit();
+                return;
+              }
+              onTogglePollingEnabled?.();
+            }}
+            className={`group flex items-center gap-2 rounded-lg px-2.5 py-1.5 transition ${
+              isReadOnly ? 'cursor-not-allowed opacity-70' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+            title={isReadOnly ? 'Unpublish to change active state' : isPollingEnabled ? 'Set workflow inactive' : 'Set workflow active'}
           >
             <span className={`text-[11px] font-semibold ${isPollingEnabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-500 dark:text-slate-400'}`}>
               {isPollingEnabled ? 'Active' : 'Inactive'}
@@ -3622,14 +3837,31 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             isValidConnection={isValidConnection}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
-            deleteKeyCode={['Delete', 'Backspace']}
-            nodesDraggable={!isCanvasReadOnlyPreviewMode}
-            nodesConnectable={!isCanvasReadOnlyPreviewMode}
-            elementsSelectable={!isCanvasReadOnlyPreviewMode}
-            nodesFocusable={!isCanvasReadOnlyPreviewMode}
-            edgesFocusable={!isCanvasReadOnlyPreviewMode}
+            deleteKeyCode={
+              isReadOnly || isCanvasReadOnlyPreviewMode || isAiPreviewMode
+                ? null
+                : ['Delete', 'Backspace']
+            }
+            nodesDraggable={
+              !isCanvasReadOnlyPreviewMode &&
+              !isAiPreviewMode &&
+              !isReadOnly
+            }
+            nodesConnectable={
+              !isCanvasReadOnlyPreviewMode &&
+              !isAiPreviewMode &&
+              !isReadOnly
+            }
+            edgesUpdatable={
+              !isCanvasReadOnlyPreviewMode &&
+              !isAiPreviewMode &&
+              !isReadOnly
+            }
+            elementsSelectable={!isCanvasReadOnlyPreviewMode && !isAiPreviewMode}
+            nodesFocusable={!isCanvasReadOnlyPreviewMode && !isAiPreviewMode}
+            edgesFocusable={!isCanvasReadOnlyPreviewMode && !isAiPreviewMode}
             fitView
-          >
+            >
             {showNewWorkflowStarter && (
               <div className="pointer-events-none absolute inset-0 z-[915] flex items-center justify-center">
                 <div className="-mt-12 flex items-center gap-8 sm:gap-12 pointer-events-auto">

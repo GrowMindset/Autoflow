@@ -266,6 +266,7 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(publish_status, 200)
         self.assertTrue(publish_payload["is_published"])
+        self.assertIsNotNone(publish_payload["published_at"])
 
         unpublish_status, unpublish_payload = await self.client.post(
             f"/workflows/{workflow.id}/unpublish",
@@ -273,6 +274,7 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(unpublish_status, 200)
         self.assertFalse(unpublish_payload["is_published"])
+        self.assertIsNone(unpublish_payload["published_at"])
 
     async def test_public_run_url_is_stable_and_reflects_publish_status(self) -> None:
         user = await self._create_user(
@@ -621,14 +623,14 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         status_code, payload = await self.client.put(
             f"/workflows/{workflow.id}",
-            json_body={"description": None, "is_published": True},
+            json_body={"description": None, "is_active": False},
             headers=_auth_headers(owner.id),
         )
 
         self.assertEqual(status_code, 200)
         self.assertEqual(payload["id"], str(workflow.id))
         self.assertIsNone(payload["description"])
-        self.assertTrue(payload["is_published"])
+        self.assertFalse(payload["is_active"])
 
         hidden_status, hidden_payload = await self.client.put(
             f"/workflows/{private_workflow.id}",
@@ -637,6 +639,80 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(hidden_status, 404)
         self.assertEqual(hidden_payload["detail"], "Workflow not found")
+
+    async def test_update_workflow_rejects_published_workflow(self) -> None:
+        user = await self._create_user(email="locked@example.com", username="locked-user")
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Locked",
+            is_published=True,
+        )
+
+        status_code, payload = await self.client.put(
+            f"/workflows/{workflow.id}",
+            json_body={"name": "Edited"},
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(status_code, 400)
+        self.assertEqual(
+            payload["detail"],
+            "Published workflows cannot be edited. Unpublish first.",
+        )
+
+    async def test_update_workflow_allows_updates_after_unpublish(self) -> None:
+        user = await self._create_user(email="unlock@example.com", username="unlock-user")
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Locked Then Draft",
+            is_published=True,
+        )
+
+        unpublish_status, _ = await self.client.post(
+            f"/workflows/{workflow.id}/unpublish",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(unpublish_status, 200)
+
+        update_status, update_payload = await self.client.put(
+            f"/workflows/{workflow.id}",
+            json_body={"name": "Editable Again"},
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(update_status, 200)
+        self.assertEqual(update_payload["name"], "Editable Again")
+        self.assertFalse(update_payload["is_published"])
+
+    async def test_publish_rejects_inactive_workflow(self) -> None:
+        user = await self._create_user(email="inactive-publish@example.com", username="inactive-publish")
+        workflow = await self._create_workflow(user_id=user.id, name="Inactive Draft")
+
+        inactive_status, inactive_payload = await self.client.put(
+            f"/workflows/{workflow.id}",
+            json_body={"is_active": False},
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(inactive_status, 200)
+        self.assertFalse(inactive_payload["is_active"])
+
+        publish_status, publish_payload = await self.client.post(
+            f"/workflows/{workflow.id}/publish",
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(publish_status, 400)
+        self.assertEqual(
+            publish_payload["detail"],
+            "Inactive workflows cannot be published. Activate workflow first.",
+        )
+
+        async with self.session_factory() as session:
+            refreshed = await session.get(Workflow, workflow.id)
+
+        self.assertIsNotNone(refreshed)
+        self.assertFalse(refreshed.is_published)
+        self.assertIsNone(refreshed.published_at)
 
     async def test_delete_workflow_cascades_related_execution_rows(self) -> None:
         user = await self._create_user(email="delete@example.com", username="delete-user")
@@ -908,6 +984,30 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows_by_id["dummy_b"].status, "SUCCEEDED")
         self.assertEqual(rows_by_id["manual_a"].status, "PENDING")
         self.assertEqual(rows_by_id["dummy_a"].status, "PENDING")
+
+    async def test_run_workflow_allows_published_workflow(self) -> None:
+        user = await self._create_user(email="published-run@example.com", username="published-run")
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Published Manual Run",
+            is_published=True,
+        )
+
+        status_code, payload = await self.client.post(
+            f"/workflows/{workflow.id}/run",
+            json_body={},
+            headers=_auth_headers(user.id),
+        )
+
+        self.assertEqual(status_code, 202)
+        execution_id = UUID(payload["execution_id"])
+
+        async with self.session_factory() as session:
+            execution = await session.get(Execution, execution_id)
+
+        self.assertIsNotNone(execution)
+        self.assertEqual(execution.workflow_id, workflow.id)
+        self.assertEqual(execution.triggered_by, "manual")
 
     async def test_run_workflow_rejects_invalid_selected_start_node(self) -> None:
         user = await self._create_user(email="invalid-start@example.com", username="invalid-start")

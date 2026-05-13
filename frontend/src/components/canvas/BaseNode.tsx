@@ -6,6 +6,7 @@ import { CATEGORY_ACCENTS } from '../../constants/nodeLibrary';
 import NodeBadge from '../sidebar/NodeBadge';
 import { getNodeCountdownLabel, shouldShowLiveNodeCountdown } from '../../utils/nodeTimers';
 import { toUserFriendlyErrorMessage } from '../../utils/errorMessages';
+import toast from 'react-hot-toast';
 
 const SHEETS_OPERATION_ALIASES: Record<string, string> = {
   append: 'append_row',
@@ -279,6 +280,7 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
   const isFailed = normalizedStatus === 'FAILED';
   const isNodeActive = data.is_active !== false;
   const canToggleActive = typeof data.onToggleActive === 'function';
+  const isReadOnly = Boolean(data.is_read_only);
 
   useEffect(() => {
     if (!shouldShowLiveCountdown || !isExecutionVisualActive) return;
@@ -294,11 +296,19 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
 
   const handleDeleteNode = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (isReadOnly) {
+      toast.error('Workflow is published. Unpublish to edit.');
+      return;
+    }
     deleteElements({ nodes: [{ id }] });
   };
 
   const handleToggleNodeActive = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (isReadOnly) {
+      toast.error('Workflow is published. Unpublish to edit.');
+      return;
+    }
     data.onToggleActive?.(id);
   };
 
@@ -352,6 +362,10 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
     connectionType: 'source' | 'target' = 'source'
   ) => {
     e.stopPropagation();
+    if (isReadOnly) {
+      toast.error('Workflow is published. Unpublish to edit.');
+      return;
+    }
     
     // Trigger the quick add menu in WorkflowCanvas via a custom event
     const event = new CustomEvent('rf-quick-add', {
@@ -461,8 +475,13 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       <button
         id={`delete-node-${id}`}
         onClick={handleDeleteNode}
+        disabled={isReadOnly}
         title="Remove node"
-        className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 hover:border-red-300 dark:hover:border-red-900 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all flex items-center justify-center shadow-sm z-30 opacity-0 group-hover/node:opacity-100 nodrag"
+        className={`absolute -top-2 -right-2 w-5 h-5 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-300 dark:text-slate-600 transition-all flex items-center justify-center shadow-sm z-30 opacity-0 group-hover/node:opacity-100 nodrag ${
+          isReadOnly
+            ? 'cursor-not-allowed'
+            : 'hover:text-red-500 dark:hover:text-red-400 hover:border-red-300 dark:hover:border-red-900 hover:bg-red-50 dark:hover:bg-red-900/20'
+        }`}
       >
         <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
           <path d="M18 6 6 18" />
@@ -473,9 +492,12 @@ const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = ({ id, data, selected })
       {canToggleActive && (
         <button
           onClick={handleToggleNodeActive}
+          disabled={isReadOnly}
           title={isNodeActive ? 'Deactivate node' : 'Activate node'}
           className={`absolute -top-7 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 transition-all flex items-center justify-center shadow-sm z-30 opacity-0 group-hover/node:opacity-100 nodrag ${
-            isNodeActive
+            isReadOnly
+              ? 'text-slate-400 cursor-not-allowed'
+              : isNodeActive
               ? 'text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:border-emerald-300 dark:hover:border-emerald-900'
               : 'text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:border-blue-300 dark:hover:border-blue-900'
           }`}

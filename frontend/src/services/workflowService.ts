@@ -84,8 +84,7 @@ export const workflowService = {
       const response = await api.put(`/workflows/${data.id}`, {
         name: data.name,
         description: data.description || '',
-        definition: data.definition,
-        is_published: data.is_published
+        definition: data.definition
       });
       return response.data;
     } else {

@@ -1030,6 +1030,7 @@ class WorkflowResponse(BaseModel):
     description: str | None
     definition: WorkflowDefinition
     is_published: bool
+    published_at: datetime | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -1043,6 +1044,7 @@ class WorkflowListItem(BaseModel):
     name: str
     description: str | None
     is_published: bool
+    published_at: datetime | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

@@ -11,11 +11,12 @@ distinguish drafts from live workflows and sort by recent edits.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Boolean, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import text
 
@@ -58,6 +59,10 @@ class Workflow(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
         default=False,
         server_default=text("false"),
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean,

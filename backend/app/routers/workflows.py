@@ -23,7 +23,11 @@ from app.schemas.workflows import (
     WorkflowResponse,
     WorkflowUpdate,
 )
-from app.services.workflow_service import WorkflowService
+from app.services.workflow_service import (
+    InactiveWorkflowPublishError,
+    PublishedWorkflowEditError,
+    WorkflowService,
+)
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -99,11 +103,17 @@ async def update_workflow(
     current_user: User = Depends(get_current_user),
     workflow_service: WorkflowService = Depends(get_workflow_service),
 ) -> WorkflowResponse:
-    workflow = await workflow_service.update_workflow(
-        workflow_id=workflow_id,
-        user_id=current_user.id,
-        payload=payload,
-    )
+    try:
+        workflow = await workflow_service.update_workflow(
+            workflow_id=workflow_id,
+            user_id=current_user.id,
+            payload=payload,
+        )
+    except PublishedWorkflowEditError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     if workflow is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     return WorkflowResponse.model_validate(workflow)
@@ -115,11 +125,16 @@ async def publish_workflow(
     current_user: User = Depends(get_current_user),
     workflow_service: WorkflowService = Depends(get_workflow_service),
 ) -> WorkflowResponse:
-    workflow = await workflow_service.update_workflow(
-        workflow_id=workflow_id,
-        user_id=current_user.id,
-        payload=WorkflowUpdate(is_published=True),
-    )
+    try:
+        workflow = await workflow_service.publish_workflow(
+            workflow_id=workflow_id,
+            user_id=current_user.id,
+        )
+    except InactiveWorkflowPublishError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     if workflow is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     return WorkflowResponse.model_validate(workflow)
@@ -131,10 +146,9 @@ async def unpublish_workflow(
     current_user: User = Depends(get_current_user),
     workflow_service: WorkflowService = Depends(get_workflow_service),
 ) -> WorkflowResponse:
-    workflow = await workflow_service.update_workflow(
+    workflow = await workflow_service.unpublish_workflow(
         workflow_id=workflow_id,
         user_id=current_user.id,
-        payload=WorkflowUpdate(is_published=False),
     )
     if workflow is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
