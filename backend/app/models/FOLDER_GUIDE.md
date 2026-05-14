@@ -172,7 +172,7 @@ CREATE TABLE executions (
     workflow_id     UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     status          VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-    triggered_by    VARCHAR(20) NOT NULL,
+    triggered_by    VARCHAR(50) NOT NULL,
     started_at      TIMESTAMPTZ,
     finished_at     TIMESTAMPTZ,
     error_message   TEXT
@@ -187,7 +187,7 @@ CREATE TABLE executions (
 | `workflow_id` | UUID | NO | — | FK → `workflows`. Which workflow was run. |
 | `user_id` | UUID | NO | — | FK → `users`. Who triggered the run. For filtering execution history. |
 | `status` | VARCHAR(20) | NO | `'PENDING'` | Current state. See [Status Values](#status-values-reference). |
-| `triggered_by` | VARCHAR(20) | NO | — | What started this run. One of: `manual`, `webhook`, `form`. |
+| `triggered_by` | VARCHAR(50) | NO | — | What started this run. Examples: `manual`, `webhook`, `form`, `schedule`, or a node type for single-node tests. |
 | `started_at` | TIMESTAMPTZ | YES | NULL | Set when Celery worker starts executing. Null while queued. |
 | `finished_at` | TIMESTAMPTZ | YES | NULL | Set when execution completes. Null while running. Frontend stops polling when this is set. |
 | `error_message` | TEXT | YES | NULL | If the whole execution crashes before nodes run, reason stored here. |

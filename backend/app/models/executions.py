@@ -52,7 +52,7 @@ class Execution(UUIDPrimaryKeyMixin, Base):
         default="PENDING",
         server_default=text("'PENDING'"),
     )
-    triggered_by: Mapped[str] = mapped_column(String(20), nullable=False)
+    triggered_by: Mapped[str] = mapped_column(String(50), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
