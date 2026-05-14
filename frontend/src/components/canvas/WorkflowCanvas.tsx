@@ -584,6 +584,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     handleId: string | null;
     connectionType: 'source' | 'target';
   } | null>(null);
+  const edgeQuickAddTarget = useRef<{
+    edgeId: string;
+    source: string;
+    target: string;
+    sourceHandle: string | null;
+    targetHandle: string | null;
+  } | null>(null);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<WorkflowEdge>(initialEdges);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
@@ -1130,13 +1137,60 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           };
 
       connectingNode.current = { nodeId, handleId, connectionType };
+      edgeQuickAddTarget.current = null;
+      setMenuPosition(position);
+      setMenuVisible(true);
+    };
+
+    const handleQuickAddEdge = (e: any) => {
+      if (isCanvasReadOnlyPreviewMode) {
+        toast(previewEditBlockMessage, { icon: 'ℹ️' });
+        return;
+      }
+
+      if (isReadOnly) {
+        notifyReadOnlyEdit();
+        return;
+      }
+      if (isAiPreviewMode) {
+        toast('Accept or discard the AI preview before editing.', { icon: 'ℹ️' });
+        return;
+      }
+
+      const {
+        edgeId,
+        source,
+        target,
+        sourceHandle = null,
+        targetHandle = null,
+        clientX,
+        clientY,
+      } = e.detail || {};
+
+      if (!edgeId || !source || !target || !reactFlowInstance) return;
+      const edgeExists = edgesRef.current.some((edge) => edge.id === edgeId);
+      if (!edgeExists) return;
+
+      if (typeof clientX !== 'number' || typeof clientY !== 'number') return;
+      const position = reactFlowInstance.screenToFlowPosition({ x: clientX, y: clientY });
+
+      edgeQuickAddTarget.current = {
+        edgeId,
+        source,
+        target,
+        sourceHandle,
+        targetHandle,
+      };
+      connectingNode.current = null;
       setMenuPosition(position);
       setMenuVisible(true);
     };
 
     window.addEventListener('rf-quick-add', handleQuickAdd);
+    window.addEventListener('rf-quick-add-edge', handleQuickAddEdge);
     return () => {
       window.removeEventListener('rf-quick-add', handleQuickAdd);
+      window.removeEventListener('rf-quick-add-edge', handleQuickAddEdge);
       setMenuSearchTerm('');
     };
 
@@ -1148,6 +1202,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       setTimeout(() => menuSearchRef.current?.focus(), 50);
     } else if (!menuVisible) {
       setMenuSearchTerm('');
+      connectingNode.current = null;
+      edgeQuickAddTarget.current = null;
     }
   }, [menuVisible]);
 
@@ -2217,6 +2273,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setEdges((eds) => addEdge(newEdge as any, eds));
     emitCanvasMutation('connect_nodes');
     connectingNode.current = null; // Clear connection state after successful connection
+    edgeQuickAddTarget.current = null;
     toast.success('Nodes connected');
   }, [isCanvasReadOnlyPreviewMode, setEdges, emitCanvasMutation, isAiPreviewMode, isReadOnly, notifyReadOnlyEdit]);
 
@@ -2231,10 +2288,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }) => {
   if (isReadOnly || isCanvasReadOnlyPreviewMode || isAiPreviewMode) {
     connectingNode.current = null;
+    edgeQuickAddTarget.current = null;
     return;
   }
     if (!nodeId) {
       connectingNode.current = null;
+      edgeQuickAddTarget.current = null;
       return;
     }
     connectingNode.current = {
@@ -2242,6 +2301,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       handleId: handleId ?? null,
       connectionType: handleType === 'target' ? 'target' : 'source',
     };
+    edgeQuickAddTarget.current = null;
   }, [isReadOnly, isCanvasReadOnlyPreviewMode, isAiPreviewMode]);
 
   const onConnectEnd = useCallback(
@@ -2271,6 +2331,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     setMenuVisible(false);
     setContextMenuState(null);
     connectingNode.current = null; // Clear connection state when clicking on pane
+    edgeQuickAddTarget.current = null;
   }, []);
 
   const updateLastPointerFlowPosition = useCallback((clientX: number, clientY: number) => {
@@ -2304,6 +2365,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     });
     setMenuVisible(false);
     connectingNode.current = null;
+    edgeQuickAddTarget.current = null;
   }, [reactFlowInstance]);
 
   const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
@@ -2391,45 +2453,88 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       emitCanvasMutation('add_node');
       toast.success(`${newNode.data.label} added`);
 
-      if (connectingNode.current) {
+      if (edgeQuickAddTarget.current || connectingNode.current) {
         const existingEdgeIds = new Set(edgesRef.current.map((edge) => edge.id));
-        const { nodeId: anchorNodeId, handleId, connectionType } = connectingNode.current;
-        const sourceHandle = handleId ?? undefined;
-        const newEdge: WorkflowEdge =
-          connectionType === 'target'
-            ? {
-                id: generateUniqueEdgeId(existingEdgeIds),
-                source: newNodeId,
-                target: anchorNodeId,
-                sourceHandle: null,
-                targetHandle: handleId ?? null,
-                branch: undefined,
-                type: 'deletable',
-                animated: true,
-                style: { stroke: '#94a3b8', strokeWidth: 2 },
-                markerEnd: {
-                  type: MarkerType.ArrowClosed,
-                  color: '#94a3b8',
-                },
-              }
-            : {
-                id: generateUniqueEdgeId(existingEdgeIds),
-                source: anchorNodeId,
-                target: newNodeId,
-                sourceHandle,
-                targetHandle: null,
-                branch: sourceHandle ?? undefined,
-                type: 'deletable',
-                animated: true,
-                style: { stroke: '#94a3b8', strokeWidth: 2 },
-                markerEnd: {
-                  type: MarkerType.ArrowClosed,
-                  color: '#94a3b8',
-                },
-              };
-        setEdges((eds) => addEdge(newEdge, eds));
-        emitCanvasMutation('quick_add_connect');
+        const buildEdge = (
+          edgeSource: string,
+          edgeTarget: string,
+          edgeSourceHandle: string | null,
+          edgeTargetHandle: string | null,
+          edgeBranch?: string,
+        ): WorkflowEdge => ({
+          id: generateUniqueEdgeId(existingEdgeIds),
+          source: edgeSource,
+          target: edgeTarget,
+          sourceHandle: edgeSourceHandle,
+          targetHandle: edgeTargetHandle,
+          branch: edgeBranch,
+          type: 'deletable',
+          animated: true,
+          style: { stroke: '#94a3b8', strokeWidth: 2 },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: '#94a3b8',
+          },
+        });
+
+        if (edgeQuickAddTarget.current) {
+          const edgeContext = edgeQuickAddTarget.current;
+          const edgeToSplit = edgesRef.current.find((edge) => edge.id === edgeContext.edgeId);
+
+          if (edgeToSplit) {
+            const upstreamSourceHandle = edgeToSplit.sourceHandle ?? edgeContext.sourceHandle ?? null;
+            const downstreamTargetHandle = edgeToSplit.targetHandle ?? edgeContext.targetHandle ?? null;
+            const upstreamBranch =
+              readEdgeBranch(edgeToSplit)
+              ?? (upstreamSourceHandle === null ? undefined : String(upstreamSourceHandle));
+
+            const sourceToNew = buildEdge(
+              edgeToSplit.source,
+              newNodeId,
+              upstreamSourceHandle,
+              null,
+              upstreamBranch,
+            );
+            const newToTarget = buildEdge(
+              newNodeId,
+              edgeToSplit.target,
+              null,
+              downstreamTargetHandle,
+              undefined,
+            );
+
+            setEdges((eds) => [
+              ...eds.filter((edge) => edge.id !== edgeToSplit.id),
+              sourceToNew,
+              newToTarget,
+            ]);
+            emitCanvasMutation('quick_add_insert_between_edge');
+          }
+        } else if (connectingNode.current) {
+          const { nodeId: anchorNodeId, handleId, connectionType } = connectingNode.current;
+          const sourceHandle = handleId ?? undefined;
+          const newEdge: WorkflowEdge =
+            connectionType === 'target'
+              ? buildEdge(
+                  newNodeId,
+                  anchorNodeId,
+                  null,
+                  handleId ?? null,
+                  undefined,
+                )
+              : buildEdge(
+                  anchorNodeId,
+                  newNodeId,
+                  handleId ?? null,
+                  null,
+                  sourceHandle ?? undefined,
+                );
+          setEdges((eds) => addEdge(newEdge, eds));
+          emitCanvasMutation('quick_add_connect');
+        }
+
         connectingNode.current = null;
+        edgeQuickAddTarget.current = null;
       }
 
       setMenuVisible(false);
@@ -2476,6 +2581,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       y: rect.top + rect.height / 2,
     });
     connectingNode.current = null;
+    edgeQuickAddTarget.current = null;
     setMenuPosition(centerPosition);
     setMenuVisible(true);
   }, [isReadOnly, notifyReadOnlyEdit, reactFlowInstance]);
@@ -2783,6 +2889,10 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       toast.error('Save workflow first to restore versions.');
       return;
     }
+    if (isPublished) {
+      toast.error(PUBLISHED_WORKFLOW_EDIT_MESSAGE);
+      return;
+    }
     const targetVersion = workflowVersions.find((version) => version.id === versionId) || null;
     const versionLabel = targetVersion ? `v${targetVersion.version_number}` : 'this version';
     const confirmed = window.confirm(
@@ -2821,7 +2931,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     } catch (error) {
       console.error('Failed to restore workflow version:', error);
     }
-  }, [loadWorkflowData, loadWorkflowVersions, markDefinitionAsClean, reactFlowInstance, workflowId, workflowVersions]);
+  }, [isPublished, loadWorkflowData, loadWorkflowVersions, markDefinitionAsClean, reactFlowInstance, workflowId, workflowVersions]);
 
   useEffect(() => {
     setIsVersionsLoading(false);
@@ -3451,9 +3561,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             data: {
               ...node.data,
               config: normalizedConfig,
-              status: output === undefined ? 'PENDING' : node.data.status,
-              last_execution_result: output === undefined ? null : node.data.last_execution_result,
-              last_output: output === undefined ? undefined : output,
+              // Preserve latest execution view while config gets normalized
+              // (for example, sheet mapping defaults). Execution state will be
+              // refreshed by execution polling/history APIs.
+              status: node.data.status,
+              last_execution_result: node.data.last_execution_result,
+              last_output: output === undefined ? node.data.last_output : output,
               schedule_is_active: scheduleIsActive,
             },
           };

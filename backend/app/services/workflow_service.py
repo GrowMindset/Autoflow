@@ -255,6 +255,8 @@ class WorkflowService:
         workflow = await self.get_workflow(workflow_id=workflow_id, user_id=user_id)
         if workflow is None:
             return None
+        if workflow.is_published:
+            raise PublishedWorkflowEditError(PUBLISHED_WORKFLOW_EDIT_ERROR)
 
         version = await self.db.scalar(
             select(WorkflowVersion).where(

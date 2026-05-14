@@ -260,11 +260,17 @@ async def restore_workflow_version(
             detail="Workflow version not found",
         )
 
-    restored = await workflow_service.restore_workflow_version(
-        workflow_id=workflow_id,
-        version_id=version_id,
-        user_id=current_user.id,
-    )
+    try:
+        restored = await workflow_service.restore_workflow_version(
+            workflow_id=workflow_id,
+            version_id=version_id,
+            user_id=current_user.id,
+        )
+    except PublishedWorkflowEditError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     if restored is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     return WorkflowResponse.model_validate(restored)

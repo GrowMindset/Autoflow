@@ -1248,6 +1248,56 @@ class WorkflowEndpointTests(unittest.IsolatedAsyncioTestCase):
             "Original Node",
         )
 
+    async def test_restore_workflow_version_rejects_published_workflow(self) -> None:
+        user = await self._create_user(
+            email="restore-published@example.com",
+            username="restore-published-user",
+        )
+        workflow = await self._create_workflow(
+            user_id=user.id,
+            name="Draft Name",
+            description="Draft Description",
+        )
+
+        create_status, create_payload = await self.client.post(
+            f"/workflows/{workflow.id}/versions",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(create_status, 201)
+        version_id = create_payload["id"]
+
+        update_status, update_payload = await self.client.put(
+            f"/workflows/{workflow.id}",
+            json_body={"name": "Edited Name"},
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(update_status, 200)
+        self.assertEqual(update_payload["name"], "Edited Name")
+
+        publish_status, publish_payload = await self.client.post(
+            f"/workflows/{workflow.id}/publish",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(publish_status, 200)
+        self.assertTrue(publish_payload["is_published"])
+
+        restore_status, restore_payload = await self.client.post(
+            f"/workflows/{workflow.id}/restore/{version_id}",
+            headers=_auth_headers(user.id),
+        )
+        self.assertEqual(restore_status, 400)
+        self.assertEqual(
+            restore_payload["detail"],
+            "Published workflows cannot be edited. Unpublish first.",
+        )
+
+        async with self.session_factory() as session:
+            refreshed = await session.get(Workflow, workflow.id)
+
+        self.assertIsNotNone(refreshed)
+        self.assertEqual(refreshed.name, "Edited Name")
+        self.assertTrue(refreshed.is_published)
+
     async def test_workflow_version_endpoints_enforce_ownership(self) -> None:
         owner = await self._create_user(email="owner-versions@example.com", username="owner-versions")
         other = await self._create_user(email="other-versions@example.com", username="other-versions")
