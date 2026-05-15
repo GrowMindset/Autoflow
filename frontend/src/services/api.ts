@@ -3,23 +3,36 @@ import toast from 'react-hot-toast';
 import { useAuthStore } from '../store/authStore';
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
+  baseURL: import.meta.env.DEV
+    ? '/api'
+    : (import.meta.env.VITE_API_URL || 'http://localhost:8000'),
   timeout: 300000,
 });
 
 const ACCESS_TOKEN_KEY = 'token';
 const REFRESH_TOKEN_KEY = 'refresh_token';
 const AUTH_BYPASS_PATHS = ['/auth/login', '/auth/signup', '/auth/refresh'];
+const RAW_API_URL = String(import.meta.env.VITE_API_URL || '');
+const IS_NGROK_CONFIGURED = /https?:\/\/[^/]*ngrok(-free)?\.app|https?:\/\/[^/]*ngrok-free\.dev/i.test(
+  RAW_API_URL,
+);
 
 let refreshPromise: Promise<string | null> | null = null;
 
 // Request interceptor for auth and headers
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem(ACCESS_TOKEN_KEY);
+  const baseUrl = String(api.defaults.baseURL || '');
+  const isNgrokBase = /https?:\/\/[^/]*ngrok(-free)?\.app|https?:\/\/[^/]*ngrok-free\.dev/i.test(baseUrl);
   
   if (config.headers) {
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
+    }
+
+    // Bypass ngrok browser interstitial for API traffic.
+    if (isNgrokBase || IS_NGROK_CONFIGURED) {
+      config.headers['ngrok-skip-browser-warning'] = 'true';
     }
     
     // Only set default Content-Type if not already specified (allows FormData)
@@ -36,8 +49,29 @@ api.interceptors.request.use((config) => {
 // Helper to extract error message safely
 const getErrorMessage = (error: any): string => {
   const data = error.response?.data;
+  const responseHeaders = error.response?.headers || {};
+  const ngrokErrorCode =
+    responseHeaders['ngrok-error-code'] ||
+    responseHeaders['x-ngrok-error-code'] ||
+    responseHeaders['Ngrok-Error-Code'] ||
+    responseHeaders['X-Ngrok-Error-Code'];
   
   if (!data) return error.message || 'Something went wrong';
+
+  if (ngrokErrorCode) {
+    return `Ngrok blocked this request (${ngrokErrorCode}). Check tunnel status and VITE_API_URL.`;
+  }
+
+  if (typeof data === 'string') {
+    const ngrokMatch = data.match(/ERR_NGROK_[A-Z0-9_]+/i);
+    if (ngrokMatch?.[0]) {
+      return `Ngrok blocked this request (${ngrokMatch[0]}). Check tunnel status and VITE_API_URL.`;
+    }
+    if (/<html/i.test(data)) {
+      return 'Upstream gateway returned an HTML error page (likely ngrok/proxy), not FastAPI JSON.';
+    }
+    return data.trim() || error.message || 'Something went wrong';
+  }
   
   // FastAPI detail can be a string, object, or array
   const detail = data.detail;
