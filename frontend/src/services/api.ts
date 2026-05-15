@@ -2,19 +2,20 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '../store/authStore';
 
+const PRODUCTION_API_BASE_URL = String(import.meta.env.VITE_API_URL || '').trim();
+
 const api = axios.create({
   baseURL: import.meta.env.DEV
     ? '/api'
-    : (import.meta.env.VITE_API_URL || 'http://localhost:8000'),
+    : PRODUCTION_API_BASE_URL,
   timeout: 300000,
 });
 
 const ACCESS_TOKEN_KEY = 'token';
 const REFRESH_TOKEN_KEY = 'refresh_token';
 const AUTH_BYPASS_PATHS = ['/auth/login', '/auth/signup', '/auth/refresh'];
-const RAW_API_URL = String(import.meta.env.VITE_API_URL || '');
 const IS_NGROK_CONFIGURED = /https?:\/\/[^/]*ngrok(-free)?\.app|https?:\/\/[^/]*ngrok-free\.dev/i.test(
-  RAW_API_URL,
+  PRODUCTION_API_BASE_URL,
 );
 
 let refreshPromise: Promise<string | null> | null = null;
